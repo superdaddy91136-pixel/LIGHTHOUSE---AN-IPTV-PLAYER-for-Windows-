@@ -24,8 +24,38 @@ import {
 export class VersionMatchingService {
   private versionCache = new Map<string, MediaVersion[]>();
   private versionRequests = new Map<string, Promise<MediaVersion[]>>();
+  private titleInfoCache = new Map<string, { cleanTitle: string; normalizedTitle: string; year?: string }>();
+  private englishVersionCache = new Map<string, boolean>();
 
   constructor(private memory: MemoryService) {}
+
+  private cacheValue<T>(cache: Map<string, T>, key: string, value: T): T {
+    // Bound long-lived caches: provider catalogs can be large, while detail
+    // navigation only benefits from recently visited titles.
+    if (cache.size >= 2_000) {
+      const oldestKey = cache.keys().next().value;
+      if (oldestKey != null) cache.delete(oldestKey);
+    }
+    cache.set(key, value);
+    return value;
+  }
+
+  private channelCacheKey(channel: Channel): string {
+    return `${channel.source_id ?? ''}:${channel.id ?? ''}:${channel.name ?? ''}`;
+  }
+
+  private getTitleInfo(channel: Channel): { cleanTitle: string; normalizedTitle: string; year?: string } {
+    const key = this.channelCacheKey(channel);
+    const cached = this.titleInfoCache.get(key);
+    if (cached) return cached;
+
+    const cleanTitle = cleanMediaTitle(channel.name);
+    return this.cacheValue(this.titleInfoCache, key, {
+      cleanTitle,
+      normalizedTitle: this.normalizeNumberTokens(normalizeForComparison(cleanTitle)),
+      year: extractYear(channel.name),
+    });
+  }
 
   /**
    * Returns whether two catalog items are safe to present as one title in a
@@ -62,16 +92,14 @@ export class VersionMatchingService {
       return false;
     }
 
-    const firstTitle = this.normalizeNumberTokens(
-      normalizeForComparison(cleanMediaTitle(first.name)),
-    );
-    const secondTitle = this.normalizeNumberTokens(
-      normalizeForComparison(cleanMediaTitle(second.name)),
-    );
+    const firstInfo = this.getTitleInfo(first);
+    const secondInfo = this.getTitleInfo(second);
+    const firstTitle = firstInfo.normalizedTitle;
+    const secondTitle = secondInfo.normalizedTitle;
     if (!firstTitle || firstTitle !== secondTitle) return false;
 
-    const firstYear = firstKnownYear || extractYear(first.name);
-    const secondYear = extractYear(second.name);
+    const firstYear = firstKnownYear || firstInfo.year;
+    const secondYear = secondInfo.year;
     if (!firstYear || !secondYear) return true;
 
     const firstYearNumber = parseInt(firstYear, 10);
@@ -205,14 +233,15 @@ export class VersionMatchingService {
    */
   channelToVersion(channel: Channel, isSelected: boolean = false): MediaVersion {
     const rawName = channel.name || '';
-    const cleanTitle = cleanMediaTitle(rawName);
+    const titleInfo = this.getTitleInfo(channel);
+    const cleanTitle = titleInfo.cleanTitle;
     const sourceName = channel.source_id
       ? this.memory.Sources.get(channel.source_id)?.name
       : undefined;
     const providerPlatform = this.extractPlatformPrefix(rawName);
     const countryOrLanguage = this.extractLanguageOrCountry(rawName);
     const qualityBadge = this.extractQualityBadge(rawName);
-    const year = extractYear(rawName);
+    const year = titleInfo.year;
     const badgeLabel = this.buildBadgeLabel(
       qualityBadge,
       providerPlatform,
@@ -267,10 +296,10 @@ export class VersionMatchingService {
   private async findVersionsUncached(channel: Channel, knownYear?: string): Promise<MediaVersion[]> {
     if (!channel) return [];
 
-    const rawName = channel.name || '';
-    const cleanTitle = cleanMediaTitle(rawName);
-    const targetNorm = this.normalizeNumberTokens(normalizeForComparison(cleanTitle));
-    const targetYear = extractYear(rawName) || knownYear;
+    const targetInfo = this.getTitleInfo(channel);
+    const cleanTitle = targetInfo.cleanTitle;
+    const targetNorm = targetInfo.normalizedTitle;
+    const targetYear = targetInfo.year || knownYear;
     const targetMediaType =
       channel.media_type != null ? Number(channel.media_type) : MediaType.movie;
 
@@ -363,7 +392,8 @@ export class VersionMatchingService {
       }
 
       // Year verification
-      const candYear = extractYear(cand.name);
+      const candidateInfo = this.getTitleInfo(cand);
+      const candYear = candidateInfo.year;
       if (candYear && targetYear) {
         const yCand = parseInt(candYear, 10);
         const yTarget = parseInt(targetYear, 10);
@@ -376,12 +406,11 @@ export class VersionMatchingService {
       }
 
       // Normalized title matching
-      const candClean = cleanMediaTitle(cand.name);
-      const candNorm = this.normalizeNumberTokens(normalizeForComparison(candClean));
+      const candNorm = candidateInfo.normalizedTitle;
 
       let isMatch = false;
 
-      if (this.hasSameStrictTitleIdentity(channel, cand, targetYear)) {
+      if (targetNorm === candNorm) {
         isMatch = true;
       } else {
         // Fuzzy comparison for minor subtitle or punctuation differences
@@ -405,8 +434,9 @@ export class VersionMatchingService {
     // 1. English versions near top (preferred non-4K English source first)
     // 2. Non-4K other versions in middle (preserving relative quality and order)
     // 3. 4K versions moved to the bottom of the list
+    const orderScores = new Map(matchedVersions.map((version) => [version, this.scoreVersionOrder(version)]));
     matchedVersions.sort((a, b) => {
-      const scoreDiff = this.scoreVersionOrder(b) - this.scoreVersionOrder(a);
+      const scoreDiff = orderScores.get(b)! - orderScores.get(a)!;
       if (scoreDiff !== 0) return scoreDiff;
       return a.rawName.localeCompare(b.rawName);
     });
@@ -423,6 +453,10 @@ export class VersionMatchingService {
   isEnglishVersion(version: MediaVersion | Channel): boolean {
     if (!version) return false;
     const rawName = 'channel' in version ? version.rawName || version.channel?.name || '' : version.name || '';
+    const sourceId = 'channel' in version ? version.channel?.source_id : version.source_id;
+    const cacheKey = `${sourceId ?? ''}:${rawName}`;
+    const cached = this.englishVersionCache.get(cacheKey);
+    if (cached != null) return cached;
     const clean = 'cleanTitle' in version ? version.cleanTitle : cleanMediaTitle(rawName);
     const lang = 'countryOrLanguage' in version ? version.countryOrLanguage : this.extractLanguageOrCountry(rawName);
 
@@ -430,24 +464,24 @@ export class VersionMatchingService {
     if (lang) {
       const l = lang.toUpperCase();
       if (l === 'EN' || l === 'ENG' || l === 'ENGLISH' || l === 'US' || l === 'UK' || l === 'GB' || l === 'CA' || l === 'AU') {
-        return true;
+        return this.cacheValue(this.englishVersionCache, cacheKey, true);
       }
     }
 
     // 2. Bracket, parenthesis, pipe, or delimiter tags: [EN], (EN), |EN|, [ENG], (ENG), |ENG|, [English], (English), |English|
     if (/[\(\[\|\/]\s*(?:EN|ENG|English|US|UK|GB)\s*[\)\]\|\/]/i.test(rawName)) {
-      return true;
+      return this.cacheValue(this.englishVersionCache, cacheKey, true);
     }
 
     // 3. Leading prefixes: "EN -", "EN:", "EN |", "ENG -", "ENG:", "ENG |", "English -", "English:"
     if (/^(?:EN|ENG|English|US|UK|GB)\s*[-:|]/i.test(rawName.trim())) {
-      return true;
+      return this.cacheValue(this.englishVersionCache, cacheKey, true);
     }
 
     // 4. Word boundary check in parts of the title outside the clean title
     const remaining = rawName.replace(clean, '');
     if (/\b(?:EN|ENG|English)\b/i.test(remaining)) {
-      return true;
+      return this.cacheValue(this.englishVersionCache, cacheKey, true);
     }
 
     // 5. Source name tag check (e.g. source named "US VOD", "UK Movies", "EN Cinema")
@@ -455,10 +489,10 @@ export class VersionMatchingService {
       ? version.sourceName
       : ('source_id' in version && version.source_id ? this.memory.Sources.get(version.source_id)?.name : undefined);
     if (sourceName && /\b(?:EN|ENG|ENGLISH|UK|US|GB)\b/i.test(sourceName)) {
-      return true;
+      return this.cacheValue(this.englishVersionCache, cacheKey, true);
     }
 
-    return false;
+    return this.cacheValue(this.englishVersionCache, cacheKey, false);
   }
 
   /**
@@ -597,10 +631,9 @@ export class VersionMatchingService {
    * Generates a unique, normalized storage key for a grouped title.
    */
   getGroupedTitleKey(channel: Channel, knownYear?: string): string {
-    const rawName = channel.name || '';
-    const clean = cleanMediaTitle(rawName);
-    const norm = this.normalizeNumberTokens(normalizeForComparison(clean));
-    const year = extractYear(rawName) || knownYear || '';
+    const titleInfo = this.getTitleInfo(channel);
+    const norm = titleInfo.normalizedTitle;
+    const year = titleInfo.year || knownYear || '';
     const mediaType =
       channel.media_type != null ? Number(channel.media_type) : MediaType.movie;
     return `fred_tv_pref_ver_${mediaType}_${norm}_${year}`;

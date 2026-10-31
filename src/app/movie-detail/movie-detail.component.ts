@@ -1,9 +1,11 @@
 import { Location } from '@angular/common';
 import {
   AfterViewInit,
+  ChangeDetectionStrategy,
   ChangeDetectorRef,
   Component,
   ElementRef,
+  HostBinding,
   HostListener,
   OnDestroy,
   OnInit,
@@ -49,8 +51,12 @@ import {
   selector: 'app-movie-detail',
   templateUrl: './movie-detail.component.html',
   styleUrl: './movie-detail.component.css',
+  changeDetection: ChangeDetectionStrategy.OnPush,
 })
 export class MovieDetailComponent implements OnInit, AfterViewInit, OnDestroy {
+  @HostBinding('class.skeleton-animations-paused')
+  skeletonAnimationsPaused = document.hidden;
+
   movie?: Channel;
   enrichment?: TmdbMediaEnrichment;
 
@@ -258,7 +264,18 @@ export class MovieDetailComponent implements OnInit, AfterViewInit, OnDestroy {
     setTimeout(() => this.resetScrollPosition(), 0);
   }
 
+  @HostListener('document:visibilitychange')
+  onVisibilityChange(): void {
+    this.skeletonAnimationsPaused = document.hidden;
+    this.cdr.markForCheck();
+  }
+
   ngOnDestroy(): void {
+    // Invalidate outstanding promises so a detached detail component cannot be
+    // updated after navigation.
+    this.enrichmentLoadRequestId++;
+    this.versionLoadRequestId++;
+    this.similarLoadRequestId++;
     this.subs.forEach((s) => s.unsubscribe());
     if (this.enrichmentTimeout) {
       clearTimeout(this.enrichmentTimeout);
@@ -436,14 +453,13 @@ export class MovieDetailComponent implements OnInit, AfterViewInit, OnDestroy {
     this.updateAmbientBackground();
 
     // 2. Cache-first async retrieval / background enrichment
-    const currentInitMovieId = movie.id;
     if (this.enrichmentTimeout) {
       clearTimeout(this.enrichmentTimeout);
       this.enrichmentTimeout = undefined;
     }
     if (this.loadingEnrichment) {
       this.enrichmentTimeout = setTimeout(() => {
-        if (this.loadingEnrichment && this.movie?.id === currentInitMovieId && enrichmentReqId === this.enrichmentLoadRequestId) {
+        if (this.loadingEnrichment && enrichmentReqId === this.enrichmentLoadRequestId) {
           this.loadingEnrichment = false;
           this.cdr.markForCheck();
         }
@@ -452,16 +468,16 @@ export class MovieDetailComponent implements OnInit, AfterViewInit, OnDestroy {
 
     this.tmdbEnrichment.getEnrichment(movie, true, 'high')
       .then((res) => {
-        if (this.movie?.id !== currentInitMovieId || enrichmentReqId !== this.enrichmentLoadRequestId) return;
+        if (enrichmentReqId !== this.enrichmentLoadRequestId) return;
         if (res) {
-          this.applyEnrichment(res, currentInitMovieId);
+          this.applyEnrichment(res);
         }
       })
       .catch((err) => {
         console.warn('Failed to retrieve enrichment for movie:', err);
       })
       .finally(() => {
-        if (this.movie?.id === currentInitMovieId && enrichmentReqId === this.enrichmentLoadRequestId) {
+        if (enrichmentReqId === this.enrichmentLoadRequestId) {
           this.loadingEnrichment = false;
           this.cdr.markForCheck();
         }
@@ -486,7 +502,7 @@ export class MovieDetailComponent implements OnInit, AfterViewInit, OnDestroy {
         movie,
         this.enrichment?.releaseYear,
       );
-      if (this.movie?.id !== movie.id || requestId !== this.versionLoadRequestId) return;
+      if (requestId !== this.versionLoadRequestId) return;
       this.versions = vers;
 
       // Check for previously saved version preference or playback history
@@ -505,7 +521,7 @@ export class MovieDetailComponent implements OnInit, AfterViewInit, OnDestroy {
           (v) => (v.isSelected = v.channel.id === targetVersion.channel.id),
         );
         if (this.movie && this.movie.id !== targetVersion.channel.id) {
-          if (this.movie?.id !== movie.id || requestId !== this.versionLoadRequestId) return;
+          if (requestId !== this.versionLoadRequestId) return;
           this.movie = targetVersion.channel;
           this.qualityBadge =
             targetVersion.qualityBadge || extractQuality(targetVersion.channel.name);
@@ -535,12 +551,12 @@ export class MovieDetailComponent implements OnInit, AfterViewInit, OnDestroy {
         }
       }
     } catch (err) {
-      if (this.movie?.id !== movie.id || requestId !== this.versionLoadRequestId) return;
+      if (requestId !== this.versionLoadRequestId) return;
       console.warn('Failed to discover versions for movie:', err);
       this.versions = [this.versionMatching.channelToVersion(movie, true)];
       this.selectedVersion = this.versions[0];
     } finally {
-      if (this.movie?.id === movie.id && requestId === this.versionLoadRequestId) {
+      if (requestId === this.versionLoadRequestId) {
         this.loadingVersions = false;
         this.updateWatchProgress();
         this.cdr.markForCheck();
@@ -708,6 +724,7 @@ export class MovieDetailComponent implements OnInit, AfterViewInit, OnDestroy {
       this.safeTrailerUrl = this.sanitizer.bypassSecurityTrustResourceUrl(ytUrl);
     }
     this.updateAmbientBackground();
+    this.cdr.markForCheck();
   }
 
   private checkSynopsisLength(): void {
@@ -1112,7 +1129,7 @@ export class MovieDetailComponent implements OnInit, AfterViewInit, OnDestroy {
       };
 
       let results = (await invoke('search', { filters })) as Channel[];
-      if (this.movie?.id !== movie.id || requestId !== this.similarLoadRequestId) return;
+      if (requestId !== this.similarLoadRequestId) return;
       let filtered = (results || []).filter((m) => m.id !== movie.id);
 
       // If category has few items, fallback to general movies from provider
@@ -1126,18 +1143,18 @@ export class MovieDetailComponent implements OnInit, AfterViewInit, OnDestroy {
           sort: SortType.provider,
         };
         const fallbackRes = (await invoke('search', { filters: fallbackFilters })) as Channel[];
-        if (this.movie?.id !== movie.id || requestId !== this.similarLoadRequestId) return;
+        if (requestId !== this.similarLoadRequestId) return;
         const extra = (fallbackRes || []).filter((m) => m.id !== movie.id && !filtered.some(f => f.id === m.id));
         filtered = filtered.concat(extra);
       }
 
       this.similarMovies = filtered.slice(0, 18);
     } catch (e) {
-      if (this.movie?.id !== movie.id || requestId !== this.similarLoadRequestId) return;
+      if (requestId !== this.similarLoadRequestId) return;
       console.warn('Failed to load similar movies', e);
       this.similarMovies = [];
     } finally {
-      if (this.movie?.id === movie.id && requestId === this.similarLoadRequestId) {
+      if (requestId === this.similarLoadRequestId) {
         this.loadingSimilar = false;
         this.cdr.markForCheck();
       }

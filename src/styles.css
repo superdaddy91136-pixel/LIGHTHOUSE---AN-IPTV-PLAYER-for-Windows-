@@ -2744,9 +2744,33 @@ body::-webkit-scrollbar-thumb:active {
     rgba(255, 255, 255, 0.05) 80%,
     rgba(255, 255, 255, 0.03) 100%
   );
+  /* Keep small placeholders static. Animating every gradient repaints dozens of
+     elements on a full detail skeleton and overwhelms integrated GPUs. */
   background-size: 200% 100%;
-  animation: detail-shimmer 2s cubic-bezier(0.4, 0, 0.6, 1) infinite;
   border: 1px solid rgba(255, 255, 255, 0.05);
+}
+
+/* Restrict the moving highlight to the hero backdrop and title. This keeps
+   the established shimmer treatment while reducing a TV skeleton from dozens
+   of simultaneous animated gradients to at most two. */
+.skeleton-backdrop.skeleton-shimmer,
+.skeleton-title.skeleton-shimmer {
+  animation: detail-shimmer 2.2s cubic-bezier(0.4, 0, 0.6, 1) infinite;
+}
+
+/* Do not animate a hidden detail route/window, and honour accessibility motion
+   preferences. The static gradient remains visible in both cases. */
+.skeleton-animations-paused .skeleton-shimmer {
+  animation-play-state: paused;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .skeleton-shimmer,
+  .skeleton-backdrop.skeleton-shimmer,
+  .skeleton-title.skeleton-shimmer,
+  .progressive-fade-in {
+    animation: none;
+  }
 }
 
 .progressive-fade-in {
@@ -2778,7 +2802,6 @@ body::-webkit-scrollbar-thumb:active {
     rgba(15, 17, 23, 0.7) 100%
   );
   background-size: 200% 100%;
-  animation: detail-shimmer 2.2s cubic-bezier(0.4, 0, 0.6, 1) infinite;
   border: none;
 }
 

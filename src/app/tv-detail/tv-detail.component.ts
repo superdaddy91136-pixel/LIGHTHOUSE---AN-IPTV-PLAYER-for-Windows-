@@ -1,9 +1,11 @@
 import { Location } from '@angular/common';
 import {
   AfterViewInit,
+  ChangeDetectionStrategy,
   ChangeDetectorRef,
   Component,
   ElementRef,
+  HostBinding,
   HostListener,
   OnDestroy,
   OnInit,
@@ -70,8 +72,12 @@ export interface EnrichedEpisode {
   selector: 'app-tv-detail',
   templateUrl: './tv-detail.component.html',
   styleUrl: './tv-detail.component.css',
+  changeDetection: ChangeDetectionStrategy.OnPush,
 })
 export class TvDetailComponent implements OnInit, AfterViewInit, OnDestroy {
+  @HostBinding('class.skeleton-animations-paused')
+  skeletonAnimationsPaused = document.hidden;
+
   show?: Channel;
   enrichment?: TmdbMediaEnrichment;
 
@@ -148,6 +154,9 @@ export class TvDetailComponent implements OnInit, AfterViewInit, OnDestroy {
   private enrichmentLoadRequestId = 0;
   private versionLoadRequestId = 0;
   private similarLoadRequestId = 0;
+  private episodeCache = new Map<string, Channel[]>();
+  private episodeRequests = new Map<string, Promise<Channel[]>>();
+  private episodeTitleCache = new Map<string, string>();
   @ViewChild('similarTrack') similarTrack?: ElementRef<HTMLDivElement>;
   @ViewChild('seasonSelectorTrack') seasonSelectorTrack?: ElementRef<HTMLDivElement>;
   @ViewChild(EpisodeSwitcherComponent) episodeSwitcher?: EpisodeSwitcherComponent;
@@ -245,7 +254,20 @@ export class TvDetailComponent implements OnInit, AfterViewInit, OnDestroy {
     setTimeout(() => this.resetScrollPosition(), 0);
   }
 
+  @HostListener('document:visibilitychange')
+  onVisibilityChange(): void {
+    this.skeletonAnimationsPaused = document.hidden;
+    this.cdr.markForCheck();
+  }
+
   ngOnDestroy(): void {
+    // Invalidate outstanding promises so a detached detail component cannot be
+    // updated after navigation.
+    this.enrichmentLoadRequestId++;
+    this.versionLoadRequestId++;
+    this.similarLoadRequestId++;
+    this.seasonLoadRequestId++;
+    this.episodeLoadRequestId++;
     this.subs.forEach((s) => s.unsubscribe());
     if (this.enrichmentTimeout) {
       clearTimeout(this.enrichmentTimeout);
@@ -306,7 +328,6 @@ export class TvDetailComponent implements OnInit, AfterViewInit, OnDestroy {
     this.seasonLoadRequestId++;
     this.episodeLoadRequestId++;
     const enrichmentReqId = ++this.enrichmentLoadRequestId;
-    const versionReqId = ++this.versionLoadRequestId;
     this.resetScrollPosition();
     this.showSeasonMenu = false;
     this.showVersionsMenu = false;
@@ -349,6 +370,9 @@ export class TvDetailComponent implements OnInit, AfterViewInit, OnDestroy {
     this.backdropRotationApplied = false;
     this.castImageErrors.clear();
     this.episodeImageErrors.clear();
+    this.episodeCache.clear();
+    this.episodeRequests.clear();
+    this.episodeTitleCache.clear();
     this.seasons = [];
     this.selectedSeason = undefined;
     this.episodes = [];
@@ -379,14 +403,13 @@ export class TvDetailComponent implements OnInit, AfterViewInit, OnDestroy {
     }
     this.updateAmbientBackground();
 
-    const currentInitShowId = show.id;
     if (this.enrichmentTimeout) {
       clearTimeout(this.enrichmentTimeout);
       this.enrichmentTimeout = undefined;
     }
     if (this.loadingEnrichment) {
       this.enrichmentTimeout = setTimeout(() => {
-        if (this.loadingEnrichment && this.show?.id === currentInitShowId && enrichmentReqId === this.enrichmentLoadRequestId) {
+        if (this.loadingEnrichment && enrichmentReqId === this.enrichmentLoadRequestId) {
           this.loadingEnrichment = false;
           this.cdr.markForCheck();
         }
@@ -396,9 +419,9 @@ export class TvDetailComponent implements OnInit, AfterViewInit, OnDestroy {
     // 2. Cache-first async retrieval / background enrichment
     this.tmdbEnrichment.getEnrichment(show, true, 'high')
       .then((res) => {
-        if (this.show?.id !== currentInitShowId || enrichmentReqId !== this.enrichmentLoadRequestId) return;
+        if (enrichmentReqId !== this.enrichmentLoadRequestId) return;
         if (res) {
-          this.applyEnrichment(res, currentInitShowId);
+          this.applyEnrichment(res);
           if (this.selectedSeason) {
             this.reEnrichEpisodes();
           }
@@ -408,18 +431,16 @@ export class TvDetailComponent implements OnInit, AfterViewInit, OnDestroy {
         console.warn('Failed to retrieve enrichment for TV show:', err);
       })
       .finally(() => {
-        if (this.show?.id === currentInitShowId && enrichmentReqId === this.enrichmentLoadRequestId) {
+        if (enrichmentReqId === this.enrichmentLoadRequestId) {
           this.loadingEnrichment = false;
           this.cdr.markForCheck();
         }
       });
 
-    // 3. Render cached provider seasons and episodes before version discovery.
-    void this.loadSeasonsAndEpisodes(show).then(() => {
-      if (this.show?.id === currentInitShowId && versionReqId === this.versionLoadRequestId) {
-        void this.loadVersions(show);
-      }
-    });
+    // 3. Both paths are local-cache first and independent. Do not make the
+    // version selector wait for episode/history work or a provider refresh.
+    void this.loadSeasonsAndEpisodes(show);
+    void this.loadVersions(show);
 
     // 4. Load Similar Shows
     this.loadSimilarShows(show);
@@ -435,7 +456,7 @@ export class TvDetailComponent implements OnInit, AfterViewInit, OnDestroy {
         show,
         this.enrichment?.releaseYear,
       );
-      if (this.show?.id !== show.id || requestId !== this.versionLoadRequestId) return;
+      if (requestId !== this.versionLoadRequestId) return;
       this.versions = vers;
 
       // Check for previously saved version preference or playback history
@@ -453,11 +474,12 @@ export class TvDetailComponent implements OnInit, AfterViewInit, OnDestroy {
         this.versions.forEach(
           (v) => (v.isSelected = v.channel.id === targetVersion.channel.id),
         );
+        this.cdr.markForCheck();
 
         // If the target version is different from the currently loaded series,
         // switch to the target series and reload seasons & episodes!
         if (this.show && this.show.id !== targetVersion.channel.id) {
-          if (this.show?.id !== show.id || requestId !== this.versionLoadRequestId) return;
+          if (requestId !== this.versionLoadRequestId) return;
           this.show = targetVersion.channel;
           if (
             this.show.media_type == null ||
@@ -490,6 +512,9 @@ export class TvDetailComponent implements OnInit, AfterViewInit, OnDestroy {
         );
       }
 
+      // Keep the no-default path visible as soon as selection is resolved.
+      this.cdr.markForCheck();
+
       // If we still do not have a TMDB backdrop, check if any discovered version has one in cache
       if (!this.enrichment?.backdropPath && this.versions?.length) {
         for (const v of this.versions) {
@@ -501,12 +526,12 @@ export class TvDetailComponent implements OnInit, AfterViewInit, OnDestroy {
         }
       }
     } catch (err) {
-      if (this.show?.id !== show.id || requestId !== this.versionLoadRequestId) return;
+      if (requestId !== this.versionLoadRequestId) return;
       console.warn('Failed to discover versions for TV show:', err);
       this.versions = [this.versionMatching.channelToVersion(show, true)];
       this.selectedVersion = this.versions[0];
     } finally {
-      if (this.show?.id === show.id && requestId === this.versionLoadRequestId) {
+      if (requestId === this.versionLoadRequestId) {
         this.loadingVersions = false;
         this.cdr.markForCheck();
       }
@@ -720,6 +745,7 @@ export class TvDetailComponent implements OnInit, AfterViewInit, OnDestroy {
       this.safeTrailerUrl = this.sanitizer.bypassSecurityTrustResourceUrl(ytUrl);
     }
     this.updateAmbientBackground();
+    this.cdr.markForCheck();
   }
 
   private checkSynopsisLength(): void {
@@ -881,6 +907,7 @@ export class TvDetailComponent implements OnInit, AfterViewInit, OnDestroy {
     } finally {
       if (this.show === show && requestId === this.seasonLoadRequestId) {
         this.loadingSeasons = false;
+        this.cdr.markForCheck();
       }
     }
   }
@@ -917,7 +944,8 @@ export class TvDetailComponent implements OnInit, AfterViewInit, OnDestroy {
         sort: SortType.alphabeticalAscending,
       };
 
-      const episodeChannels = (await invoke('search', { filters })) as Channel[];
+      const cacheKey = `${show.source_id ?? ''}:${seriesId}:${season.id ?? ''}`;
+      const episodeChannels = await this.getCachedEpisodes(cacheKey, filters);
       if (this.show !== show || requestId !== this.episodeLoadRequestId) return;
       this.episodes = episodeChannels || [];
       this.mapEnrichedEpisodes();
@@ -931,6 +959,7 @@ export class TvDetailComponent implements OnInit, AfterViewInit, OnDestroy {
             if (this.show === show && requestId === this.episodeLoadRequestId && tmdbSeason) {
               this.mapEnrichedEpisodes(tmdbSeason);
               this.updateContinueEpisode(targetEpisode);
+              this.cdr.markForCheck();
             }
           },
           (err) => console.warn('Failed to enrich season episodes:', err),
@@ -956,6 +985,7 @@ export class TvDetailComponent implements OnInit, AfterViewInit, OnDestroy {
     } finally {
       if (this.show === show && requestId === this.episodeLoadRequestId) {
         this.loadingEpisodes = false;
+        this.cdr.markForCheck();
       }
     }
   }
@@ -968,10 +998,34 @@ export class TvDetailComponent implements OnInit, AfterViewInit, OnDestroy {
     return this.show?.id;
   }
 
+  private getCachedEpisodes(cacheKey: string, filters: Filters): Promise<Channel[]> {
+    const cached = this.episodeCache.get(cacheKey);
+    if (cached) return Promise.resolve(cached);
+
+    const inFlight = this.episodeRequests.get(cacheKey);
+    if (inFlight) return inFlight;
+
+    const request = (invoke('search', { filters }) as Promise<Channel[]>)
+      .then((episodes) => {
+        const result = episodes || [];
+        this.episodeCache.set(cacheKey, result);
+        return result;
+      })
+      .finally(() => this.episodeRequests.delete(cacheKey));
+    this.episodeRequests.set(cacheKey, request);
+    return request;
+  }
+
   private mapEnrichedEpisodes(tmdbSeason?: TmdbSeasonDetail): void {
+    const tmdbEpisodesByNumber = tmdbSeason
+      ? new Map(tmdbSeason.episodes?.map((episode) => [episode.episodeNumber, episode]) || [])
+      : undefined;
+    const selectedSeasonId = this.selectedSeason?.id;
+    const showSourceId = this.show?.source_id;
+    const seriesId = this.getSeriesIdNumber();
     this.enrichedEpisodes = this.episodes.map((epChannel, index) => {
       const epNum = epChannel.episode_num ?? this.extractEpisodeNumber(epChannel.name, index + 1);
-      const tmdbEp = tmdbSeason?.episodes?.find((te) => te.episodeNumber === epNum);
+      const tmdbEp = tmdbEpisodesByNumber?.get(epNum);
 
       const cleanProviderTitle = this.cleanEpisodeTitle(epChannel.name);
       const title = tmdbEp?.name ? `${epNum}. ${tmdbEp.name}` : (cleanProviderTitle || `Episode ${epNum}`);
@@ -982,10 +1036,10 @@ export class TvDetailComponent implements OnInit, AfterViewInit, OnDestroy {
       const cleanEpChannel: Channel = {
         ...epChannel,
         media_type: MediaType.movie,
-        season_id: epChannel.season_id || this.selectedSeason?.id,
+        season_id: epChannel.season_id || selectedSeasonId,
         episode_num: epNum,
-        source_id: epChannel.source_id || this.show?.source_id,
-        series_id: epChannel.series_id || this.getSeriesIdNumber(),
+        source_id: epChannel.source_id || showSourceId,
+        series_id: epChannel.series_id || seriesId,
         favorite: !!epChannel.favorite,
       };
 
@@ -1032,6 +1086,8 @@ export class TvDetailComponent implements OnInit, AfterViewInit, OnDestroy {
 
   cleanEpisodeTitle(rawName?: string): string {
     if (!rawName) return '';
+    const cached = this.episodeTitleCache.get(rawName);
+    if (cached != null) return cached;
     let clean = cleanMediaTitle(rawName);
 
     // Strip series name prefix if present
@@ -1045,7 +1101,9 @@ export class TvDetailComponent implements OnInit, AfterViewInit, OnDestroy {
     clean = clean.replace(/^[-\s]*\bEpisode\s*\d{1,3}\b[-\s:]*/i, '');
     clean = clean.replace(/^[-*#~_+=|:–—\s]+/, '');
 
-    return clean.trim() || cleanMediaTitle(rawName);
+    const result = clean.trim() || cleanMediaTitle(rawName);
+    this.episodeTitleCache.set(rawName, result);
+    return result;
   }
 
   private updateContinueEpisode(targetEpisode?: Channel): void {
@@ -1362,7 +1420,7 @@ export class TvDetailComponent implements OnInit, AfterViewInit, OnDestroy {
       };
 
       let results = (await invoke('search', { filters })) as Channel[];
-      if (this.show?.id !== show.id || requestId !== this.similarLoadRequestId) return;
+      if (requestId !== this.similarLoadRequestId) return;
       let filtered = (results || []).filter((s) => s.id !== show.id);
 
       // If category has few items, fallback to general series
@@ -1376,7 +1434,7 @@ export class TvDetailComponent implements OnInit, AfterViewInit, OnDestroy {
           sort: SortType.provider,
         };
         const fallbackRes = (await invoke('search', { filters: fallbackFilters })) as Channel[];
-        if (this.show?.id !== show.id || requestId !== this.similarLoadRequestId) return;
+        if (requestId !== this.similarLoadRequestId) return;
         const extra = (fallbackRes || []).filter(
           (s) => s.id !== show.id && !filtered.some((f) => f.id === s.id),
         );
@@ -1385,11 +1443,11 @@ export class TvDetailComponent implements OnInit, AfterViewInit, OnDestroy {
 
       this.similarShows = filtered.slice(0, 18);
     } catch (e) {
-      if (this.show?.id !== show.id || requestId !== this.similarLoadRequestId) return;
+      if (requestId !== this.similarLoadRequestId) return;
       console.warn('Failed to load similar shows', e);
       this.similarShows = [];
     } finally {
-      if (this.show?.id === show.id && requestId === this.similarLoadRequestId) {
+      if (requestId === this.similarLoadRequestId) {
         this.loadingSimilar = false;
         this.cdr.markForCheck();
       }
