@@ -1,5 +1,7 @@
 import {
   AfterViewInit,
+  ChangeDetectionStrategy,
+  ChangeDetectorRef,
   Component,
   ElementRef,
   EventEmitter,
@@ -43,10 +45,97 @@ import { EmbeddedPlayerService } from "../services/embedded-player.service";
 import { NavTab } from "../models/navTab";
 import { cleanMediaTitle } from "../utils/media-presentation";
 
+/**
+ * Concurrency-limited background EPG queue manager.
+ * Prevents flooding network and CPU with 50-100 simultaneous requests.
+ * Caches program info and prioritizes currently visible channels.
+ */
+export class EpgQueueManager {
+  private static cache = new Map<number, { epg: EPG | null; timestamp: number }>();
+  private static inFlight = new Map<number, Promise<EPG | null>>();
+  private static queue: { channel: Channel; resolve: (val: EPG | null) => void }[] = [];
+  private static activeCount = 0;
+  private static readonly MAX_CONCURRENT = 2;
+  private static readonly CACHE_TTL_MS = 10 * 60 * 1000; // 10 minutes
+
+  static getCached(channelId: number): EPG | null | undefined {
+    const entry = this.cache.get(channelId);
+    if (!entry) return undefined;
+    if (Date.now() - entry.timestamp > this.CACHE_TTL_MS) {
+      this.cache.delete(channelId);
+      return undefined;
+    }
+    return entry.epg;
+  }
+
+  static requestEpg(channel: Channel): Promise<EPG | null> {
+    if (!channel.id) return Promise.resolve(null);
+    const cached = this.getCached(channel.id);
+    if (cached !== undefined) {
+      return Promise.resolve(cached);
+    }
+    if (this.inFlight.has(channel.id)) {
+      return this.inFlight.get(channel.id)!;
+    }
+
+    const promise = new Promise<EPG | null>((resolve) => {
+      // Prioritize recently requested (LIFO so visible channels jump ahead of scrolled-past ones)
+      this.queue.unshift({ channel, resolve });
+      this.processNext();
+    });
+
+    this.inFlight.set(channel.id, promise);
+    return promise;
+  }
+
+  static clearQueue(): void {
+    this.queue = [];
+  }
+
+  private static processNext(): void {
+    if (this.activeCount >= this.MAX_CONCURRENT || this.queue.length === 0) {
+      return;
+    }
+
+    const item = this.queue.shift();
+    if (!item) return;
+
+    this.activeCount++;
+    const { channel, resolve } = item;
+
+    invoke('get_epg', { channel })
+      .then((data: any) => {
+        const epgList = (data as EPG[]) || [];
+        let current: EPG | null = null;
+        if (epgList.length > 0) {
+          const now = Math.floor(Date.now() / 1000);
+          current =
+            epgList.find((p) => p.now_playing) ||
+            epgList.find((p) => p.start_timestamp <= now) ||
+            epgList[0] ||
+            null;
+        }
+        this.cache.set(channel.id!, { epg: current, timestamp: Date.now() });
+        this.inFlight.delete(channel.id!);
+        resolve(current);
+      })
+      .catch(() => {
+        this.cache.set(channel.id!, { epg: null, timestamp: Date.now() });
+        this.inFlight.delete(channel.id!);
+        resolve(null);
+      })
+      .finally(() => {
+        this.activeCount--;
+        this.processNext();
+      });
+  }
+}
+
 @Component({
   selector: "app-channel-tile",
   templateUrl: "./channel-tile.component.html",
   styleUrl: "./channel-tile.component.css",
+  changeDetection: ChangeDetectionStrategy.OnPush,
 })
 export class ChannelTileComponent implements OnInit, OnDestroy, AfterViewInit, OnChanges {
   constructor(
@@ -61,6 +150,7 @@ export class ChannelTileComponent implements OnInit, OnDestroy, AfterViewInit, O
     private tvDetailService: TvDetailService,
     public pinService: PinService,
     public embeddedPlayer: EmbeddedPlayerService,
+    private cdr: ChangeDetectorRef,
   ) { }
   @Input() channel?: Channel;
   @Input() id!: number;
@@ -79,22 +169,93 @@ export class ChannelTileComponent implements OnInit, OnDestroy, AfterViewInit, O
   subscriptions: Subscription[] = [];
   fade = false;
   nowPlayingEpg?: EPG;
+
+  // Precomputed properties to avoid thousands of template method calls per second
+  cleanTitle: string = '';
+  sourceName: string = '';
+  epgTimeDisplay: string = '';
+  epgProgress: number = 0;
+  isCard: boolean = true;
+  isLivestreamChannel: boolean = false;
+  isLiveTvMode: boolean = false;
+  isGroupTile: boolean = false;
+  isSeriesTile: boolean = false;
+  isMovieTile: boolean = false;
+
+  static brokenImages: Set<string> = new Set();
   static epgCache: Map<number, EPG | null> = new Map();
   static epgInFlight: Set<number> = new Set();
 
   ngOnInit(): void {
-    if ((this.isLivestream() || this.isLiveTv()) && !this.isGroup() && this.showEPG()) {
+    this.updateChannelState();
+    if ((this.isLivestreamChannel || this.isLiveTvMode) && !this.isGroupTile && this.showEPG()) {
       this.loadNowPlayingEPG();
     }
   }
 
   ngOnChanges(changes: SimpleChanges): void {
-    if (changes['channel'] && !changes['channel'].firstChange) {
-      this.nowPlayingEpg = undefined;
-      this.showImage = true;
-      if ((this.isLivestream() || this.isLiveTv()) && !this.isGroup() && this.showEPG()) {
-        this.loadNowPlayingEPG();
+    const chChange = changes['channel'];
+    if (chChange) {
+      const prev = chChange.previousValue as Channel | undefined;
+      const curr = chChange.currentValue as Channel | undefined;
+
+      this.updateChannelState();
+
+      // If channel ID is identical, keep existing EPG and image state intact (prevents layout shifts & flickering)
+      if (prev && curr && prev.id === curr.id) {
+        this.cdr.markForCheck();
+        return;
       }
+
+      // Channel ID changed or initial assignment
+      if (curr?.id) {
+        const cached = EpgQueueManager.getCached(curr.id);
+        if (cached !== undefined) {
+          this.nowPlayingEpg = cached || undefined;
+          this.updateEpgDisplay();
+        } else {
+          this.nowPlayingEpg = undefined;
+          this.epgTimeDisplay = '';
+          this.epgProgress = 0;
+          if ((this.isLivestreamChannel || this.isLiveTvMode) && !this.isGroupTile && this.showEPG()) {
+            this.loadNowPlayingEPG();
+          }
+        }
+      } else {
+        this.nowPlayingEpg = undefined;
+        this.epgTimeDisplay = '';
+        this.epgProgress = 0;
+      }
+    }
+    this.cdr.markForCheck();
+  }
+
+  private updateChannelState(): void {
+    if (!this.channel) {
+      this.cleanTitle = '';
+      this.sourceName = '';
+      this.isCard = true;
+      this.isLivestreamChannel = false;
+      this.isLiveTvMode = false;
+      this.isGroupTile = false;
+      this.isSeriesTile = false;
+      this.isMovieTile = false;
+      return;
+    }
+
+    this.cleanTitle = cleanMediaTitle(this.channel.name || '');
+    this.sourceName = this.channel.source_id ? this.memory.Sources.get(this.channel.source_id)?.name || '' : '';
+    this.isCard = this.memory.activeNavTab.value !== NavTab.Settings;
+    this.isLivestreamChannel = this.channel.media_type === MediaType.livestream;
+    this.isLiveTvMode = !!this.isLiveTvCard || this.memory.activeNavTab.value === NavTab.LiveTV;
+    this.isGroupTile = this.channel.media_type === MediaType.group;
+    this.isSeriesTile = this.channel.media_type === MediaType.serie;
+    this.isMovieTile = this.channel.media_type === MediaType.movie;
+
+    if (this.channel.image && ChannelTileComponent.brokenImages.has(this.channel.image)) {
+      this.showImage = false;
+    } else {
+      this.showImage = true;
     }
   }
 
@@ -123,6 +284,7 @@ export class ChannelTileComponent implements OnInit, OnDestroy, AfterViewInit, O
     }
     if (this.channel) {
       this.starting = true;
+      this.cdr.markForCheck();
       try {
         const canvas = this.embeddedPlayer.resolveVideoCanvasId();
         await this.embeddedPlayer.playMediaDirectly(this.channel, canvas);
@@ -130,6 +292,7 @@ export class ChannelTileComponent implements OnInit, OnDestroy, AfterViewInit, O
         this.error.handleError(e, 'Failed to start playback');
       } finally {
         this.starting = false;
+        this.cdr.markForCheck();
       }
     }
   }
@@ -174,6 +337,7 @@ export class ChannelTileComponent implements OnInit, OnDestroy, AfterViewInit, O
       if (!file) return;
     }
     this.starting = true;
+    this.cdr.markForCheck();
     this.memory.SetFocus.next(this.id);
     const playChannel = {
       ...this.channel,
@@ -197,6 +361,7 @@ export class ChannelTileComponent implements OnInit, OnDestroy, AfterViewInit, O
         this.error.handleError(err);
       }
       this.starting = false;
+      this.cdr.markForCheck();
       return;
     }
 
@@ -213,6 +378,7 @@ export class ChannelTileComponent implements OnInit, OnDestroy, AfterViewInit, O
         this.error.handleError(err);
       }
       this.starting = false;
+      this.cdr.markForCheck();
       return;
     }
 
@@ -222,6 +388,7 @@ export class ChannelTileComponent implements OnInit, OnDestroy, AfterViewInit, O
       this.error.handleError(e);
     }
     this.starting = false;
+    this.cdr.markForCheck();
   }
 
   onRightClick(event: MouseEvent) {
@@ -267,10 +434,15 @@ export class ChannelTileComponent implements OnInit, OnDestroy, AfterViewInit, O
     } else {
       this.toastr.success(`Pinned "${name}"`);
     }
+    this.cdr.markForCheck();
   }
 
   onError(event: Event) {
     this.showImage = false;
+    if (this.channel?.image) {
+      ChannelTileComponent.brokenImages.add(this.channel.image);
+    }
+    this.cdr.markForCheck();
   }
 
   async favorite() {
@@ -285,6 +457,8 @@ export class ChannelTileComponent implements OnInit, OnDestroy, AfterViewInit, O
       if (this.viewMode == ViewMode.Favorites) {
         this.fade = !!wasFavorite;
       }
+      this.memory.clearCatalogPageCache();
+      this.cdr.markForCheck();
     } catch (e) {
       this.error.handleError(e, `Failed to add/remove "${this.channel?.name}" to/from favorites`);
     }
@@ -295,6 +469,7 @@ export class ChannelTileComponent implements OnInit, OnDestroy, AfterViewInit, O
       await invoke("remove_from_history", { id: this.channel!.id });
       this.memory.Refresh.next(false);
       this.toastr.success(`Removed "${this.channel?.name}" from history`);
+      this.cdr.markForCheck();
     } catch (e) {
       this.error.handleError(e, `Failed to remove "${this.channel?.name}" from history`);
     }
@@ -313,7 +488,9 @@ export class ChannelTileComponent implements OnInit, OnDestroy, AfterViewInit, O
       await invoke(command, args);
       this.channel!.hidden = false;
       this.unhidden.emit(this.channel!);
+      this.memory.clearCatalogPageCache();
       this.toastr.success(`Unhidden "${this.channel?.name}"`);
+      this.cdr.markForCheck();
     } catch (e) {
       this.error.handleError(e, `Failed to unhide "${this.channel?.name}"`);
     }
@@ -337,7 +514,9 @@ export class ChannelTileComponent implements OnInit, OnDestroy, AfterViewInit, O
         this.unhidden.emit(this.channel!);
       }
       this.fade = this.viewMode == ViewMode.Hidden ? !hide : hide;
+      this.memory.clearCatalogPageCache();
       this.toastr.success(`${msg} (updates on reload)`);
+      this.cdr.markForCheck();
     } catch (e) {
       this.error.handleError(e, `Failed to hide/unhide "${this.channel?.name}"`);
     }
@@ -376,45 +555,50 @@ export class ChannelTileComponent implements OnInit, OnDestroy, AfterViewInit, O
   }
 
   async loadNowPlayingEPG() {
-    if (!this.channel?.id || !this.showEPG()) return;
-    const cacheKey = this.channel.id;
-    if (ChannelTileComponent.epgCache.has(cacheKey)) {
-      this.nowPlayingEpg = ChannelTileComponent.epgCache.get(cacheKey) || undefined;
-      return;
-    }
-    if (ChannelTileComponent.epgInFlight.has(cacheKey)) return;
-    ChannelTileComponent.epgInFlight.add(cacheKey);
-
+    if (!this.channel?.id || !this.showEPG() || !this.channel.stream_id) return;
+    const channelId = this.channel.id;
     try {
-      const data: EPG[] = await invoke("get_epg", { channel: this.channel });
-      if (data && data.length > 0) {
-        const now = Math.floor(Date.now() / 1000);
-        const current = data.find((p) => p.now_playing) ||
-                        data.find((p) => p.start_timestamp <= now) ||
-                        data[0];
-        ChannelTileComponent.epgCache.set(cacheKey, current || null);
-        this.nowPlayingEpg = current;
-      } else {
-        ChannelTileComponent.epgCache.set(cacheKey, null);
+      const current = await EpgQueueManager.requestEpg(this.channel);
+      if (this.channel?.id === channelId) {
+        this.nowPlayingEpg = current || undefined;
+        this.updateEpgDisplay();
+        this.cdr.markForCheck();
       }
     } catch {
-      ChannelTileComponent.epgCache.set(cacheKey, null);
-    } finally {
-      ChannelTileComponent.epgInFlight.delete(cacheKey);
+      // Ignored
     }
   }
 
-  getEpgTimeDisplay(): string {
-    if (!this.nowPlayingEpg) return '';
+  updateEpgDisplay(): void {
+    if (!this.nowPlayingEpg) {
+      this.epgTimeDisplay = '';
+      this.epgProgress = 0;
+      return;
+    }
     if (this.nowPlayingEpg.start_time && this.nowPlayingEpg.end_time) {
       const start = this.extractTimeOnly(this.nowPlayingEpg.start_time);
       const end = this.extractTimeOnly(this.nowPlayingEpg.end_time);
-      return `${start} – ${end}`;
+      this.epgTimeDisplay = `${start} – ${end}`;
+    } else if (this.nowPlayingEpg.start_time) {
+      this.epgTimeDisplay = this.extractTimeOnly(this.nowPlayingEpg.start_time);
+    } else {
+      this.epgTimeDisplay = '';
     }
-    if (this.nowPlayingEpg.start_time) {
-      return this.extractTimeOnly(this.nowPlayingEpg.start_time);
+
+    if (this.nowPlayingEpg.start_timestamp) {
+      const nowSec = Math.floor(Date.now() / 1000);
+      const start = this.nowPlayingEpg.start_timestamp;
+      if (nowSec <= start) {
+        this.epgProgress = 0;
+      } else {
+        const defaultEnd = start + 3600;
+        const elapsed = nowSec - start;
+        const total = defaultEnd - start;
+        this.epgProgress = Math.min(100, Math.max(5, Math.round((elapsed / total) * 100)));
+      }
+    } else {
+      this.epgProgress = 0;
     }
-    return '';
   }
 
   private extractTimeOnly(timeStr: string): string {
@@ -424,17 +608,6 @@ export class ChannelTileComponent implements OnInit, OnDestroy, AfterViewInit, O
       return parts[parts.length - 1].trim();
     }
     return timeStr.trim();
-  }
-
-  getEpgProgress(): number {
-    if (!this.nowPlayingEpg?.start_timestamp) return 0;
-    const nowSec = Math.floor(Date.now() / 1000);
-    const start = this.nowPlayingEpg.start_timestamp;
-    if (nowSec <= start) return 0;
-    const defaultEnd = start + 3600;
-    const elapsed = nowSec - start;
-    const total = defaultEnd - start;
-    return Math.min(100, Math.max(5, Math.round((elapsed / total) * 100)));
   }
 
   getCleanTitle(): string {

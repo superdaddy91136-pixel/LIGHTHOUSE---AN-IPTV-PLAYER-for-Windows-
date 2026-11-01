@@ -429,7 +429,7 @@
             <span class="search-group-badge">{{ searchResults.movies.length }}</span>
           </div>
           <div #searchRowMovies class="search-row-track" appDragScroll (scroll)="onSearchRowScroll('movies', $event)">
-            <app-channel-tile *ngFor="let movie of searchResults.movies; let i = index"
+            <app-channel-tile *ngFor="let movie of searchResults.movies; let i = index; trackBy: trackChannelById"
               class="search-card-item" [id]="i + 1000" [channel]="movie" [viewMode]="viewModeEnum.All"></app-channel-tile>
           </div>
         </div>
@@ -441,7 +441,7 @@
             <span class="search-group-badge">{{ searchResults.tvShows.length }}</span>
           </div>
           <div #searchRowTvShows class="search-row-track" appDragScroll (scroll)="onSearchRowScroll('tvShows', $event)">
-            <app-channel-tile *ngFor="let show of searchResults.tvShows; let i = index"
+            <app-channel-tile *ngFor="let show of searchResults.tvShows; let i = index; trackBy: trackChannelById"
               class="search-card-item" [id]="i + 2000" [channel]="show" [viewMode]="viewModeEnum.All"></app-channel-tile>
           </div>
         </div>
@@ -453,7 +453,7 @@
             <span class="search-group-badge">{{ searchResults.channels.length }}</span>
           </div>
           <div #searchRowChannels class="search-row-track" appDragScroll (scroll)="onSearchRowScroll('channels', $event)">
-            <app-channel-tile *ngFor="let channel of searchResults.channels; let i = index"
+            <app-channel-tile *ngFor="let channel of searchResults.channels; let i = index; trackBy: trackChannelById"
               class="search-card-item" [id]="i" [channel]="channel" [viewMode]="viewModeEnum.All" [isLiveTvCard]="true"></app-channel-tile>
           </div>
         </div>
@@ -465,7 +465,7 @@
             <span class="search-group-badge">{{ searchResults.categories.length }}</span>
           </div>
           <div #searchRowCategories class="search-row-track" appDragScroll (scroll)="onSearchRowScroll('categories', $event)">
-            <app-channel-tile *ngFor="let group of searchResults.categories; let i = index"
+            <app-channel-tile *ngFor="let group of searchResults.categories; let i = index; trackBy: trackChannelById"
               class="search-card-item" [id]="i + 3000" [channel]="group" [viewMode]="viewModeEnum.Categories" [isLiveTvCard]="isLiveTvSearch"></app-channel-tile>
           </div>
         </div>
@@ -510,14 +510,14 @@
           <span class="pinned-count-badge">{{ currentPinnedItems.length }}</span>
         </div>
         <div class="row g-2 g-md-3">
-          <app-channel-tile *ngFor="let item of currentPinnedItems; let i = index"
+          <app-channel-tile *ngFor="let item of currentPinnedItems; let i = index; trackBy: trackPinnedChannelById"
             [class]="isCardGridMode ? 'col-compact-card' : 'col-lg-4 col-md-4'" [id]="i + 50000" [channel]="item" [viewMode]="viewType">
           </app-channel-tile>
         </div>
       </div>
 
       <div class="row g-2 g-md-3" [@fade]="channelsVisible ? 'visible' : 'hidden'">
-        <app-channel-tile [attr.id]="i == 0 ? 'first' : null" *ngFor="let channel of regularChannels; let i = index"
+        <app-channel-tile [attr.id]="i == 0 ? 'first' : null" *ngFor="let channel of regularChannels; let i = index; trackBy: trackChannelById"
           [class]="isCardGridMode ? 'col-compact-card' : 'col-lg-4 col-md-4'" [id]="i" [channel]="channel" [viewMode]="viewType"></app-channel-tile>
       </div>
 
@@ -570,7 +570,7 @@
           </div>
         </div>
 
-        <!-- Top Nav Items: Favorites (Fixed Above Categories) -->
+        <!-- Top Nav Items: Favorites & All Channels (Fixed Above Categories) -->
         <div class="live-sidebar-nav-group">
           <button 
             type="button" 
@@ -581,6 +581,16 @@
               <path d="M12,21.35L10.55,20.03C5.4,15.36 2,12.27 2,8.5C2,5.41 4.42,3 7.5,3C9.24,3 10.91,3.81 12,5.08C13.09,3.81 14.76,3 16.5,3C19.58,3 22,5.41 22,8.5C22,12.27 18.6,15.36 13.45,20.03L12,21.35Z"/>
             </svg>
             <span class="sidebar-item-label">Favorites</span>
+          </button>
+          <button 
+            type="button" 
+            class="live-sidebar-nav-item" 
+            [class.active]="liveSidebarSelection?.type === 'all'"
+            (click)="selectLiveSidebarAll()">
+            <svg viewBox="0 0 24 24" fill="currentColor" class="sidebar-item-icon">
+              <path d="M4,6H20V8H4V6M4,11H20V13H4V11M4,16H20V18H4V16Z"/>
+            </svg>
+            <span class="sidebar-item-label">All Channels</span>
           </button>
         </div>
 
@@ -749,7 +759,7 @@
       </aside>
 
       <!-- RIGHT COLUMN: CHANNEL CONTENT (~75%) -->
-      <main class="live-tv-content" #liveTvContent (scroll)="onLiveContentScroll($event)" aria-label="Channel content">
+      <main class="live-tv-content" #liveTvContent aria-label="Channel content">
         <!-- NORMAL CHANNEL BROWSING IN RIGHT COLUMN -->
         <ng-container *ngIf="liveSidebarSelection">
           <!-- Content Header: Title and Channel Count -->
@@ -773,7 +783,7 @@
             </div>
             <div class="row g-2 g-md-3">
               <app-channel-tile 
-                *ngFor="let item of liveContentPinnedItems; let i = index"
+                *ngFor="let item of liveContentPinnedItems; let i = index; trackBy: trackPinnedChannelById"
                 class="col-compact-card" 
                 [id]="i + 50000" 
                 [channel]="item" 
@@ -787,7 +797,7 @@
           <div class="row g-2 g-md-3" [@fade]="channelsVisible ? 'visible' : 'hidden'">
             <app-channel-tile 
               [attr.id]="i == 0 ? 'first' : null" 
-              *ngFor="let channel of regularChannels; let i = index"
+              *ngFor="let channel of renderedRegularChannels; let i = index; trackBy: trackChannelById"
               class="col-compact-card" 
               [id]="i" 
               [channel]="channel" 

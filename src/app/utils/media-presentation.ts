@@ -100,12 +100,28 @@ export function stripProviderPrefixes(str?: string): string {
   return s.trim();
 }
 
+const EXTRACT_YEAR_CACHE = new Map<string, string | undefined>();
+const MAX_EXTRACT_YEAR_CACHE = 4000;
+
 /**
  * Extracts a 4-digit release year (1900-2099) from bracketed tags or scene filenames.
  * Protects legitimate titles that begin with years (e.g. "1917", "2001: A Space Odyssey").
  */
 export function extractYear(rawTitle?: string): string | undefined {
   if (!rawTitle) return undefined;
+  const cached = EXTRACT_YEAR_CACHE.get(rawTitle);
+  if (cached !== undefined) return cached;
+
+  const result = computeExtractYear(rawTitle);
+  if (EXTRACT_YEAR_CACHE.size >= MAX_EXTRACT_YEAR_CACHE) {
+    const oldestKey = EXTRACT_YEAR_CACHE.keys().next().value;
+    if (oldestKey !== undefined) EXTRACT_YEAR_CACHE.delete(oldestKey);
+  }
+  EXTRACT_YEAR_CACHE.set(rawTitle, result);
+  return result;
+}
+
+function computeExtractYear(rawTitle: string): string | undefined {
   // 1. Bracketed/parenthesized year: e.g. (2014), [2014]
   const bracketMatch = rawTitle.match(/[\(\[]\s*(19\d\d|20\d\d)\s*[\)\]]/);
   if (bracketMatch) return bracketMatch[1];
@@ -139,6 +155,9 @@ export function extractQuality(rawTitle?: string): string | undefined {
   return undefined;
 }
 
+const CLEAN_TITLE_CACHE = new Map<string, string>();
+const MAX_CLEAN_TITLE_CACHE = 4000;
+
 /**
  * Normalizes and cleans raw IPTV/VOD channel and movie titles for presentation.
  * Removes provider prefixes, repeated symbols, language tags, technical codes,
@@ -150,7 +169,19 @@ export function extractQuality(rawTitle?: string): string | undefined {
  */
 export function cleanMediaTitle(raw?: string): string {
   if (!raw) return 'Untitled';
+  const cached = CLEAN_TITLE_CACHE.get(raw);
+  if (cached !== undefined) return cached;
 
+  const result = computeCleanMediaTitle(raw);
+  if (CLEAN_TITLE_CACHE.size >= MAX_CLEAN_TITLE_CACHE) {
+    const oldestKey = CLEAN_TITLE_CACHE.keys().next().value;
+    if (oldestKey !== undefined) CLEAN_TITLE_CACHE.delete(oldestKey);
+  }
+  CLEAN_TITLE_CACHE.set(raw, result);
+  return result;
+}
+
+function computeCleanMediaTitle(raw: string): string {
   let title = raw.trim();
 
   // 1. Strip folder paths if any

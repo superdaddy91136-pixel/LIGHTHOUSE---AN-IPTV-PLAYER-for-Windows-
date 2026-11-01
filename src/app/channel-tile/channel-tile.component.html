@@ -1,27 +1,27 @@
 <!-- TRADITIONAL CHANNEL ROW (Live TV & Settings) -->
-<ng-container *ngIf="!isCardMode()">
+<ng-container *ngIf="!isCard">
   <div id="tile-{{ id }}" placement="top" tabindex="0" (keyup.enter)="click()" [ngClass]="{
       playing: starting,
       faded: fade,
-      'group-tile': isGroup()
+      'group-tile': isGroupTile
   }" [ngbTooltip]="channel?.name" triggers="hover" (click)="click()" class="channel d-inline-flex p-2 align-items-center"
     (contextmenu)="onRightClick($event)">
     <div class="image-container me-2">
-      <img (error)="showImage = false" class="channel-image" *ngIf="channel?.image && showImage"
-        src="{{ channel?.image }}" />
-      <svg *ngIf="isGroup() && (!channel?.image || !showImage)" class="folder-tile-icon" viewBox="0 0 24 24" fill="currentColor">
+      <img (error)="onError($event)" class="channel-image" *ngIf="channel?.image && showImage"
+        [src]="channel?.image" loading="lazy" decoding="async" />
+      <svg *ngIf="isGroupTile && (!channel?.image || !showImage)" class="folder-tile-icon" viewBox="0 0 24 24" fill="currentColor">
         <path d="M10,4H4C2.89,4 2,4.89 2,6V18A2,2 0 0,0 4,20H20A2,2 0 0,0 22,18V8C22,6.89 21.1,6 20,6H12L10,4Z" />
       </svg>
     </div>
     <div class="channel-title-container d-flex flex-column justify-content-center">
       <div class="channel-title">{{ channel?.name }}</div>
-      <div class="channel-source" *ngIf="getSourceName()">{{ getSourceName() }}</div>
+      <div class="channel-source" *ngIf="sourceName">{{ sourceName }}</div>
     </div>
     <div class="ms-auto d-flex flex-column justify-content-center align-items-center h-100">
-      <svg *ngIf="isGroup()" class="chevron-tile-icon" viewBox="0 0 24 24" fill="currentColor">
+      <svg *ngIf="isGroupTile" class="chevron-tile-icon" viewBox="0 0 24 24" fill="currentColor">
         <path d="M8.59,16.58L13.17,12L8.59,7.41L10,6L16,12L10,18L8.59,16.58Z" />
       </svg>
-      <svg *ngIf="!isGroup() && channel?.tv_archive === true" fill="currentColor" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"
+      <svg *ngIf="!isGroupTile && channel?.tv_archive === true" fill="currentColor" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"
         class="archive-icon">
         <title>archive-clock</title>
         <path
@@ -31,11 +31,11 @@
       <button *ngIf="viewMode === viewModeEnum.Hidden" type="button" class="btn-unhide-row"
         (click)="unhideItem($event)" title="Unhide / Remove from Hidden">
         <svg viewBox="0 0 24 24" fill="currentColor">
-          <path d="M12,4.5C7,4.5 2.73,7.61 1,12C2.73,16.39 7,19.5 12,19.5C17,19.5 21.27,16.39 23,12C21.27,7.61 17,4.5 12,4.5M12,17A5,5 0 0,1 7,12A5,5 0 0,1 12,7A5,5 0 0,1 17,12A5,5 0 0,1 12,17M12,9A3,3 0 0,0 9,12A3,3 0 0,0 12,15A3,3 0 0,0 15,12A3,3 0 0,0 12,9Z" />
+          <path d="M12,4.5C7,4.5 2.73,7.61 1,12C2.73,16.39 7,19.5 12,19.5C17,19.5 21.27,16.39 23,12C21.27,7.61 17,4.5 12,4.5M12,17A5,5 0 0,1 7,12A5,5 0 0,1 12,7A5,5 0 0,1 17,12A5,5 0 0,1 12,17M12,9A3,3 0 0,0 9,12A3,3 0 0,0 12,15A3,3 0 0,0 15,12A3,3 0 0,0 15,12A3,3 0 0,0 12,9Z" />
         </svg>
         <span>Unhide</span>
       </button>
-      <svg *ngIf="!isGroup() && channel?.favorite && viewMode !== viewModeEnum.Hidden" fill="currentColor" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"
+      <svg *ngIf="!isGroupTile && channel?.favorite && viewMode !== viewModeEnum.Hidden" fill="currentColor" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"
         class="favorite-icon">
         <title>favorite</title>
         <path d="M12,21.35L10.55,20.03C5.4,15.36 2,12.27 2,8.5C2,5.41 4.42,3 7.5,3C9.24,3 10.91,3.81 12,5.08C13.09,3.81 14.76,3 16.5,3C19.58,3 22,5.41 22,8.5C22,12.27 18.6,15.36 13.45,20.03L12,21.35Z" />
@@ -45,24 +45,24 @@
 </ng-container>
 
 <!-- MODERN LIGHTHOUSE POSTER & CATEGORY CARDS (Movies, TV Shows & Favorites) -->
-<ng-container *ngIf="isCardMode()">
+<ng-container *ngIf="isCard">
   <div id="tile-{{ id }}" tabindex="0" (keyup.enter)="click()" [ngClass]="{
       playing: starting,
       faded: fade,
-      'lh-category-card': isGroup(),
-      'lh-media-card': !isGroup()
+      'lh-category-card': isGroupTile,
+      'lh-media-card': !isGroupTile
     }" (click)="click()" class="lh-card" (contextmenu)="onRightClick($event)"
     [attr.title]="channel?.name || ''">
 
     <!-- Poster / Artwork Container (2:3 Aspect Ratio for Movies/Series, 16:10 Landscape for Live TV) -->
-    <div class="poster-container" [class.folder-poster]="isGroup() && (!channel?.image || !showImage)" [class.live-poster]="isLiveTv() || isLivestream()">
+    <div class="poster-container" [class.folder-poster]="isGroupTile && (!channel?.image || !showImage)" [class.live-poster]="isLiveTvMode || isLivestreamChannel">
       
       <!-- Image Artwork -->
-      <img *ngIf="channel?.image && showImage" (error)="showImage = false" class="poster-img"
-        [src]="channel?.image" [alt]="getCleanTitle()" loading="lazy" />
+      <img *ngIf="channel?.image && showImage" (error)="onError($event)" class="poster-img"
+        [src]="channel?.image" [alt]="cleanTitle" loading="lazy" decoding="async" />
 
       <!-- Fallback Artwork: Category / Folder -->
-      <div *ngIf="isGroup() && (!channel?.image || !showImage)" class="folder-fallback">
+      <div *ngIf="isGroupTile && (!channel?.image || !showImage)" class="folder-fallback">
         <div class="folder-icon-circle">
           <svg class="folder-icon-svg" viewBox="0 0 24 24" fill="currentColor">
             <path d="M10,4H4C2.89,4 2,4.89 2,6V18A2,2 0 0,0 4,20H20A2,2 0 0,0 22,18V8C22,6.89 21.1,6 20,6H12L10,4Z" />
@@ -72,20 +72,20 @@
       </div>
 
       <!-- Fallback Artwork: Movie / Series / Live -->
-      <div *ngIf="!isGroup() && (!channel?.image || !showImage)" class="poster-fallback">
+      <div *ngIf="!isGroupTile && (!channel?.image || !showImage)" class="poster-fallback">
         <svg class="fallback-icon mb-2" viewBox="0 0 24 24" fill="currentColor">
-          <path *ngIf="isTvShow()" d="M21,3H3C1.89,3 1,3.89 1,5V17A2,2 0 0,0 3,19H8V21H16V19H21A2,2 0 0,0 23,17V5C23,3.89 22.1,3 21,3M21,17H3V5H21V17Z" />
-          <path *ngIf="!isTvShow()" d="M18,4L20,8H17L15,4H13L15,8H12L10,4H8L10,8H7L5,4H4A2,2 0 0,0 2,6V18A2,2 0 0,0 4,20H20A2,2 0 0,0 22,18V4H18Z" />
+          <path *ngIf="isSeriesTile" d="M21,3H3C1.89,3 1,3.89 1,5V17A2,2 0 0,0 3,19H8V21H16V19H21A2,2 0 0,0 23,17V5C23,3.89 22.1,3 21,3M21,17H3V5H21V17Z" />
+          <path *ngIf="!isSeriesTile" d="M18,4L20,8H17L15,4H13L15,8H12L10,4H8L10,8H7L5,4H4A2,2 0 0,0 2,6V18A2,2 0 0,0 4,20H20A2,2 0 0,0 22,18V4H18Z" />
         </svg>
-        <span class="fallback-title">{{ getCleanTitle() }}</span>
+        <span class="fallback-title">{{ cleanTitle }}</span>
       </div>
 
       <!-- Favorite Heart Toggle Button -->
-      <button *ngIf="!isGroup() && viewMode !== viewModeEnum.Hidden && viewMode !== viewModeEnum.Favorites" type="button" class="card-fav-btn" [class.favorited]="channel?.favorite"
+      <button *ngIf="!isGroupTile && viewMode !== viewModeEnum.Hidden && viewMode !== viewModeEnum.Favorites" type="button" class="card-fav-btn" [class.favorited]="channel?.favorite"
         (click)="toggleFavorite($event)" [title]="channel?.favorite ? 'Remove from favorites' : 'Add to favorites'">
         <svg viewBox="0 0 24 24" fill="currentColor">
           <path *ngIf="!channel?.favorite" d="M12.1,18.55L12,18.65L11.89,18.55C7.14,14.24 4,11.39 4,8.5C4,6.5 5.5,5 7.5,5C9.04,5 10.54,6 11.07,7.36H12.93C13.46,6 14.96,5 16.5,5C18.5,5 20,6.5 20,8.5C20,11.39 16.86,14.24 12.1,18.55M16.5,3C14.76,3 13.09,3.81 12,5.08C10.91,3.81 9.24,3 7.5,3C4.42,3 2,5.41 2,8.5C2,12.27 5.4,15.36 10.55,20.03L12,21.35L13.45,20.03C18.6,15.36 22,12.27 22,8.5C22,5.41 19.58,3 16.5,3Z" />
-          <path *ngIf="channel?.favorite" d="M12,21.35L10.55,20.03C5.4,15.36 2,12.27 2,8.5C2,5.41 4.42,3 7.5,3C9.24,3 10.91,3.81 12,5.08C13.09,3.81 14.76,3 16.5,3C19.58,3 22,5.41 22,8.5C22,12.27 18.6,15.36 13.45,20.03L12,21.35L13.45,20.03C18.6,15.36 22,12.27 22,8.5C22,5.41 19.58,3 16.5,3Z" />
+          <path *ngIf="channel?.favorite" d="M12,21.35L10.55,20.03C5.4,15.36 2,12.27 2,8.5C2,5.41 4.42,3 7.5,3C9.24,3 10.91,3.81 12,5.08C10.91,3.81 12,5.08C13.09,3.81 14.76,3 16.5,3C19.58,3 22,5.41 22,8.5C22,12.27 18.6,15.36 13.45,20.03L12,21.35L13.45,20.03C18.6,15.36 22,12.27 22,8.5C22,5.41 19.58,3 16.5,3Z" />
         </svg>
       </button>
 
@@ -93,13 +93,13 @@
       <button *ngIf="viewMode === viewModeEnum.Hidden" type="button" class="card-unhide-btn"
         (click)="unhideItem($event)" title="Unhide / Remove from Hidden">
         <svg viewBox="0 0 24 24" fill="currentColor">
-          <path d="M12,4.5C7,4.5 2.73,7.61 1,12C2.73,16.39 7,19.5 12,19.5C17,19.5 21.27,16.39 23,12C21.27,7.61 17,4.5 12,4.5M12,17A5,5 0 0,1 7,12A5,5 0 0,1 12,7A5,5 0 0,1 17,12A5,5 0 0,1 12,17M12,9A3,3 0 0,0 9,12A3,3 0 0,0 12,15A3,3 0 0,0 15,12A3,3 0 0,0 12,9Z" />
+          <path d="M12,4.5C7,4.5 2.73,7.61 1,12C2.73,16.39 7,19.5 12,19.5C17,19.5 21.27,16.39 23,12C21.27,7.61 17,4.5 12,4.5M12,17A5,5 0 0,1 7,12A5,5 0 0,1 12,7A5,5 0 0,1 17,12A5,5 0 0,1 12,17M12,9A3,3 0 0,0 9,12A3,3 0 0,0 12,15A3,3 0 0,0 15,12A3,3 0 0,0 15,12A3,3 0 0,0 12,9Z" />
         </svg>
         <span>Unhide</span>
       </button>
 
       <!-- TV Archive Badge -->
-      <div *ngIf="!isGroup() && channel?.tv_archive === true" class="card-archive-badge" title="TV Archive available">
+      <div *ngIf="!isGroupTile && channel?.tv_archive === true" class="card-archive-badge" title="TV Archive available">
         <svg viewBox="0 0 24 24" fill="currentColor">
           <path d="M20 6H2V2H20V6M16.5 12H15V17L18.61 19.16L19.36 17.94L16.5 16.25V12M23 16C23 19.87 19.87 23 16 23C13.62 23 11.53 21.81 10.26 20H3V7H19V9.68C21.36 10.81 23 13.21 23 16M8 12H10.26C10.83 11.19 11.56 10.5 12.41 10H8.5C8.22 10 8 10.22 8 10.5V12M21 16C21 13.24 18.76 11 16 11S11 13.24 11 16 13.24 21 16 21 21 18.76 21 16Z" />
         </svg>
@@ -107,15 +107,15 @@
 
       <!-- Hover Overlay -->
       <div class="card-hover-overlay">
-        <button type="button" class="hover-play-circle" [class.folder-hover-circle]="isGroup()"
-          (click)="onPlayClick($event)" [disabled]="starting" [attr.aria-label]="isGroup() ? 'Open folder' : (starting ? 'Starting playback' : 'Play')" [title]="isGroup() ? 'Open' : (starting ? 'Starting playback...' : 'Play')">
-          <svg *ngIf="!isGroup() && !starting" viewBox="0 0 24 24" fill="currentColor">
+        <button type="button" class="hover-play-circle" [class.folder-hover-circle]="isGroupTile"
+          (click)="onPlayClick($event)" [disabled]="starting" [attr.aria-label]="isGroupTile ? 'Open folder' : (starting ? 'Starting playback' : 'Play')" [title]="isGroupTile ? 'Open' : (starting ? 'Starting playback...' : 'Play')">
+          <svg *ngIf="!isGroupTile && !starting" viewBox="0 0 24 24" fill="currentColor">
             <path d="M8,5.14V19.14L19,12.14L8,5.14Z" />
           </svg>
-          <svg *ngIf="!isGroup() && starting" class="play-loading-icon" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+          <svg *ngIf="!isGroupTile && starting" class="play-loading-icon" viewBox="0 0 24 24" fill="none" aria-hidden="true">
             <circle cx="12" cy="12" r="8" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-dasharray="30 20" />
           </svg>
-          <svg *ngIf="isGroup()" viewBox="0 0 24 24" fill="currentColor">
+          <svg *ngIf="isGroupTile" viewBox="0 0 24 24" fill="currentColor">
             <path d="M8.59,16.58L13.17,12L8.59,7.41L10,6L16,12L10,18L8.59,16.58Z" />
           </svg>
         </button>
@@ -124,13 +124,13 @@
 
     <!-- Card Info -->
     <div class="card-info">
-      <h5 class="card-title text-truncate" [title]="channel?.name || ''">{{ getCleanTitle() }}</h5>
+      <h5 class="card-title text-truncate" [title]="channel?.name || ''">{{ cleanTitle }}</h5>
       <div class="card-meta-line d-flex align-items-center justify-content-between">
-        <span class="meta-source text-truncate" *ngIf="getSourceName()">{{ getSourceName() }}</span>
-        <span class="meta-type-tag" *ngIf="isGroup()">Category</span>
-        <span class="meta-type-tag" *ngIf="!isGroup() && isTvShow()">Series</span>
-        <span class="meta-type-tag" *ngIf="!isGroup() && isMovie()">Movie</span>
-        <span class="meta-type-tag live-tag" *ngIf="!isGroup() && (isLivestream() || isLiveTv())">Live</span>
+        <span class="meta-source text-truncate" *ngIf="sourceName">{{ sourceName }}</span>
+        <span class="meta-type-tag" *ngIf="isGroupTile">Category</span>
+        <span class="meta-type-tag" *ngIf="!isGroupTile && isSeriesTile">Series</span>
+        <span class="meta-type-tag" *ngIf="!isGroupTile && isMovieTile">Movie</span>
+        <span class="meta-type-tag live-tag" *ngIf="!isGroupTile && (isLivestreamChannel || isLiveTvMode)">Live</span>
       </div>
 
       <!-- Integrated Currently Playing EPG Section -->
@@ -138,13 +138,13 @@
         <div class="card-epg-header">
           <span class="card-epg-live-dot"></span>
           <span class="card-epg-badge">LIVE NOW</span>
-          <span class="card-epg-time ms-auto" *ngIf="getEpgTimeDisplay()">{{ getEpgTimeDisplay() }}</span>
+          <span class="card-epg-time ms-auto" *ngIf="epgTimeDisplay">{{ epgTimeDisplay }}</span>
         </div>
         <div class="card-epg-title text-truncate" [title]="nowPlayingEpg.title">
           {{ nowPlayingEpg.title }}
         </div>
         <div class="card-epg-progress-bar">
-          <div class="card-epg-progress-fill" [style.width.%]="getEpgProgress()"></div>
+          <div class="card-epg-progress-fill" [style.width.%]="epgProgress"></div>
         </div>
       </div>
     </div>

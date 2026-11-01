@@ -1,9 +1,11 @@
 import {
   AfterViewInit,
+  ChangeDetectionStrategy,
   ChangeDetectorRef,
   Component,
   ElementRef,
   HostListener,
+  NgZone,
   OnDestroy,
   ViewChild,
 } from "@angular/core";
@@ -18,6 +20,7 @@ import {
   fromEvent,
   map,
   skip,
+  takeUntil,
 } from "rxjs";
 import { MemoryService } from "../memory.service";
 import { Channel } from "../models/channel";
@@ -51,6 +54,7 @@ import {
   isEpisodicOrTvContent,
 } from '../utils/media-presentation';
 import { ChannelSwitcherComponent } from '../channel-switcher/channel-switcher.component';
+import { EpgQueueManager } from '../channel-tile/channel-tile.component';
 import { PinService } from '../services/pin.service';
 import { EmbeddedPlayerService } from '../services/embedded-player.service';
 import { MovieDetailService } from '../services/movie-detail.service';
@@ -65,6 +69,7 @@ export interface CategoryOption {
   sourceName?: string;
   channelCount?: number;
   cleanName?: string;
+  cleanNameLower?: string;
   isPinned?: boolean;
 }
 
@@ -84,6 +89,7 @@ export { UniversalSearchResults, TabSearchState };
   selector: "app-home",
   templateUrl: "./home.component.html",
   styleUrl: "./home.component.css",
+  changeDetection: ChangeDetectionStrategy.OnPush,
   animations: [
     trigger("fadeInOut", [
       transition(":enter", [
@@ -171,13 +177,22 @@ export class HomeComponent implements AfterViewInit, OnDestroy {
   @ViewChild('filterSortWrapper') filterSortWrapper?: ElementRef;
   @ViewChild('liveFolderFilterWrapper') liveFolderFilterWrapper?: ElementRef;
   @ViewChild('liveSearchInput') liveSearchInput?: ElementRef;
-  @ViewChild('liveTvContent') liveTvContent?: ElementRef<HTMLElement>;
+  @ViewChild('liveTvContent') set liveTvContentRef(ref: ElementRef<HTMLElement> | undefined) {
+    if (ref) {
+      this.liveTvContent = ref;
+      this.setupLiveContentScroll();
+    } else {
+      this.liveScrollSub?.unsubscribe();
+      this.liveTvContent = undefined;
+    }
+  }
+  liveTvContent?: ElementRef<HTMLElement>;
   liveFolderSort: LiveFolderSort = 'default';
   liveFolderSearchQuery = '';
   isFolderFilterMenuOpen = false;
   liveSearchSubject = new Subject<string>();
   liveSidebarSelection: {
-    type: 'favorites' | 'category';
+    type: 'favorites' | 'category' | 'all';
     id?: number;
     name?: string;
     sourceId?: number;
@@ -199,14 +214,33 @@ export class HomeComponent implements AfterViewInit, OnDestroy {
   }
 
   currentPinnedItems: Channel[] = [];
+  regularChannels: Channel[] = [];
+  renderedRegularChannels: Channel[] = [];
+  liveContentPinnedItems: Channel[] = [];
+  private renderLimit: number = 48;
+  private destroy$ = new Subject<void>();
+  private liveScrollSub?: Subscription;
 
-  get regularChannels(): Channel[] {
+  updateRegularChannels(preserveLimit = false): void {
     let list = this.channels;
     if (this.currentPinnedItems.length > 0) {
       const pinnedIds = new Set(this.currentPinnedItems.map((p) => p.id));
       list = list.filter((c) => c.id != null && !pinnedIds.has(c.id));
     }
-    return this.applySortToChannels(list);
+    this.regularChannels = this.applySortToChannels(list);
+    if (!preserveLimit) {
+      this.renderLimit = 48;
+    }
+    this.renderedRegularChannels = this.regularChannels.slice(0, this.renderLimit);
+    this.cdr.markForCheck();
+  }
+
+  trackChannelById(_index: number, channel: Channel): number | string {
+    return channel.id ?? channel.name ?? _index;
+  }
+
+  trackPinnedChannelById(_index: number, channel: Channel): number | string {
+    return `pin_${channel.id ?? channel.name ?? _index}`;
   }
 
   get totalSearchResultsCount(): number {
@@ -436,6 +470,9 @@ export class HomeComponent implements AfterViewInit, OnDestroy {
     if (this.liveSidebarSelection.type === 'favorites') {
       return 'Favorites';
     }
+    if (this.liveSidebarSelection.type === 'all') {
+      return 'All Channels';
+    }
     if (this.liveSidebarSelection.type === 'category') {
       return cleanMediaTitle(this.liveSidebarSelection.name || 'Category');
     }
@@ -449,21 +486,13 @@ export class HomeComponent implements AfterViewInit, OnDestroy {
     if (this.liveSidebarSelection.type === 'favorites') {
       return 'No favorite channels yet. Click the heart on any channel to favorite it.';
     }
+    if (this.liveSidebarSelection.type === 'all') {
+      return 'No channels found.';
+    }
     if (this.liveSidebarSelection.type === 'category') {
       return `No channels found in ${cleanMediaTitle(this.liveSidebarSelection.name || 'this folder')}.`;
     }
     return 'No channels found.';
-  }
-
-  get liveContentPinnedItems(): Channel[] {
-    if (!this.liveSidebarSelection) {
-      return [];
-    }
-    const items = this.currentPinnedItems.filter((item) => item.media_type !== MediaType.group);
-    if (this.liveSidebarSelection.type === 'favorites') {
-      return items.filter((item) => item.favorite);
-    }
-    return items;
   }
 
   get hasActiveFolderSort(): boolean {
@@ -597,6 +626,7 @@ export class HomeComponent implements AfterViewInit, OnDestroy {
   }
 
   selectLiveSidebarFavorites(): void {
+    EpgQueueManager.clearQueue();
     this.liveSidebarSelection = { type: 'favorites' };
     this.selectedCategoryId = undefined;
     if (this.filters) {
@@ -614,6 +644,7 @@ export class HomeComponent implements AfterViewInit, OnDestroy {
   }
 
   selectLiveSidebarCategory(cat: CategoryOption): void {
+    EpgQueueManager.clearQueue();
     this.liveSidebarSelection = {
       type: 'category',
       id: cat.id,
@@ -623,6 +654,24 @@ export class HomeComponent implements AfterViewInit, OnDestroy {
     this.selectedCategoryId = cat.id;
     if (this.filters) {
       this.filters.group_id = cat.id;
+      this.filters.view_type = ViewMode.All;
+      this.filters.page = 1;
+    }
+    this.nodeStack.clear();
+    this.saveTabFilterState();
+    this.updatePinnedItems();
+    this.load();
+    if (this.liveTvContent?.nativeElement) {
+      this.liveTvContent.nativeElement.scrollTop = 0;
+    }
+  }
+
+  selectLiveSidebarAll(): void {
+    EpgQueueManager.clearQueue();
+    this.liveSidebarSelection = { type: 'all' };
+    this.selectedCategoryId = undefined;
+    if (this.filters) {
+      this.filters.group_id = undefined;
       this.filters.view_type = ViewMode.All;
       this.filters.page = 1;
     }
@@ -662,16 +711,42 @@ export class HomeComponent implements AfterViewInit, OnDestroy {
     this.cdr.markForCheck();
   }
 
-  async onLiveContentScroll(event: Event): Promise<void> {
-    const el = event.target as HTMLElement;
-    if (!el) return;
-    const scrollHeight = el.scrollHeight;
-    const scrollTop = el.scrollTop;
-    const clientHeight = el.clientHeight;
-    this.showScrollTop = scrollTop > 300;
-    if (this.reachedMax === true || this.loading === true) return;
-    if (scrollTop + clientHeight >= scrollHeight * 0.75) {
-      await this.loadMore();
+  private setupLiveContentScroll(): void {
+    if (!this.liveTvContent?.nativeElement) return;
+    this.liveScrollSub?.unsubscribe();
+    this.ngZone.runOutsideAngular(() => {
+      this.liveScrollSub = fromEvent(this.liveTvContent!.nativeElement, 'scroll')
+        .pipe(takeUntil(this.destroy$))
+        .subscribe((event: any) => {
+          const el = event.target as HTMLElement;
+          if (!el) return;
+          const scrollHeight = el.scrollHeight;
+          const scrollTop = el.scrollTop;
+          const clientHeight = el.clientHeight;
+          const isScrollTop = scrollTop > 300;
+          if (this.showScrollTop !== isScrollTop) {
+            this.ngZone.run(() => {
+              this.showScrollTop = isScrollTop;
+              this.cdr.markForCheck();
+            });
+          }
+          if (this.loading) return;
+          if (scrollTop + clientHeight >= scrollHeight * 0.75) {
+            this.ngZone.run(() => {
+              this.onLiveContentScrolledNearBottom();
+            });
+          }
+        });
+    });
+  }
+
+  onLiveContentScrolledNearBottom(): void {
+    if (this.renderedRegularChannels.length < this.regularChannels.length) {
+      this.renderLimit += 36;
+      this.renderedRegularChannels = this.regularChannels.slice(0, this.renderLimit);
+      this.cdr.markForCheck();
+    } else if (this.reachedMax === false && this.loading === false) {
+      this.loadMore();
     }
   }
 
@@ -855,10 +930,12 @@ export class HomeComponent implements AfterViewInit, OnDestroy {
         if (groups && groups.length > 0) {
           for (const g of groups) {
             if (g.media_type === MediaType.group && g.id != null && g.name) {
+              const clean = cleanMediaTitle(g.name);
               collected.push({
                 id: g.id,
                 name: g.name,
-                cleanName: cleanMediaTitle(g.name),
+                cleanName: clean,
+                cleanNameLower: (clean || g.name).toLowerCase(),
                 sourceId: g.source_id ?? 0,
                 sourceName: g.source_id ? this.memory.Sources.get(g.source_id)?.name : undefined,
                 channelCount: g.stream_id ?? 0,
@@ -878,6 +955,9 @@ export class HomeComponent implements AfterViewInit, OnDestroy {
           } else {
             page++;
             if (page > 30) hasMore = false;
+            else {
+              await new Promise((r) => setTimeout(r, 60));
+            }
           }
         } else {
           hasMore = false;
@@ -924,10 +1004,12 @@ export class HomeComponent implements AfterViewInit, OnDestroy {
           if (groups && groups.length > 0) {
             for (const g of groups) {
               if (g.media_type === MediaType.group && g.id != null && g.name) {
+                const clean = cleanMediaTitle(g.name);
                 collected.push({
                   id: g.id,
                   name: g.name,
-                  cleanName: cleanMediaTitle(g.name),
+                  cleanName: clean,
+                  cleanNameLower: (clean || g.name).toLowerCase(),
                   sourceId: g.source_id ?? 0,
                   sourceName: g.source_id ? this.memory.Sources.get(g.source_id)?.name : undefined,
                   channelCount: g.stream_id ?? 0,
@@ -939,6 +1021,9 @@ export class HomeComponent implements AfterViewInit, OnDestroy {
             } else {
               page++;
               if (page > 30) hasMore = false;
+              else {
+                await new Promise((r) => setTimeout(r, 60));
+              }
             }
           } else {
             hasMore = false;
@@ -1261,6 +1346,7 @@ export class HomeComponent implements AfterViewInit, OnDestroy {
     private versionMatching: VersionMatchingService,
     private ambientBackground: AmbientBackgroundService,
     private cdr: ChangeDetectorRef,
+    private ngZone: NgZone,
   ) {
     const savedFolderSort = localStorage.getItem('lighthouse_live_folder_sort') as LiveFolderSort;
     if (savedFolderSort && ['default', 'name-asc', 'name-desc', 'count-desc', 'count-asc'].includes(savedFolderSort)) {
@@ -1277,14 +1363,20 @@ export class HomeComponent implements AfterViewInit, OnDestroy {
     const tab = this.memory.activeNavTab.value;
     if (tab !== NavTab.LiveTV && tab !== NavTab.Movies && tab !== NavTab.TVShows) {
       this.currentPinnedItems = [];
+      this.liveContentPinnedItems = [];
       return;
     }
     if (tab === NavTab.LiveTV && !this.liveSidebarSelection) {
       this.currentPinnedItems = [];
+      this.liveContentPinnedItems = [];
       return;
     }
     const groupId = this.filters?.group_id;
     this.currentPinnedItems = this.pinService.getPinnedChannelsForTab(tab, groupId);
+    if (tab === NavTab.LiveTV) {
+      this.liveContentPinnedItems = this.applySortToChannels(this.currentPinnedItems);
+      this.updateRegularChannels(true);
+    }
   }
 
   getSources() {
@@ -1828,7 +1920,7 @@ export class HomeComponent implements AfterViewInit, OnDestroy {
       media_types: [...this.filters!.media_types],
     };
     const cacheKey =
-      !more && filters.view_type === ViewMode.All
+      !more && (filters.view_type === ViewMode.All || filters.view_type === ViewMode.Favorites)
         ? JSON.stringify({
             ...filters,
             source_ids: [...filters.source_ids].sort((a, b) => a - b),
@@ -1843,7 +1935,9 @@ export class HomeComponent implements AfterViewInit, OnDestroy {
       this.viewType = filters.view_type;
       this.loading = false;
       this.updatePinnedItems();
+      this.updateRegularChannels(false);
       this.cdr.markForCheck();
+      return;
     }
 
     try {
@@ -1862,14 +1956,16 @@ export class HomeComponent implements AfterViewInit, OnDestroy {
       }
       this.reachedMax = channels.length < this.PAGE_SIZE;
       if (cacheKey) {
-        this.memory.setCatalogPage(cacheKey, channels, this.reachedMax);
+        this.memory.setCatalogPage(cacheKey, this.channels, this.reachedMax);
       }
     } catch (e) {
       if (requestId === this.catalogLoadRequestId) this.error.handleError(e);
     } finally {
       if (requestId === this.catalogLoadRequestId) {
         this.updatePinnedItems();
+        this.updateRegularChannels(more);
         this.loading = false;
+        this.cdr.markForCheck();
       }
     }
   }
@@ -2118,11 +2214,21 @@ export class HomeComponent implements AfterViewInit, OnDestroy {
         this.filters.view_type = ViewMode.All;
         break;
     }
-    if (isCatalog) {
-      this.loadAvailableCategories();
-    }
-    if (tab !== NavTab.Home) {
+    EpgQueueManager.clearQueue();
+    if (tab === NavTab.LiveTV) {
       this.load();
+      setTimeout(() => {
+        if (this.memory.activeNavTab.value === NavTab.LiveTV) {
+          this.loadAvailableCategories();
+        }
+      }, 150);
+    } else {
+      if (isCatalog) {
+        this.loadAvailableCategories();
+      }
+      if (tab !== NavTab.Home) {
+        this.load();
+      }
     }
     window.scrollTo({ top: 0, behavior: "instant" });
   }
@@ -2475,6 +2581,10 @@ export class HomeComponent implements AfterViewInit, OnDestroy {
   }
 
   ngOnDestroy() {
+    this.destroy$.next();
+    this.destroy$.complete();
+    this.liveScrollSub?.unsubscribe();
+    EpgQueueManager.clearQueue();
     this.saveOriginatingScrollPosition();
     if (this.embeddedPlayer.isPlayingEmbedded) {
       this.embeddedPlayer.stopPlayer().catch(console.warn);

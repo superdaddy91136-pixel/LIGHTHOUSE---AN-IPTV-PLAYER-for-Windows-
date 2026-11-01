@@ -245,6 +245,14 @@ fn apply_migrations() -> Result<()> {
               ON channels(favorite, favorite_added DESC);
             "#,
         ),
+        M::up(
+            r#"
+              CREATE INDEX IF NOT EXISTS index_channels_group_hidden
+              ON channels(group_id, hidden);
+              CREATE INDEX IF NOT EXISTS index_channels_fav_media_hidden
+              ON channels(favorite, media_type, hidden);
+            "#,
+        ),
     ]);
     migrations.to_latest(&mut sql)?;
     Ok(())
