@@ -21,7 +21,10 @@ use std::{
     env::{consts::OS, current_exe},
     fs::File,
     path::{Path, PathBuf},
-    sync::LazyLock,
+    sync::{
+        LazyLock,
+        atomic::{AtomicBool, Ordering},
+    },
 };
 use tauri::{AppHandle, Emitter, State};
 use tokio::io::AsyncWriteExt;
@@ -39,6 +42,25 @@ const DEFAULT_USER_AGENT: &str = "Fred TV";
 
 static ILLEGAL_CHARS_REGEX: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r#"[<>:"/\\|?*\x00-\x1F]"#).unwrap());
+
+static SOURCE_REFRESH_ACTIVE: AtomicBool = AtomicBool::new(false);
+
+struct SourceRefreshGuard;
+
+impl SourceRefreshGuard {
+    fn acquire() -> Result<Self> {
+        SOURCE_REFRESH_ACTIVE
+            .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
+            .map_err(|_| anyhow!("A source refresh is already in progress"))?;
+        Ok(Self)
+    }
+}
+
+impl Drop for SourceRefreshGuard {
+    fn drop(&mut self) {
+        SOURCE_REFRESH_ACTIVE.store(false, Ordering::Release);
+    }
+}
 
 pub fn emit_source_refresh_progress(
     app: Option<&AppHandle>,
@@ -68,6 +90,11 @@ pub fn emit_source_refresh_progress(
 }
 
 pub async fn refresh_source(app: &AppHandle, source: Source) -> Result<()> {
+    let _guard = SourceRefreshGuard::acquire()?;
+    refresh_source_unlocked(app, source).await
+}
+
+async fn refresh_source_unlocked(app: &AppHandle, source: Source) -> Result<()> {
     let id = source.id.unwrap_or(0);
     emit_source_refresh_progress(
         Some(app),
@@ -124,9 +151,21 @@ pub async fn refresh_source(app: &AppHandle, source: Source) -> Result<()> {
 }
 
 pub async fn refresh_all(app: &AppHandle) -> Result<()> {
+    let _guard = SourceRefreshGuard::acquire()?;
     let sources = sql::get_sources()?;
+    let mut failures = Vec::new();
     for source in sources {
-        refresh_source(app, source).await?;
+        let source_name = source.name.clone();
+        if let Err(error) = refresh_source_unlocked(app, source).await {
+            failures.push(format!("{source_name}: {error:#}"));
+        }
+    }
+    if !failures.is_empty() {
+        bail!(
+            "{} source refresh(es) failed: {}",
+            failures.len(),
+            failures.join("; ")
+        );
     }
     Ok(())
 }
@@ -429,7 +468,10 @@ pub fn find_windows_bin(bin: &str) -> String {
                 .join(&bin_with_exe)
                 .to_string_lossy()
                 .to_string();
-            log(format!("Binary '{}' not found, falling back to '{}'", bin, fallback));
+            log(format!(
+                "Binary '{}' not found, falling back to '{}'",
+                bin, fallback
+            ));
             return fallback;
         }
     }

@@ -15,6 +15,8 @@ import { ToastrService } from "ngx-toastr";
 import { TmdbConfigService } from "../services/tmdb-config.service";
 import { TmdbCacheService } from "../services/tmdb-cache.service";
 import { getCurrentWebview } from "@tauri-apps/api/webview";
+import { listen, UnlistenFn } from "@tauri-apps/api/event";
+import { SourceRefreshProgress } from "../models/sourceRefreshProgress";
 
 export type SettingsCategoryId =
   | "general"
@@ -120,6 +122,13 @@ export class SettingsComponent {
   viewModeEnum = ViewMode;
   sources: Source[] = [];
   expiries: Record<number, number> = {};
+  refreshingAll = false;
+  refreshAllCurrentSource = "";
+  refreshAllPercent: number | null = null;
+  refreshAllIndeterminate = true;
+  refreshAllFailureCount = 0;
+  private refreshAllSettledSourceIds = new Set<number>();
+  private unlistenSourceRefreshProgress?: UnlistenFn;
   sortTypes = SORT_TYPES;
   @ViewChild("mpvParams") mpvParams!: ElementRef;
 
@@ -207,6 +216,43 @@ export class SettingsComponent {
     this.loadTmdbCacheStats();
     if (this.memory.XtreamSourceIds.size > 0)
       this.getExpiries();
+    void this.setupRefreshAllProgressListener();
+  }
+
+  private async setupRefreshAllProgressListener(): Promise<void> {
+    this.unlistenSourceRefreshProgress = await listen<SourceRefreshProgress>(
+      "source-refresh-progress",
+      (event) => this.handleRefreshAllProgress(event.payload),
+    );
+  }
+
+  private handleRefreshAllProgress(progress: SourceRefreshProgress): void {
+    if (!this.refreshingAll) return;
+
+    const source = this.sources.find((item) => item.id === progress.source_id);
+    if (!source) return;
+
+    this.refreshAllCurrentSource = source.name || "Unnamed source";
+    if (progress.error) {
+      this.refreshAllFailureCount += 1;
+      this.refreshAllSettledSourceIds.add(progress.source_id);
+    } else if (progress.stage === "complete") {
+      this.refreshAllSettledSourceIds.add(progress.source_id);
+    }
+
+    if (progress.indeterminate || progress.percent == null) {
+      this.refreshAllIndeterminate = true;
+      this.refreshAllPercent = null;
+    } else {
+      this.refreshAllIndeterminate = false;
+      const total = Math.max(this.sources.length, 1);
+      const completed = this.refreshAllSettledSourceIds.size;
+      const activeProgress = this.refreshAllSettledSourceIds.has(progress.source_id)
+        ? 0
+        : Math.min(100, Math.max(0, progress.percent));
+      this.refreshAllPercent = Math.round(((completed + activeProgress / 100) / total) * 100);
+    }
+    this.cdr.markForCheck();
   }
 
   loadStartupPage() {
@@ -290,11 +336,28 @@ export class SettingsComponent {
   }
 
   async refreshAll() {
+    if (this.refreshingAll) return;
     this.memory.SeriesRefreshed.clear();
-    await this.memory.tryIPC("Successfully updated all sources", "Failed to refresh sources", () =>
-      invoke("refresh_all"),
-    );
-    this.memory.RefreshSources.next(true);
+    this.refreshingAll = true;
+    this.refreshAllCurrentSource = "Preparing sources";
+    this.refreshAllPercent = null;
+    this.refreshAllIndeterminate = true;
+    this.refreshAllFailureCount = 0;
+    this.refreshAllSettledSourceIds.clear();
+    try {
+      await invoke("refresh_all");
+      this.toastr.success("Successfully updated all sources");
+    } catch (error) {
+      const failureSummary = this.refreshAllFailureCount > 0
+        ? `${this.refreshAllFailureCount} source${this.refreshAllFailureCount === 1 ? "" : "s"} failed; valid sources were retained.`
+        : "Failed to refresh sources";
+      this.toastr.error(failureSummary);
+      console.error("Failed to refresh all sources", error);
+    } finally {
+      this.refreshingAll = false;
+      this.memory.RefreshSources.next(true);
+      this.cdr.markForCheck();
+    }
   }
 
   async goBack() {
@@ -403,5 +466,6 @@ export class SettingsComponent {
 
   ngOnDestroy(): void {
     this.subscriptions.forEach((x) => x.unsubscribe());
+    this.unlistenSourceRefreshProgress?.();
   }
 }

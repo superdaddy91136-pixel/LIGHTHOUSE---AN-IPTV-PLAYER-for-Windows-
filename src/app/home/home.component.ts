@@ -192,7 +192,7 @@ export class HomeComponent implements AfterViewInit, OnDestroy {
   isFolderFilterMenuOpen = false;
   liveSearchSubject = new Subject<string>();
   liveSidebarSelection: {
-    type: 'favorites' | 'category' | 'all';
+    type: 'favorites' | 'category';
     id?: number;
     name?: string;
     sourceId?: number;
@@ -223,8 +223,9 @@ export class HomeComponent implements AfterViewInit, OnDestroy {
 
   updateRegularChannels(preserveLimit = false): void {
     let list = this.channels;
-    if (this.currentPinnedItems.length > 0) {
-      const pinnedIds = new Set(this.currentPinnedItems.map((p) => p.id));
+    const pinnedList = this.isLiveTvTab ? this.liveContentPinnedItems : this.currentPinnedItems;
+    if (pinnedList.length > 0) {
+      const pinnedIds = new Set(pinnedList.map((p) => p.id));
       list = list.filter((c) => c.id != null && !pinnedIds.has(c.id));
     }
     this.regularChannels = this.applySortToChannels(list);
@@ -470,9 +471,6 @@ export class HomeComponent implements AfterViewInit, OnDestroy {
     if (this.liveSidebarSelection.type === 'favorites') {
       return 'Favorites';
     }
-    if (this.liveSidebarSelection.type === 'all') {
-      return 'All Channels';
-    }
     if (this.liveSidebarSelection.type === 'category') {
       return cleanMediaTitle(this.liveSidebarSelection.name || 'Category');
     }
@@ -485,9 +483,6 @@ export class HomeComponent implements AfterViewInit, OnDestroy {
     }
     if (this.liveSidebarSelection.type === 'favorites') {
       return 'No favorite channels yet. Click the heart on any channel to favorite it.';
-    }
-    if (this.liveSidebarSelection.type === 'all') {
-      return 'No channels found.';
     }
     if (this.liveSidebarSelection.type === 'category') {
       return `No channels found in ${cleanMediaTitle(this.liveSidebarSelection.name || 'this folder')}.`;
@@ -567,15 +562,19 @@ export class HomeComponent implements AfterViewInit, OnDestroy {
       return;
     }
 
-    const pinnedGroupIds = new Set(
-      this.pinService
-        .getPinnedChannelsForTab(NavTab.LiveTV)
-        .filter((item) => item.media_type === MediaType.group)
-        .map((item) => item.id),
+    const pinnedGroups = this.pinService
+      .getPinnedChannelsForTab(NavTab.LiveTV)
+      .filter((item) => item.media_type === MediaType.group);
+    const pinnedGroupIds = new Set(pinnedGroups.map((item) => item.id));
+    const pinnedGroupNames = new Set(
+      pinnedGroups.map((item) => (item.name || '').trim().toLowerCase()),
     );
 
     for (const cat of list) {
-      cat.isPinned = pinnedGroupIds.has(cat.id);
+      const cleanName = (cat.name || '').trim().toLowerCase();
+      cat.isPinned =
+        pinnedGroupIds.has(cat.id) ||
+        (cleanName ? pinnedGroupNames.has(cleanName) : false);
     }
 
     let filtered = list;
@@ -654,24 +653,6 @@ export class HomeComponent implements AfterViewInit, OnDestroy {
     this.selectedCategoryId = cat.id;
     if (this.filters) {
       this.filters.group_id = cat.id;
-      this.filters.view_type = ViewMode.All;
-      this.filters.page = 1;
-    }
-    this.nodeStack.clear();
-    this.saveTabFilterState();
-    this.updatePinnedItems();
-    this.load();
-    if (this.liveTvContent?.nativeElement) {
-      this.liveTvContent.nativeElement.scrollTop = 0;
-    }
-  }
-
-  selectLiveSidebarAll(): void {
-    EpgQueueManager.clearQueue();
-    this.liveSidebarSelection = { type: 'all' };
-    this.selectedCategoryId = undefined;
-    if (this.filters) {
-      this.filters.group_id = undefined;
       this.filters.view_type = ViewMode.All;
       this.filters.page = 1;
     }
@@ -1374,7 +1355,15 @@ export class HomeComponent implements AfterViewInit, OnDestroy {
     const groupId = this.filters?.group_id;
     this.currentPinnedItems = this.pinService.getPinnedChannelsForTab(tab, groupId);
     if (tab === NavTab.LiveTV) {
-      this.liveContentPinnedItems = this.applySortToChannels(this.currentPinnedItems);
+      // Pinned folders belong exclusively to the categories sidebar list.
+      // Channels content area must never display group/category tiles.
+      const mediaItems = this.currentPinnedItems.filter((item) => item.media_type !== MediaType.group);
+      if (this.liveSidebarSelection?.type === 'favorites') {
+        // In Favorites view, only favorite channels that are pinned appear in the pinned channels section.
+        this.liveContentPinnedItems = this.applySortToChannels(mediaItems.filter((item) => item.favorite));
+      } else {
+        this.liveContentPinnedItems = this.applySortToChannels(mediaItems);
+      }
       this.updateRegularChannels(true);
     }
   }

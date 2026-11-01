@@ -315,7 +315,41 @@ pub fn insert_season(tx: &Transaction, season: Season) -> Result<i64> {
     )?)
 }
 
-pub fn insert_channel(tx: &Transaction, channel: Channel) -> Result<()> {
+pub fn insert_channel(tx: &Transaction, channel: Channel) -> Result<i64> {
+    // Provider stream IDs are stable across normal refreshes. Updating by this
+    // identity retains the channel primary key and its local resume position.
+    if let Some(stream_id) = channel.stream_id {
+        let changed = tx.execute(
+            r#"
+            UPDATE channels
+            SET name = ?, group_id = ?, image = ?, url = ?, media_type = ?,
+                series_id = ?, tv_archive = ?, season_id = ?, episode_num = ?
+            WHERE source_id = ? AND media_type = ? AND stream_id = ?
+            "#,
+            params![
+                &channel.name,
+                channel.group_id,
+                &channel.image,
+                &channel.url,
+                channel.media_type,
+                channel.series_id,
+                channel.tv_archive,
+                channel.season_id,
+                channel.episode_num,
+                channel.source_id,
+                channel.media_type,
+                stream_id,
+            ],
+        )?;
+        if changed > 0 {
+            return Ok(tx.query_row(
+                "SELECT id FROM channels WHERE source_id = ? AND media_type = ? AND stream_id = ?",
+                params![channel.source_id, channel.media_type, stream_id],
+                |row| row.get(0),
+            )?);
+        }
+    }
+
     tx.execute(
         r#"
 INSERT INTO channels (name, group_id, image, url, source_id, media_type, series_id, favorite, stream_id, tv_archive, season_id, episode_num)
@@ -345,7 +379,20 @@ DO UPDATE SET
             channel.episode_num
         ],
     )?;
-    Ok(())
+    Ok(tx.query_row(
+        r#"
+        SELECT id FROM channels
+        WHERE name = ? AND source_id = ? AND url IS ? AND series_id IS ? AND season_id IS ?
+        "#,
+        params![
+            &channel.name,
+            channel.source_id,
+            &channel.url,
+            channel.series_id,
+            channel.season_id
+        ],
+        |row| row.get(0),
+    )?)
 }
 
 pub fn insert_channel_headers(tx: &Transaction, headers: ChannelHttpHeaders) -> Result<()> {
@@ -480,7 +527,10 @@ pub fn search(filters: Filters) -> Result<Vec<Channel>> {
     if filters.view_type == view_type::HIDDEN {
         return search_hidden(filters);
     }
-    if filters.series_id.is_some() && filters.season.is_none() && filters.view_type != view_type::HISTORY {
+    if filters.series_id.is_some()
+        && filters.season.is_none()
+        && filters.view_type != view_type::HISTORY
+    {
         return search_series(filters);
     }
     let sql = get_conn()?;
@@ -1029,7 +1079,11 @@ fn row_to_group(row: &Row) -> std::result::Result<Channel, rusqlite::Error> {
         group_id: None,
         favorite: false,
         source_id: row.get("source_id")?,
-        stream_id: row.get::<_, Option<i64>>("channel_count").ok().flatten().map(|c| c.max(0) as u64),
+        stream_id: row
+            .get::<_, Option<i64>>("channel_count")
+            .ok()
+            .flatten()
+            .map(|c| c.max(0) as u64),
         tv_archive: None,
         season_id: None,
         episode_num: None,
@@ -1064,6 +1118,10 @@ pub fn delete_channels_by_source(tx: &Transaction, source_id: i64) -> Result<()>
         r#"
         DELETE FROM channels
         WHERE source_id = ?
+        -- Retain rows that own user state so matching imports preserve their IDs.
+        AND last_watched IS NULL
+        AND COALESCE(favorite, 0) != 1
+        AND COALESCE(hidden, 0) != 1
     "#,
         params![source_id.to_string()],
     )?;
@@ -1337,12 +1395,12 @@ pub fn set_source_enabled(value: bool, source_id: i64) -> Result<()> {
 }
 
 pub fn add_custom_channel(tx: &Transaction, channel: CustomChannel) -> Result<()> {
-    insert_channel(tx, channel.data)?;
+    let channel_id = insert_channel(tx, channel.data)?;
     if let Some(mut headers) = channel.headers {
         if channel_headers_empty(&headers) {
             return Ok(());
         }
-        headers.channel_id = Some(tx.last_insert_rowid());
+        headers.channel_id = Some(channel_id);
         insert_channel_headers(tx, headers)?;
     }
     Ok(())
@@ -1778,10 +1836,10 @@ pub fn get_preserve(tx: &Transaction, source_id: i64) -> Result<Vec<ChannelPrese
     let mut channels: Vec<ChannelPreserve> = tx
         .prepare(
             r#"
-              SELECT name, favorite, favorite_added, last_watched, hidden
+              SELECT name, url, media_type, stream_id, series_id, season_id, episode_num,
+                     favorite, favorite_added, last_watched, hidden
               FROM channels
               WHERE (favorite = 1 OR last_watched IS NOT NULL OR hidden = 1)
-              AND series_id IS NULL
               AND source_id = ?
             "#,
         )?
@@ -1809,6 +1867,12 @@ pub fn get_preserve(tx: &Transaction, source_id: i64) -> Result<Vec<ChannelPrese
 fn row_to_channel_preserve(row: &Row) -> Result<ChannelPreserve, rusqlite::Error> {
     Ok(ChannelPreserve {
         name: row.get("name")?,
+        url: row.get("url")?,
+        media_type: row.get("media_type")?,
+        stream_id: row.get("stream_id")?,
+        series_id: row.get("series_id")?,
+        season_id: row.get("season_id")?,
+        episode_num: row.get("episode_num")?,
         favorite: row.get("favorite")?,
         favorite_added: row.get("favorite_added")?,
         last_watched: row.get("last_watched")?,
@@ -1820,6 +1884,12 @@ fn row_to_channel_preserve(row: &Row) -> Result<ChannelPreserve, rusqlite::Error
 fn row_to_group_preserve(row: &Row) -> Result<ChannelPreserve, rusqlite::Error> {
     Ok(ChannelPreserve {
         name: row.get("name")?,
+        url: None,
+        media_type: 0,
+        stream_id: None,
+        series_id: None,
+        season_id: None,
+        episode_num: None,
         hidden: row.get("hidden")?,
         favorite: false,
         favorite_added: None,
@@ -1849,16 +1919,29 @@ pub fn restore_preserve(
                 r#"
                   UPDATE channels
                   SET favorite = ?, favorite_added = ?, last_watched = ?, hidden = ?
-                  WHERE name = ?
-                  AND source_id = ?
+                  WHERE source_id = ?
+                  AND (
+                    (? IS NOT NULL AND stream_id = ?)
+                    OR (? IS NOT NULL AND url = ?)
+                    OR (name = ? AND media_type = ?
+                        AND series_id IS ? AND season_id IS ? AND episode_num IS ?)
+                  )
                 "#,
                 params![
                     item.favorite,
                     item.favorite_added,
                     item.last_watched,
                     item.hidden,
+                    source_id,
+                    item.stream_id,
+                    item.stream_id,
+                    item.url,
+                    item.url,
                     item.name,
-                    source_id
+                    item.media_type,
+                    item.series_id,
+                    item.season_id,
+                    item.episode_num,
                 ],
             )?;
         }

@@ -25,6 +25,7 @@ use serde::Deserialize;
 use serde::Serialize;
 use std::collections::HashMap;
 use std::str::FromStr;
+use std::time::Duration;
 use tauri::AppHandle;
 use tokio::join;
 use url::Url;
@@ -148,20 +149,32 @@ pub async fn get_xtream(app: Option<&AppHandle>, mut source: Source, wipe: bool)
 
     let url = build_xtream_url(&mut source)?;
     let user_agent = get_user_agent_from_source(&source)?;
+    let client = Client::builder()
+        .user_agent(user_agent)
+        .timeout(Duration::from_secs(60))
+        .build()?;
     let (live, live_cats, vods, vods_cats, series, series_cats) = join!(
-        get_xtream_http_data::<Vec<XtreamStream>>(url.clone(), GET_LIVE_STREAMS, &user_agent),
-        get_xtream_http_data::<Vec<XtreamCategory>>(
+        get_xtream_http_data_with_client::<Vec<XtreamStream>>(
+            &client,
             url.clone(),
-            GET_LIVE_STREAM_CATEGORIES,
-            &user_agent
+            GET_LIVE_STREAMS
         ),
-        get_xtream_http_data::<Vec<XtreamStream>>(url.clone(), GET_VODS, &user_agent),
-        get_xtream_http_data::<Vec<XtreamCategory>>(url.clone(), GET_VOD_CATEGORIES, &user_agent),
-        get_xtream_http_data::<Vec<XtreamStream>>(url.clone(), GET_SERIES, &user_agent),
-        get_xtream_http_data::<Vec<XtreamCategory>>(
+        get_xtream_http_data_with_client::<Vec<XtreamCategory>>(
+            &client,
             url.clone(),
-            GET_SERIES_CATEGORIES,
-            &user_agent
+            GET_LIVE_STREAM_CATEGORIES
+        ),
+        get_xtream_http_data_with_client::<Vec<XtreamStream>>(&client, url.clone(), GET_VODS),
+        get_xtream_http_data_with_client::<Vec<XtreamCategory>>(
+            &client,
+            url.clone(),
+            GET_VOD_CATEGORIES
+        ),
+        get_xtream_http_data_with_client::<Vec<XtreamStream>>(&client, url.clone(), GET_SERIES),
+        get_xtream_http_data_with_client::<Vec<XtreamCategory>>(
+            &client,
+            url.clone(),
+            GET_SERIES_CATEGORIES
         ),
     );
 
@@ -291,19 +304,32 @@ pub async fn get_xtream(app: Option<&AppHandle>, mut source: Source, wipe: bool)
     if wipe {
         sql::restore_preserve(&tx, source.id.context("no source id")?, channel_preserve)?;
     }
-    sql::analyze(&tx)?;
     tx.commit()?;
     Ok(())
 }
 
-async fn get_xtream_http_data<T>(mut url: Url, action: &str, user_agent: &String) -> Result<T>
+async fn get_xtream_http_data_with_client<T>(
+    client: &Client,
+    mut url: Url,
+    action: &str,
+) -> Result<T>
 where
     T: serde::de::DeserializeOwned,
 {
-    let client = Client::builder().user_agent(user_agent).build()?;
     url.query_pairs_mut().append_pair("action", action);
     let data = client.get(url).send().await?.json::<T>().await?;
     Ok(data)
+}
+
+async fn get_xtream_http_data<T>(url: Url, action: &str, user_agent: &String) -> Result<T>
+where
+    T: serde::de::DeserializeOwned,
+{
+    let client = Client::builder()
+        .user_agent(user_agent)
+        .timeout(Duration::from_secs(60))
+        .build()?;
+    get_xtream_http_data_with_client(&client, url, action).await
 }
 
 fn process_xtream(
@@ -367,7 +393,9 @@ fn process_xtream(
 
         *processed_so_far += 1;
         let current_in_stage = idx + 1;
-        if (current_in_stage % emit_interval == 0 || current_in_stage == stage_total) && app.is_some() {
+        if (current_in_stage % emit_interval == 0 || current_in_stage == stage_total)
+            && app.is_some()
+        {
             let pct = if total_items > 0 {
                 3.0 + ((*processed_so_far as f64 / total_items as f64) * 92.0)
             } else {
@@ -377,7 +405,10 @@ fn process_xtream(
                 app,
                 source_id,
                 stage_name,
-                &format!("Syncing {} ({} / {})...", stage_prefix, current_in_stage, stage_total),
+                &format!(
+                    "Syncing {} ({} / {})...",
+                    stage_prefix, current_in_stage, stage_total
+                ),
                 Some((pct * 10.0).round() / 10.0),
                 false,
                 Some(*processed_so_far),

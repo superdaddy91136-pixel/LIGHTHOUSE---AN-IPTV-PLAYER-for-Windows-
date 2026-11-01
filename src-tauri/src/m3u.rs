@@ -63,9 +63,24 @@ pub fn read_m3u8(app: Option<&AppHandle>, mut source: Source, wipe: bool) -> Res
         None,
     );
     let path = match source.source_type {
-        source_type::M3U_LINK => get_tmp_path(),
+        source_type::M3U_LINK => get_tmp_path(source_id),
         _ => source.url.clone().context("no file path found")?,
     };
+    let total_channels = count_playlist_entries(&path)?;
+    crate::utils::emit_source_refresh_progress(
+        app,
+        source_id,
+        "parsing",
+        &format!(
+            "Parsing and validating playlist (0 / {})...",
+            total_channels
+        ),
+        Some(10.0),
+        false,
+        Some(0),
+        Some(total_channels),
+        None,
+    );
     let file = File::open(path).context("Failed to open m3u8 file")?;
     let reader = BufReader::new(file);
     let mut lines = reader.lines().enumerate();
@@ -90,6 +105,7 @@ pub fn read_m3u8(app: Option<&AppHandle>, mut source: Source, wipe: bool) -> Res
         line_count: 0,
     };
     let mut channel_count = 0;
+    let emit_interval = (total_channels / 80).max(25);
     while let Some((c1, l1)) = lines.next() {
         processing.line_count = c1;
         let l1 = match l1.with_context(|| format!("Failed to process line {c1}")) {
@@ -101,18 +117,26 @@ pub fn read_m3u8(app: Option<&AppHandle>, mut source: Source, wipe: bool) -> Res
         };
         let l1_upper = l1.to_uppercase();
         if l1_upper.starts_with("#EXTINF") {
-            try_commit_channel(&mut processing, &tx);
-            channel_count += 1;
-            if channel_count % 100 == 0 && app.is_some() {
+            if processing.channel_line.is_some() {
+                try_commit_channel(&mut processing, &tx);
+                channel_count += 1;
+            }
+            if channel_count > 0
+                && (channel_count % emit_interval == 0 || channel_count == total_channels)
+                && app.is_some()
+            {
                 crate::utils::emit_source_refresh_progress(
                     app,
                     source_id,
-                    "syncing",
-                    &format!("Syncing channels ({} processed)...", channel_count),
-                    None,
-                    true,
+                    "processing",
+                    &format!(
+                        "Processing channels and categories ({} / {})...",
+                        channel_count, total_channels
+                    ),
+                    Some(10.0 + (channel_count as f64 / total_channels.max(1) as f64) * 85.0),
+                    false,
                     Some(channel_count),
-                    None,
+                    Some(total_channels),
                     None,
                 );
             }
@@ -134,8 +158,10 @@ pub fn read_m3u8(app: Option<&AppHandle>, mut source: Source, wipe: bool) -> Res
             processing.last_non_empty_line = Some(l1);
         }
     }
-    try_commit_channel(&mut processing, &tx);
-    channel_count += 1;
+    if processing.channel_line.is_some() {
+        try_commit_channel(&mut processing, &tx);
+        channel_count += 1;
+    }
 
     crate::utils::emit_source_refresh_progress(
         app,
@@ -145,14 +171,13 @@ pub fn read_m3u8(app: Option<&AppHandle>, mut source: Source, wipe: bool) -> Res
         Some(95.0),
         false,
         Some(channel_count),
-        None,
+        Some(total_channels),
         None,
     );
 
     if wipe {
         sql::restore_preserve(&tx, source.id.context("no source id")?, channel_preserve)?;
     }
-    sql::analyze(&tx)?;
     tx.commit()?;
     Ok(())
 }
@@ -204,9 +229,9 @@ fn commit_channel(
             channel.name, e
         ))
     });
-    sql::insert_channel(tx, channel)?;
+    let channel_id = sql::insert_channel(tx, channel)?;
     if let Some(mut headers) = headers {
-        headers.channel_id = Some(tx.last_insert_rowid());
+        headers.channel_id = Some(channel_id);
         sql::insert_channel_headers(tx, headers)?;
     }
     Ok(())
@@ -226,7 +251,10 @@ pub async fn get_m3u8_from_link(app: Option<&AppHandle>, source: Source, wipe: b
         None,
     );
     let user_agent = get_user_agent_from_source(&source)?;
-    let client = reqwest::Client::builder().user_agent(user_agent).build()?;
+    let client = reqwest::Client::builder()
+        .user_agent(user_agent)
+        .timeout(std::time::Duration::from_secs(60))
+        .build()?;
     let url = source.url.clone().context("Invalid source")?;
     let mut response = client.get(&url).send().await?;
     if !response.status().is_success() {
@@ -239,14 +267,14 @@ pub async fn get_m3u8_from_link(app: Option<&AppHandle>, source: Source, wipe: b
             response.status()
         );
     }
-    let mut file = std::fs::File::create(get_tmp_path())?;
+    let mut file = std::fs::File::create(get_tmp_path(source_id))?;
     while let Some(chunk) = response.chunk().await? {
         file.write(&chunk)?;
     }
     read_m3u8(app, source, wipe)
 }
 
-fn get_tmp_path() -> String {
+fn get_tmp_path(source_id: i64) -> String {
     let mut path = directories::ProjectDirs::from("dev", "fredol", "open-tv")
         .unwrap()
         .cache_dir()
@@ -254,8 +282,21 @@ fn get_tmp_path() -> String {
     if !path.exists() {
         std::fs::create_dir_all(&path).unwrap();
     }
-    path.push("get.m3u");
+    path.push(format!("get-{source_id}.m3u"));
     return path.to_string_lossy().to_string();
+}
+
+fn count_playlist_entries(path: &str) -> Result<usize> {
+    let file = File::open(path).context("Failed to open m3u8 file for validation")?;
+    Ok(BufReader::new(file)
+        .lines()
+        .filter_map(Result::ok)
+        .filter(|line| {
+            line.trim_start()
+                .to_ascii_uppercase()
+                .starts_with("#EXTINF")
+        })
+        .count())
 }
 
 fn extract_non_empty_capture(caps: Captures) -> Option<String> {

@@ -207,6 +207,18 @@ pub struct NetworkInfo {
 #[derive(Clone, PartialEq, Debug, Deserialize, Serialize)]
 pub struct ChannelPreserve {
     pub name: String,
+    #[serde(default)]
+    pub url: Option<String>,
+    #[serde(default)]
+    pub media_type: u8,
+    #[serde(default)]
+    pub stream_id: Option<u64>,
+    #[serde(default)]
+    pub series_id: Option<u64>,
+    #[serde(default)]
+    pub season_id: Option<i64>,
+    #[serde(default)]
+    pub episode_num: Option<i64>,
     pub favorite: bool,
     #[serde(default)]
     pub favorite_added: Option<i64>,
