@@ -1,5 +1,6 @@
 import {
   AfterViewInit,
+  ChangeDetectionStrategy,
   ChangeDetectorRef,
   Component,
   EventEmitter,
@@ -118,6 +119,7 @@ export const MIXED_GENRES: MixedGenreDef[] = [
   selector: "app-home-discovery",
   templateUrl: "./home-discovery.component.html",
   styleUrl: "./home-discovery.component.css",
+  changeDetection: ChangeDetectionStrategy.OnPush,
 })
 export class HomeDiscoveryComponent implements OnInit, AfterViewInit, OnDestroy {
   @Output() play = new EventEmitter<Channel>();
@@ -199,6 +201,80 @@ export class HomeDiscoveryComponent implements OnInit, AfterViewInit, OnDestroy 
   private inFlightCatalogMatches = new Map<string, Promise<Channel | null>>();
   private negativeCatalogMatchKeys = new Set<string>();
   private heroDiscoveryPromise?: Promise<{ item: any; isTv: boolean; category?: HeroCategory }[]>;
+
+  // Concurrency limiter for SQLite searches to prevent thrashing Rusqlite/IPC
+  private dbSearchConcurrency = 0;
+  private readonly MAX_CONCURRENT_DB_SEARCHES = 2;
+  private dbSearchQueue: (() => void)[] = [];
+
+  // Fast in-memory catalog index to turn candidate searches into instant O(1) lookups
+  private catalogPoolById = new Map<number, Channel>();
+  private catalogPoolByNormTitle = new Map<string, Channel[]>();
+  private catalogPoolByExactClean = new Map<string, Channel[]>();
+
+  private scrollCheckTimer: any = null;
+
+  private yieldToMain(): Promise<void> {
+    return new Promise((resolve) => setTimeout(resolve, 0));
+  }
+
+  private async fetchSafeWithLimiter(filters: Filters): Promise<Channel[]> {
+    if (this.dbSearchConcurrency >= this.MAX_CONCURRENT_DB_SEARCHES) {
+      await new Promise<void>((resolve) => this.dbSearchQueue.push(resolve));
+    }
+    this.dbSearchConcurrency++;
+    try {
+      return await this.fetchSafe(filters);
+    } finally {
+      this.dbSearchConcurrency--;
+      const next = this.dbSearchQueue.shift();
+      if (next) next();
+    }
+  }
+
+  private indexChannelsInPool(channels: Channel[]): void {
+    if (!channels || channels.length === 0) return;
+    for (const c of channels) {
+      if (!c || !c.id) continue;
+      this.catalogPoolById.set(c.id, c);
+      const clean = cleanMediaTitle(c.name).toLowerCase();
+      if (clean) {
+        let cleanList = this.catalogPoolByExactClean.get(clean);
+        if (!cleanList) {
+          cleanList = [];
+          this.catalogPoolByExactClean.set(clean, cleanList);
+        }
+        if (!cleanList.some((item) => item.id === c.id)) {
+          cleanList.push(c);
+        }
+
+        const norm = this.versionMatching.normalizeNumberTokens(
+          normalizeForComparison(clean)
+        );
+        let normList = this.catalogPoolByNormTitle.get(norm);
+        if (!normList) {
+          normList = [];
+          this.catalogPoolByNormTitle.set(norm, normList);
+        }
+        if (!normList.some((item) => item.id === c.id)) {
+          normList.push(c);
+        }
+      }
+    }
+  }
+
+  private debouncedCheckAllRowsScrollState(): void {
+    if (this.scrollCheckTimer) {
+      clearTimeout(this.scrollCheckTimer);
+    }
+    this.scrollCheckTimer = setTimeout(() => {
+      this.scrollCheckTimer = null;
+      if (!this.isDestroyed) {
+        this.checkAllRowsScrollState();
+        this.cdr.markForCheck();
+      }
+    }, 100);
+  }
 
   private getOrStartHeroTmdbDiscovery(): Promise<{ item: any; isTv: boolean; category?: HeroCategory }[]> {
     if (!this.heroDiscoveryPromise) {
@@ -309,13 +385,14 @@ export class HomeDiscoveryComponent implements OnInit, AfterViewInit, OnDestroy 
     if (cachedSnapshot && this.discoveryState.hasCachedContent(cachedSnapshot)) {
       this.syncFromSnapshot(cachedSnapshot);
       this.loading = false;
-      if (this.currentHero?.imageUrl) {
-        if (cachedSnapshot.tmdbRows && cachedSnapshot.tmdbRows.length > 0) {
-          this.splashScreen.markHomeReady();
-        } else {
-          this.splashScreen.markHeroReady();
-        }
+      this.hasAnyContent = true;
+      if (this.currentHero?.imageUrl || this.heroItems.length > 0) {
+        this.splashScreen.markHeroReady();
       }
+      if (cachedSnapshot.tmdbRows && cachedSnapshot.tmdbRows.length > 0) {
+        this.splashScreen.markRowsReady();
+      }
+      this.cdr.markForCheck();
     }
 
     if (this.tmdbConfig.isEnabled()) {
@@ -394,6 +471,10 @@ export class HomeDiscoveryComponent implements OnInit, AfterViewInit, OnDestroy 
   ngOnDestroy(): void {
     this.isDestroyed = true;
     this.stopHeroTimer();
+    if (this.scrollCheckTimer) {
+      clearTimeout(this.scrollCheckTimer);
+      this.scrollCheckTimer = null;
+    }
     if (this.transitionTimeout) {
       clearTimeout(this.transitionTimeout);
       this.transitionTimeout = undefined;
@@ -579,6 +660,7 @@ export class HomeDiscoveryComponent implements OnInit, AfterViewInit, OnDestroy 
         this.recordHeroShown(this.currentHero?.channel?.id);
         this.updateAmbientBackground();
         this.preloadVisibleHeroImages();
+        this.cdr.markForCheck();
 
         const active = this.currentHero;
         if (active?.channel && this.tmdbConfig.isEnabled()) {
@@ -587,6 +669,7 @@ export class HomeDiscoveryComponent implements OnInit, AfterViewInit, OnDestroy 
 
         setTimeout(() => {
           this.isTransitioning = false;
+          this.cdr.markForCheck();
         }, 50);
       }, 280);
     }
@@ -598,6 +681,7 @@ export class HomeDiscoveryComponent implements OnInit, AfterViewInit, OnDestroy 
       this.restartHeroTimer();
     }
     this.isTransitioning = true;
+    this.cdr.markForCheck();
 
     if (this.transitionTimeout) {
       clearTimeout(this.transitionTimeout);
@@ -624,6 +708,7 @@ export class HomeDiscoveryComponent implements OnInit, AfterViewInit, OnDestroy 
       this.recordHeroShown(this.currentHero?.channel?.id);
       this.updateAmbientBackground();
       this.preloadVisibleHeroImages();
+      this.cdr.markForCheck();
 
       // Prioritize background TMDB enrichment for the newly active hero
       const active = this.currentHero;
@@ -633,6 +718,7 @@ export class HomeDiscoveryComponent implements OnInit, AfterViewInit, OnDestroy 
 
       setTimeout(() => {
         this.isTransitioning = false;
+        this.cdr.markForCheck();
       }, 50);
     }, 280);
   }
@@ -641,6 +727,7 @@ export class HomeDiscoveryComponent implements OnInit, AfterViewInit, OnDestroy 
     if (this.heroItems.length <= 1) return;
     this.restartHeroTimer();
     this.isTransitioning = true;
+    this.cdr.markForCheck();
 
     if (this.transitionTimeout) {
       clearTimeout(this.transitionTimeout);
@@ -652,6 +739,7 @@ export class HomeDiscoveryComponent implements OnInit, AfterViewInit, OnDestroy 
       this.recordHeroShown(this.currentHero?.channel?.id);
       this.updateAmbientBackground();
       this.preloadVisibleHeroImages();
+      this.cdr.markForCheck();
 
       const active = this.currentHero;
       if (active?.channel && this.tmdbConfig.isEnabled()) {
@@ -660,6 +748,7 @@ export class HomeDiscoveryComponent implements OnInit, AfterViewInit, OnDestroy 
 
       setTimeout(() => {
         this.isTransitioning = false;
+        this.cdr.markForCheck();
       }, 50);
     }, 280);
   }
@@ -818,6 +907,12 @@ export class HomeDiscoveryComponent implements OnInit, AfterViewInit, OnDestroy 
 
       if (this.isDestroyed || requestId !== this.discoveryLoadRequestId) return;
 
+      // Index channels into fast in-memory catalog pool
+      if (moviesRes) this.indexChannelsInPool(moviesRes);
+      if (seriesRes) this.indexChannelsInPool(seriesRes);
+      if (historyRes) this.indexChannelsInPool(historyRes);
+      if (favoritesRes) this.indexChannelsInPool(favoritesRes);
+
       // Preload persistent TMDB cache for candidate channels so initial synchronous build can reuse cached artwork
       const initialCandidateIds = [
         ...Array.from(this.getLastFeaturedIds()),
@@ -838,13 +933,6 @@ export class HomeDiscoveryComponent implements OnInit, AfterViewInit, OnDestroy 
           categories,
         );
       };
-
-      void categoriesReady.then((categoriesRes) => {
-        if (!categoriesRes || this.isDestroyed || requestId !== this.discoveryLoadRequestId) return;
-        if (this.tmdbConfig.isEnabled() && categoriesRes.length > 0) {
-          this.loadAnimeContentRows(enabledSourceIds, categoriesRes, this.allLoadedMovies, this.allLoadedSeries);
-        }
-      });
 
       // Cache loaded series for fast resolution and episode show title lookup
       this.loadedSeries = seriesRes || [];
@@ -891,7 +979,7 @@ export class HomeDiscoveryComponent implements OnInit, AfterViewInit, OnDestroy 
       }
 
       // 2. Favorites (always updated fresh from favorites)
-      if (favoritesRes.length > 0) {
+      if (favoritesRes && favoritesRes.length > 0) {
         rows.push({
           id: "row-favorites",
           title: "Your Favorites",
@@ -909,7 +997,7 @@ export class HomeDiscoveryComponent implements OnInit, AfterViewInit, OnDestroy 
         this.allLoadedMovies = snapshot.allLoadedMovies.length > 0 ? snapshot.allLoadedMovies : (moviesRes || []);
         this.allLoadedSeries = snapshot.allLoadedSeries.length > 0 ? snapshot.allLoadedSeries : (seriesRes || []);
         this.masterHeroItems = snapshot.masterHeroItems.filter((hero) =>
-          this.isEligibleHeroChannel(hero.channel)
+          this.isEligibleHeroChannel(hero.channel, true)
         );
         this.heroItems = [...this.masterHeroItems];
 
@@ -927,7 +1015,13 @@ export class HomeDiscoveryComponent implements OnInit, AfterViewInit, OnDestroy 
         this.applyContentPreferences();
 
         // Select an active hero title avoiding recently displayed titles
-        if (isManualRefresh && this.heroItems.length > 1) {
+        const activeHeroId = this.discoveryState.getActiveHero();
+        if (activeHeroId) {
+          const activeIdx = this.heroItems.findIndex((h) => h.channel?.id === activeHeroId);
+          if (activeIdx !== -1) {
+            this.currentHeroIndex = activeIdx;
+          }
+        } else if (isManualRefresh && this.heroItems.length > 1) {
           const recent = this.getRecentHeroIds();
           const currentId = this.currentHero?.channel?.id;
           const candidates = this.heroItems
@@ -948,16 +1042,18 @@ export class HomeDiscoveryComponent implements OnInit, AfterViewInit, OnDestroy 
           }
         }
         this.recordHeroShown(this.currentHero?.channel?.id);
+        this.discoveryState.setActiveHero(this.currentHero?.channel?.id);
 
         this.hasAnyContent = this.heroItems.length > 0 || this.discoveryRows.length > 0;
         this.loading = false;
-      if (this.currentHero?.imageUrl) {
-        if (snapshot.tmdbRows && snapshot.tmdbRows.length > 0) {
-          this.splashScreen.markHomeReady();
-        } else {
+        this.cdr.markForCheck();
+
+        if (this.currentHero?.imageUrl || this.heroItems.length > 0) {
           this.splashScreen.markHeroReady();
         }
-      }
+        if (snapshot.tmdbRows && snapshot.tmdbRows.length > 0) {
+          this.splashScreen.markRowsReady();
+        }
 
         // Background revalidation only if stale or forced refresh
         const shouldRevalidate = isManualRefresh || !this.discoveryState.isFresh();
@@ -969,12 +1065,27 @@ export class HomeDiscoveryComponent implements OnInit, AfterViewInit, OnDestroy 
         return;
       }
 
-      // 4. Keep the catalog available for TMDB matching and the existing hero,
-      // but never turn provider ordering into recommendation rows.
+      // 4. Cold launch (Phase 1): Compute local recommendations & build initial hero pool
       this.allLoadedMovies = moviesRes || [];
       this.allLoadedSeries = seriesRes || [];
-      this.allRecommended = [];
+      this.allRecommended = this.computeRecommendations(
+        historyRes || [],
+        favoritesRes || [],
+        this.allLoadedMovies,
+        this.allLoadedSeries,
+      );
 
+      // Phase 1: Display local recommendations row immediately
+      if (this.allRecommended.length > 0) {
+        rows.push({
+          id: "row-recommended",
+          title: "Recommended for You",
+          icon: "sparkles",
+          items: this.allRecommended.slice(0, 24),
+        });
+      }
+
+      // Phase 2: Build initial hero pool from available catalog & priority candidate
       this.masterHeroItems = this.buildHeroPool(
         this.allLoadedMovies,
         this.allLoadedSeries,
@@ -983,6 +1094,7 @@ export class HomeDiscoveryComponent implements OnInit, AfterViewInit, OnDestroy 
       this.heroItems = [...this.masterHeroItems];
       this.currentHeroIndex = 0;
       this.recordHeroShown(this.currentHero?.channel?.id);
+      this.discoveryState.setActiveHero(this.currentHero?.channel?.id);
       this.tmdbRecommendationsUnavailable = !this.tmdbConfig.isEnabled();
 
       this.masterDiscoveryRows = rows.sort(
@@ -996,27 +1108,21 @@ export class HomeDiscoveryComponent implements OnInit, AfterViewInit, OnDestroy 
         this.allLoadedMovies.length > 0 ||
         this.allLoadedSeries.length > 0;
       this.loading = false;
+      this.cdr.markForCheck();
 
-      // If TMDB is disabled or hero banner already has usable cached TMDB content, dismiss splash screen immediately
-      const hasCachedTmdbHero = !this.tmdbConfig.isEnabled() || (
-        this.currentHero?.imageUrl && (
-          this.currentHero.logoUrl ||
-          this.tmdbCache.getEnrichmentSync(this.currentHero.channel?.id)?.backdropPath
-        )
-      );
-      if (!this.tmdbConfig.isEnabled()) {
-        this.splashScreen.markHomeReady();
-      } else if (hasCachedTmdbHero) {
+      // Phase 2: Dismiss splash screen as soon as hero candidate is ready
+      if (this.heroItems.length > 0) {
         this.splashScreen.markHeroReady();
+      } else if (!this.tmdbConfig.isEnabled()) {
+        this.splashScreen.markHomeReady();
       }
 
-      // 5. Start TMDB discovery behind the splash screen without waiting for all
-      // background rows. SplashScreenService has its own safety timeout.
+      // Phase 3: Progressive background TMDB discovery
       if (this.tmdbConfig.isEnabled()) {
         runPipeline();
       }
 
-      // 6. Non-blocking progressive TMDB background enrichment if enabled
+      // Non-blocking progressive TMDB background enrichment if enabled
       this.enqueueVisibleCardsEnrichment();
     } catch (e) {
       if (requestId !== this.discoveryLoadRequestId) return;
@@ -1356,23 +1462,20 @@ export class HomeDiscoveryComponent implements OnInit, AfterViewInit, OnDestroy 
 
   private applyContentPreferences(): void {
     if (this.selectedContentPref === "all") {
-      this.discoveryRows = this.masterDiscoveryRows.map((r) => ({
-        ...r,
-        items: [...r.items],
-      }));
-      this.heroItems = [...this.masterHeroItems];
+      this.discoveryRows = this.masterDiscoveryRows;
+      this.heroItems = this.masterHeroItems;
       if (this.currentHeroIndex >= this.heroItems.length) {
         this.currentHeroIndex = 0;
       }
       this.rowCanScrollRight = {};
-      setTimeout(() => this.checkAllRowsScrollState(), 50);
+      this.debouncedCheckAllRowsScrollState();
       return;
     }
 
     this.discoveryRows = this.masterDiscoveryRows
       .map((row) => {
         if (row.id === "row-continue-watching") {
-          return { ...row, items: [...row.items] };
+          return row;
         }
         const filtered = row.items.filter((item) =>
           this.matchesContentPreference(item, this.selectedContentPref)
@@ -1394,7 +1497,7 @@ export class HomeDiscoveryComponent implements OnInit, AfterViewInit, OnDestroy 
       this.currentHeroIndex = 0;
     }
     this.rowCanScrollRight = {};
-    setTimeout(() => this.checkAllRowsScrollState(), 50);
+    this.debouncedCheckAllRowsScrollState();
   }
 
   matchesContentPreference(channel: Channel, pref: ContentPreference): boolean {
@@ -1593,29 +1696,55 @@ export class HomeDiscoveryComponent implements OnInit, AfterViewInit, OnDestroy 
           use_keywords: false,
         }),
       ]).then(([page2Movies, page2Series]) => {
-        if (page2Movies && page2Movies.length > 0) moviesPool.push(...page2Movies);
-        if (page2Series && page2Series.length > 0) seriesPool.push(...page2Series);
+        if (page2Movies && page2Movies.length > 0) {
+          moviesPool.push(...page2Movies);
+          this.indexChannelsInPool(page2Movies);
+        }
+        if (page2Series && page2Series.length > 0) {
+          seriesPool.push(...page2Series);
+          this.indexChannelsInPool(page2Series);
+        }
       }).catch(() => {});
 
-      // 2. Prioritize dynamic hero banner pool preparation concurrently with recommendation rows
+      // 2. Stage A: Prioritize dynamic hero banner pool preparation
       const heroPromise = this.refreshHeroPoolFromTmdbDiscovery(sourceIds).then(() => {
-        if (this.currentHero?.imageUrl) {
+        if (this.currentHero?.imageUrl || this.heroItems.length > 0) {
           this.splashScreen.markHeroReady();
         }
       });
+      await heroPromise;
+      if (runId !== undefined && runId !== this.discoveryState.getCurrentRunId()) return;
 
-      // Concurrently execute TMDB discovery pipelines in background without blocking hero presentation
+      // Yield to UI thread to maintain 60fps
+      await this.yieldToMain();
+
+      // Stage B: Primary visible recommendation rows (Recommended for You + Trending)
       await Promise.allSettled([
-        heroPromise,
         this.loadTmdbRecommendedRow(sourceIds, historyRes, favoritesRes, moviesPool, seriesPool),
-        this.loadTmdbPopularMoviesRow(sourceIds, moviesPool),
-        this.loadTmdbPopularTvRow(sourceIds, seriesPool),
         this.loadTrendingMoviesRow(sourceIds, moviesPool),
         this.loadTrendingTvRow(sourceIds, seriesPool),
+      ]);
+      if (runId !== undefined && runId !== this.discoveryState.getCurrentRunId()) return;
+
+      // Yield to UI thread
+      await this.yieldToMain();
+
+      // Stage C: Popular movies and TV
+      await Promise.allSettled([
+        this.loadTmdbPopularMoviesRow(sourceIds, moviesPool),
+        this.loadTmdbPopularTvRow(sourceIds, seriesPool),
+      ]);
+      if (runId !== undefined && runId !== this.discoveryState.getCurrentRunId()) return;
+
+      // Yield to UI thread
+      await this.yieldToMain();
+
+      // Stage D: Niche rows (Korean & Anime)
+      await Promise.allSettled([
         this.loadKoreanContentRows(sourceIds, seriesPool),
         this.loadAnimeContentRows(sourceIds, categoriesRes, moviesPool, seriesPool),
-        page2Promise,
       ]);
+      await page2Promise;
 
       if (runId !== undefined && runId !== this.discoveryState.getCurrentRunId()) {
         return;
@@ -2035,9 +2164,21 @@ export class HomeDiscoveryComponent implements OnInit, AfterViewInit, OnDestroy 
         this.allRecommended
       );
 
-      // Start on a fresh title at index 0 (buildHeroPool ensures index 0 was not just shown)
-      this.currentHeroIndex = 0;
+      // Preserve currently active hero title so background updates do not cause abrupt layout swaps
+      const activeHeroId = this.currentHero?.channel?.id || this.discoveryState.getActiveHero();
+      if (activeHeroId) {
+        const existingIdx = newHeroPool.findIndex((h) => h.channel?.id === activeHeroId);
+        if (existingIdx !== -1) {
+          this.currentHeroIndex = existingIdx;
+        } else if (this.currentHero) {
+          newHeroPool.unshift(this.currentHero);
+          this.currentHeroIndex = 0;
+        }
+      } else {
+        this.currentHeroIndex = 0;
+      }
       this.recordHeroShown(this.currentHero?.channel?.id);
+      this.discoveryState.setActiveHero(this.currentHero?.channel?.id);
 
       // Save top featured IDs
       const featuredIds: number[] = [];
@@ -2177,9 +2318,11 @@ export class HomeDiscoveryComponent implements OnInit, AfterViewInit, OnDestroy 
     return !isNaN(releaseTime) && releaseTime >= oldestAllowed && releaseTime <= newestAllowed;
   }
 
-  isEligibleHeroChannel(channel: Channel): boolean {
+  isEligibleHeroChannel(channel: Channel, allowFallbackWithoutMetadata: boolean = false): boolean {
     const metadata = this.tmdbEnrichment.getEnrichmentSync(channel);
-    if (!metadata) return false;
+    if (!metadata) {
+      return allowFallbackWithoutMetadata && !!(channel.image && channel.image.startsWith("http"));
+    }
     if (this.isBollywood(channel, metadata) && (!metadata.logoPath || metadata.logoPath.trim() === "" || metadata.logoVersion !== 2)) {
       return false;
     }
@@ -2309,7 +2452,7 @@ export class HomeDiscoveryComponent implements OnInit, AfterViewInit, OnDestroy 
       if (item.id) {
         const cached = this.tmdbCache.getEnrichmentByTmdbIdSync(item.id);
         if (cached?.providerItemId) {
-          const poolMatch = inMemoryPool.find((c) => c.id === cached.providerItemId);
+          const poolMatch = this.catalogPoolById.get(cached.providerItemId) || inMemoryPool.find((c) => c.id === cached.providerItemId);
           if (poolMatch) {
             this.discoveryState.setCachedCatalogMatch(item.id, isTv, poolMatch);
             return poolMatch;
@@ -2368,9 +2511,31 @@ export class HomeDiscoveryComponent implements OnInit, AfterViewInit, OnDestroy 
           return poolMatch;
         }
 
-        // 3. Query SQLite via fetchSafe
+        // Try matching from indexed in-memory catalog pool
+        const indexedCandidates = [
+          ...(this.catalogPoolByNormTitle.get(norm) || []),
+          ...(this.catalogPoolByExactClean.get(clean.toLowerCase()) || []),
+        ];
+        if (indexedCandidates.length > 0) {
+          const indexedMatch = this.findBestCatalogMatch(
+            norm,
+            clean,
+            targetYear,
+            indexedCandidates,
+            isTv
+          );
+          if (indexedMatch) {
+            this.tmdbEnrichment.seedEnrichmentFromTmdbItem(indexedMatch, item);
+            if (item.id) {
+              this.discoveryState.setCachedCatalogMatch(item.id, isTv, indexedMatch);
+            }
+            return indexedMatch;
+          }
+        }
+
+        // 3. Query SQLite via fetchSafeWithLimiter (concurrency controlled to max 2)
         try {
-          const searchResults = await this.fetchSafe({
+          const searchResults = await this.fetchSafeWithLimiter({
             source_ids: sourceIds,
             view_type: ViewMode.All,
             media_types: isTv ? [MediaType.serie] : [MediaType.movie],
@@ -2381,6 +2546,7 @@ export class HomeDiscoveryComponent implements OnInit, AfterViewInit, OnDestroy 
           });
 
           if (searchResults && searchResults.length > 0) {
+            this.indexChannelsInPool(searchResults);
             const dbMatch = this.findBestCatalogMatch(
               norm,
               clean,
@@ -3258,13 +3424,21 @@ export class HomeDiscoveryComponent implements OnInit, AfterViewInit, OnDestroy 
           let nextEp = this.embeddedPlayer.getPersistedNextEpisode(seriesKey, rep.id);
 
           if (nextEp === undefined) {
-            nextEp = await this.embeddedPlayer.findNextEpisode(rep);
-            if (seriesKey) {
-              this.embeddedPlayer.setPersistedNextEpisode(seriesKey, rep.id, nextEp);
-            }
-          }
-
-          if (nextEp && nextEp.id != null) {
+            // Asynchronously resolve next episode in the background without blocking initial Home render
+            void this.embeddedPlayer.findNextEpisode(rep).then((resolvedEp) => {
+              if (seriesKey) {
+                this.embeddedPlayer.setPersistedNextEpisode(seriesKey, rep.id!, resolvedEp);
+              }
+              if (resolvedEp && resolvedEp.id != null && !this.embeddedPlayer.isEpisodeCompleted(resolvedEp)) {
+                g.representative = resolvedEp;
+                const progress = this.getWatchProgress(resolvedEp);
+                if (progress === 0) {
+                  this.nextEpisodeCardIds.add(resolvedEp.id);
+                }
+                this.cdr.markForCheck();
+              }
+            }).catch(() => {});
+          } else if (nextEp && nextEp.id != null) {
             const isNextCompleted = this.embeddedPlayer.isEpisodeCompleted(nextEp);
             if (!isNextCompleted) {
               g.representative = nextEp;
@@ -3279,7 +3453,7 @@ export class HomeDiscoveryComponent implements OnInit, AfterViewInit, OnDestroy 
       }
     }
 
-    // Pre-resolve season numbers for TV items if season_id > 50 and not yet cached
+    // Pre-resolve season numbers for TV items asynchronously (non-blocking)
     for (const g of groups) {
       if (g.isTv && g.representative?.id) {
         const item = g.representative;
@@ -3290,29 +3464,30 @@ export class HomeDiscoveryComponent implements OnInit, AfterViewInit, OnDestroy 
           item.series_id != null &&
           item.source_id != null
         ) {
-          try {
-            const seasons = (await invoke("search", {
-              filters: {
-                source_ids: [item.source_id],
-                series_id: item.series_id,
-                media_types: [MediaType.serie],
-                view_type: ViewMode.All,
-                use_keywords: false,
-                page: 1,
-                sort: SortType.alphabeticalAscending,
-              },
-            })) as Channel[];
-            if (seasons) {
+          void invoke("search", {
+            filters: {
+              source_ids: [item.source_id],
+              series_id: item.series_id,
+              media_types: [MediaType.serie],
+              view_type: ViewMode.All,
+              use_keywords: false,
+              page: 1,
+              sort: SortType.alphabeticalAscending,
+            },
+          }).then((seasonsRes: any) => {
+            const seasons = seasonsRes as Channel[];
+            if (seasons && Array.isArray(seasons)) {
               for (let i = 0; i < seasons.length; i++) {
                 const s = seasons[i];
-                if (s.id != null) {
+                if (s?.id != null) {
                   const match = s.name?.match(/(\d+)/);
                   const sNum = match ? parseInt(match[1], 10) : i + 1;
                   this.seasonNumCache.set(s.id, sNum);
                 }
               }
+              this.cdr.markForCheck();
             }
-          } catch {}
+          }).catch(() => {});
         }
       }
     }
@@ -3590,29 +3765,60 @@ export class HomeDiscoveryComponent implements OnInit, AfterViewInit, OnDestroy 
       return score;
     };
 
-    // 3. Helper to check duplicate versions across candidates
-    const isDuplicateVersion = (cand: Channel, list: Channel[]): boolean => {
-      const clean = cleanMediaTitle(cand.name).toLowerCase();
-      const norm = this.versionMatching.normalizeNumberTokens(
-        normalizeForComparison(clean)
-      );
-      const year = extractYear(cand.name);
+    // 3. Fast candidate deduplication with pre-computed norm keys
+    interface CandidateNorm {
+      channel: Channel;
+      clean: string;
+      norm: string;
+      year?: string;
+    }
 
-      for (const item of list) {
-        const itemClean = cleanMediaTitle(item.name).toLowerCase();
-        if (itemClean === clean) return true;
-        const itemNorm = this.versionMatching.normalizeNumberTokens(
-          normalizeForComparison(itemClean)
+    const deduplicateCandidates = (rawList: Channel[]): Channel[] => {
+      const candidates: CandidateNorm[] = rawList.map((c) => {
+        const clean = cleanMediaTitle(c.name).toLowerCase();
+        const norm = this.versionMatching.normalizeNumberTokens(
+          normalizeForComparison(clean)
         );
-        if (itemNorm === norm) {
-          const itemYear = extractYear(item.name);
-          if (!year || !itemYear || year === itemYear) return true;
+        const year = extractYear(c.name);
+        return { channel: c, clean, norm, year };
+      });
+
+      const unique: CandidateNorm[] = [];
+      const seenExactClean = new Set<string>();
+      const seenNormYear = new Set<string>();
+
+      for (const cand of candidates) {
+        if (seenExactClean.has(cand.clean)) continue;
+
+        const normYearKey = `${cand.norm}_${cand.year || ''}`;
+        if (seenNormYear.has(normYearKey)) continue;
+
+        let isDup = false;
+        for (const item of unique) {
+          if (item.clean === cand.clean) {
+            isDup = true;
+            break;
+          }
+          if (item.norm === cand.norm) {
+            if (!cand.year || !item.year || cand.year === item.year) {
+              isDup = true;
+              break;
+            }
+          }
+          if (calculateTokenSimilarity(cand.clean, item.clean) > 0.88) {
+            isDup = true;
+            break;
+          }
         }
-        if (calculateTokenSimilarity(clean, itemClean) > 0.88) {
-          return true;
+
+        if (!isDup) {
+          unique.push(cand);
+          seenExactClean.add(cand.clean);
+          seenNormYear.add(normYearKey);
         }
       }
-      return false;
+
+      return unique.map((u) => u.channel);
     };
 
     // Sort helper that adds randomized variety jitter so similarly scored top items rotate
@@ -3625,16 +3831,16 @@ export class HomeDiscoveryComponent implements OnInit, AfterViewInit, OnDestroy 
     };
 
     // 4. Collect and deduplicate movie candidates
-    const rawMovies = [...recMovies, ...movies].filter(
+    let rawMovies = [...recMovies, ...movies].filter(
       (m) => m.image && m.image.startsWith("http") && this.isEligibleHeroChannel(m),
     );
-
-    const uniqueMovies: Channel[] = [];
-    for (const m of rawMovies) {
-      if (!isDuplicateVersion(m, uniqueMovies)) {
-        uniqueMovies.push(m);
-      }
+    if (rawMovies.length === 0) {
+      rawMovies = [...recMovies, ...movies].filter(
+        (m) => m.image && m.image.startsWith("http") && this.isEligibleHeroChannel(m, true),
+      );
     }
+
+    const uniqueMovies = deduplicateCandidates(rawMovies);
 
     const freshMovies = uniqueMovies.filter((m) => m.id && !recentSet.has(m.id));
     const recentMovies = uniqueMovies.filter((m) => m.id && recentSet.has(m.id));
@@ -3657,16 +3863,16 @@ export class HomeDiscoveryComponent implements OnInit, AfterViewInit, OnDestroy 
     }
 
     // 5. Collect and deduplicate series candidates
-    const rawSeries = [...recSeries, ...series].filter(
+    let rawSeries = [...recSeries, ...series].filter(
       (s) => s.image && s.image.startsWith("http") && this.isEligibleHeroChannel(s),
     );
-
-    const uniqueSeries: Channel[] = [];
-    for (const s of rawSeries) {
-      if (!isDuplicateVersion(s, uniqueSeries)) {
-        uniqueSeries.push(s);
-      }
+    if (rawSeries.length === 0) {
+      rawSeries = [...recSeries, ...series].filter(
+        (s) => s.image && s.image.startsWith("http") && this.isEligibleHeroChannel(s, true),
+      );
     }
+
+    const uniqueSeries = deduplicateCandidates(rawSeries);
 
     const freshSeries = uniqueSeries.filter((s) => s.id && !recentSet.has(s.id));
     const recentSeries = uniqueSeries.filter((s) => s.id && recentSet.has(s.id));
@@ -3717,8 +3923,8 @@ export class HomeDiscoveryComponent implements OnInit, AfterViewInit, OnDestroy 
       [shuffled[0], shuffled[swapIdx]] = [shuffled[swapIdx], shuffled[0]];
     }
 
-    // 10. Map to HeroItem, enqueuing high priority for first 4 items and normal for remaining
-    return shuffled.map((ch, idx) => this.toHeroItem(ch, idx < 4 ? "high" : "normal"));
+    // 10. Map to HeroItem, enqueuing priority ONLY for the active hero item (idx === 0)
+    return shuffled.map((ch, idx) => this.toHeroItem(ch, idx === 0 ? "high" : "normal", idx === 0));
   }
 
   private shufflePool<T>(array: T[]): T[] {
@@ -3730,7 +3936,7 @@ export class HomeDiscoveryComponent implements OnInit, AfterViewInit, OnDestroy 
     return copy;
   }
 
-  toHeroItem(channel: Channel, priority: 'high' | 'normal' = 'high'): HeroItem {
+  toHeroItem(channel: Channel, priority: 'high' | 'normal' = 'high', shouldEnqueue: boolean = false): HeroItem {
     const isSeries = this.isTvShow(channel);
     let year = extractYear(channel.name);
     const quality = extractQuality(channel.name);
@@ -3768,8 +3974,8 @@ export class HomeDiscoveryComponent implements OnInit, AfterViewInit, OnDestroy 
       }
     }
 
-    // Queue background enrichment for hero if configured
-    if (this.tmdbConfig.isEnabled()) {
+    // Queue background enrichment for hero if configured and requested
+    if (shouldEnqueue && this.tmdbConfig.isEnabled()) {
       this.tmdbEnrichment.enqueue(channel, priority);
     }
 
@@ -4313,6 +4519,7 @@ export class HomeDiscoveryComponent implements OnInit, AfterViewInit, OnDestroy 
       if (this.currentHero?.channel?.id === channelId) {
         this.updateAmbientBackground();
       }
+      this.cdr.markForCheck();
     }
   }
 
@@ -4596,6 +4803,7 @@ export class HomeDiscoveryComponent implements OnInit, AfterViewInit, OnDestroy 
     try {
       await invoke(call, { channelId: channel.id });
       channel.favorite = !wasFavorite;
+      this.cdr.markForCheck();
     } catch (err) {
       console.error("Failed to update favorite status:", err);
       this.toastr.error("Failed to update favorite status");

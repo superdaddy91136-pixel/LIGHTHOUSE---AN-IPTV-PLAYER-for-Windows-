@@ -53,8 +53,7 @@ export class HomeDiscoveryStateService {
         if (
           parsed &&
           parsed.recommendationSource === 'tmdb' &&
-          this.hasCachedContent(parsed) &&
-          Date.now() - parsed.timestamp < this.CACHE_TTL_MS
+          this.hasCachedContent(parsed)
         ) {
           this.snapshot = parsed;
         }
@@ -110,6 +109,10 @@ export class HomeDiscoveryStateService {
 
   public setActiveHero(channelId?: number): void {
     this.activeHeroChannelId = channelId;
+  }
+
+  public getActiveHero(): number | undefined {
+    return this.activeHeroChannelId;
   }
 
   public getActiveHeroIndex(heroItems: HeroItem[]): number {

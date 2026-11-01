@@ -60,7 +60,7 @@ export class SplashScreenService {
   }
 
   private checkHomeReady(): void {
-    if (this.heroReady && this.rowsReady) {
+    if (this.heroReady || (this.heroReady && this.rowsReady)) {
       this.dismiss('home_ready');
     }
   }
