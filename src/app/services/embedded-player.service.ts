@@ -191,10 +191,8 @@ export class EmbeddedPlayerService implements OnDestroy {
             media_type: MediaType.movie,
           };
           this.currentChannel = this.activeFallbackChannel;
-          if (!this.isPlayingEmbedded) {
-            this.currentMode = 'movie';
-            emit('embedded-player-mode', { mode: 'movie' }).catch(console.warn);
-          }
+          this.currentMode = 'movie';
+          emit('embedded-player-mode', { mode: 'movie', channelId: stream.channel_id }).catch(console.warn);
           this.emitPlaybackSegments(this.activeFallbackChannel, this.lastPlayerOptions).catch(console.warn);
         }
       });
@@ -1010,7 +1008,10 @@ export class EmbeddedPlayerService implements OnDestroy {
       return;
     }
 
-    const isMovie = this.currentMode === 'movie';
+    if (opts?.mode) {
+      this.currentMode = opts.mode;
+    }
+    const isMovie = this.currentMode === 'movie' || opts?.mode === 'movie';
     const seasonNum = opts?.currentSeasonNum || this.currentSeasonNum;
     const episodeNum = opts?.currentEpisodeNum || this.currentEpisodeNum || this.extractEpisodeNumber(target.name);
     const seriesRef = opts?.seriesChannel || this.seriesChannel;

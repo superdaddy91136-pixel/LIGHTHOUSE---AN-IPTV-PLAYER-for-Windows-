@@ -9,6 +9,7 @@ export interface PlaybackSegment {
 
 export interface MediaSegmentsRecord {
   mediaKey: string;
+  channelId?: number;
   imdbId?: string;
   tmdbId?: number;
   season?: number;

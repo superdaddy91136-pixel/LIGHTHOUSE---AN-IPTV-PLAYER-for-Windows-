@@ -945,6 +945,11 @@ export class MovieDetailComponent implements OnInit, AfterViewInit, OnDestroy {
         zOrder: 'top',
       });
 
+      this.embeddedPlayer.emitPlaybackSegments(playerChannel, {
+        mode: 'movie',
+        seriesTitle: this.cleanTitle || playerChannel.name,
+      }).catch(console.warn);
+
       this.setupVideoResizeObserver();
       setTimeout(() => this.syncVideoBounds(), 50);
       setTimeout(() => this.syncVideoBounds(), 150);

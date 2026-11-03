@@ -477,6 +477,10 @@ export class TmdbCacheService {
    */
   public async setPlaybackSegments(record: MediaSegmentsRecord): Promise<void> {
     this.segmentMemoryCache.set(record.mediaKey, record);
+    if (record.channelId) {
+      this.segmentMemoryCache.set(`mv_ch_${record.channelId}`, record);
+      this.segmentMemoryCache.set(`tv_ch_${record.channelId}`, record);
+    }
     try {
       const db = await this.initDb();
       return new Promise<void>((resolve) => {

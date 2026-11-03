@@ -3,6 +3,7 @@ import { invoke } from '@tauri-apps/api/core';
 import { Channel } from '../models/channel';
 import { MediaType } from '../models/mediaType';
 import { extractImdbId, prepareSearchQuery, scoreMatch, TMDB_MINIMUM_CONFIDENCE_THRESHOLD } from '../utils/tmdb-matcher';
+import { cleanMediaTitle, extractYear } from '../utils/media-presentation';
 import { TmdbEnrichmentService } from './tmdb-enrichment.service';
 import { TmdbService } from './tmdb.service';
 import { TmdbCacheService } from './tmdb-cache.service';
@@ -383,7 +384,14 @@ export class PlaybackSegmentService {
     const directImdb = extractImdbId(channel.name) || extractImdbId(channel.url);
     if (directImdb) return directImdb;
 
-    const enrichment = this.tmdbEnrichment.getEnrichmentSync(channel);
+    let enrichment = this.tmdbEnrichment.getEnrichmentSync(channel);
+    if (!enrichment && channel.id) {
+      enrichment = await this.cacheService.getEnrichment(channel.id);
+    }
+    if (!enrichment && channel.id) {
+      enrichment = await this.tmdbEnrichment.getEnrichment(channel);
+    }
+
     if (enrichment?.imdbId) return enrichment.imdbId;
 
     if (enrichment?.tmdbId) {
@@ -391,8 +399,18 @@ export class PlaybackSegmentService {
       if (movieDetails?.imdb_id) return movieDetails.imdb_id;
     }
 
-    if (channel.name) {
-      const cinemetaImdb = await this.resolveImdbIdFromCinemeta(channel.name, 'movie');
+    const targetYear =
+      extractYear(channel.name) ||
+      extractYear(channel.url) ||
+      enrichment?.releaseYear;
+
+    const titleCandidates = [
+      channel.name,
+      cleanMediaTitle(channel.name),
+    ].filter((t): t is string => !!t && t.trim().length > 0);
+
+    for (const title of titleCandidates) {
+      const cinemetaImdb = await this.resolveImdbIdFromCinemeta(title, 'movie', targetYear);
       if (cinemetaImdb) return cinemetaImdb;
     }
 
@@ -477,6 +495,7 @@ export class PlaybackSegmentService {
     if (direct) return direct;
     const enrichment = this.tmdbEnrichment.getEnrichmentSync(channel);
     if (enrichment?.imdbId) return enrichment.imdbId;
+    if (enrichment?.tmdbId) return `tmdb_${enrichment.tmdbId}`;
     return undefined;
   }
 
