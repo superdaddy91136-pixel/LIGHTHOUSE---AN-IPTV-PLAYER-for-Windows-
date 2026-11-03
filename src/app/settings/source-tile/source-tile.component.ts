@@ -118,6 +118,7 @@ export class SourceTileComponent implements OnInit, OnChanges, OnDestroy {
       this.refreshError = true;
       this.errorMessage = payload.error;
       this.progress = payload;
+      this.loadCounts();
       this.cdr.markForCheck();
       return;
     }
@@ -227,6 +228,7 @@ export class SourceTileComponent implements OnInit, OnChanges, OnDestroy {
       this.refreshSuccess = true;
       this.refreshError = false;
       this.toastr.success("Successfully updated source");
+      this.memory.RefreshSources.next(true);
       await this.loadCounts();
       if (this.completeTimeout) {
         clearTimeout(this.completeTimeout);
@@ -246,6 +248,8 @@ export class SourceTileComponent implements OnInit, OnChanges, OnDestroy {
       this.refreshError = true;
       this.errorMessage = msg;
       this.errorService.handleError(err, "Failed to refresh source");
+      await this.loadCounts();
+      this.memory.RefreshSources.next(true);
     } finally {
       this.cdr.markForCheck();
     }

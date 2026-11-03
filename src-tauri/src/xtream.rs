@@ -94,7 +94,8 @@ struct XtreamEpisodeInfo {
 struct XtreamCategory {
     #[serde(default)]
     category_id: serde_json::Value,
-    category_name: String,
+    #[serde(default)]
+    category_name: Option<String>,
 }
 #[derive(Serialize, Deserialize, Clone, Debug)]
 struct XtreamEPG {
@@ -138,9 +139,9 @@ pub async fn get_xtream(app: Option<&AppHandle>, mut source: Source, wipe: bool)
     crate::utils::emit_source_refresh_progress(
         app,
         source_id,
-        "fetching",
-        "Fetching catalog data from server...",
-        None,
+        "connecting",
+        "Connecting to Xtream server...",
+        Some(1.0),
         true,
         None,
         None,
@@ -151,157 +152,233 @@ pub async fn get_xtream(app: Option<&AppHandle>, mut source: Source, wipe: bool)
     let user_agent = get_user_agent_from_source(&source)?;
     let client = Client::builder()
         .user_agent(user_agent)
-        .connect_timeout(Duration::from_secs(30))
+        .connect_timeout(Duration::from_secs(15))
+        .timeout(Duration::from_secs(90))
         .build()?;
-    let (live, live_cats, vods, vods_cats, series, series_cats) = join!(
-        get_xtream_http_data_with_client::<Vec<XtreamStream>>(
-            &client,
-            url.clone(),
-            GET_LIVE_STREAMS
-        ),
-        get_xtream_http_data_with_client::<Vec<XtreamCategory>>(
+
+    // Fetch categories concurrently (small JSON payloads, very fast)
+    let (live_cats, vods_cats, series_cats) = join!(
+        get_xtream_http_list_with_client::<XtreamCategory>(
             &client,
             url.clone(),
             GET_LIVE_STREAM_CATEGORIES
         ),
-        get_xtream_http_data_with_client::<Vec<XtreamStream>>(&client, url.clone(), GET_VODS),
-        get_xtream_http_data_with_client::<Vec<XtreamCategory>>(
+        get_xtream_http_list_with_client::<XtreamCategory>(
             &client,
             url.clone(),
             GET_VOD_CATEGORIES
         ),
-        get_xtream_http_data_with_client::<Vec<XtreamStream>>(&client, url.clone(), GET_SERIES),
-        get_xtream_http_data_with_client::<Vec<XtreamCategory>>(
+        get_xtream_http_list_with_client::<XtreamCategory>(
             &client,
             url.clone(),
             GET_SERIES_CATEGORIES
         ),
     );
+    let live_cats = live_cats.unwrap_or_default();
+    let vods_cats = vods_cats.unwrap_or_default();
+    let series_cats = series_cats.unwrap_or_default();
 
-    // Verify all requested catalog sections succeeded before touching database.
-    // If any request failed, abort cleanly to ensure valid existing data is never wiped.
-    let mut fetch_errors = Vec::new();
-    if let Err(e) = &live {
-        fetch_errors.push(format!("Live streams: {:#}", e));
-    }
-    if let Err(e) = &live_cats {
-        fetch_errors.push(format!("Live categories: {:#}", e));
-    }
-    if let Err(e) = &vods {
-        fetch_errors.push(format!("VOD streams: {:#}", e));
-    }
-    if let Err(e) = &vods_cats {
-        fetch_errors.push(format!("VOD categories: {:#}", e));
-    }
-    if let Err(e) = &series {
-        fetch_errors.push(format!("Series streams: {:#}", e));
-    }
-    if let Err(e) = &series_cats {
-        fetch_errors.push(format!("Series categories: {:#}", e));
-    }
-
-    if !fetch_errors.is_empty() {
-        let err_str = fetch_errors.join("; ");
-        log::log(format!(
-            "Failed to retrieve Xtream data for source {}: {}",
-            source_id, err_str
-        ));
-        bail!("Failed to retrieve Xtream catalog: {}", err_str);
-    }
-
-    let live = live.unwrap();
-    let live_cats = live_cats.unwrap();
-    let vods = vods.unwrap();
-    let vods_cats = vods_cats.unwrap();
-    let series = series.unwrap();
-    let series_cats = series_cats.unwrap();
-
-    let total_items = live.len() + vods.len() + series.len();
-
-    let mut sql = sql::get_conn()?;
-    let tx = sql.transaction()?;
-    let mut channel_preserve: Vec<ChannelPreserve> = Vec::new();
-    if wipe {
-        crate::utils::emit_source_refresh_progress(
-            app,
-            source_id,
-            "preparing",
-            "Preparing database...",
-            Some(3.0),
-            false,
-            Some(0),
-            Some(total_items),
-            None,
-        );
-        channel_preserve =
-            sql::get_preserve(&tx, source.id.context("no source id")?).unwrap_or_default();
-        sql::wipe(&tx, source.id.context("Source should have id")?)?;
-    } else {
-        source.id = Some(sql::create_or_find_source_by_name(&tx, &source)?);
-    }
-
-    let mut processed_so_far: usize = 0;
-
-    process_xtream(
-        &tx,
-        live,
-        live_cats,
-        &source,
-        media_type::LIVESTREAM,
+    // Fetch stream lists with stage-specific progress updates
+    crate::utils::emit_source_refresh_progress(
         app,
         source_id,
-        "live",
-        "Live TV",
-        &mut processed_so_far,
-        total_items,
-    )?;
-
-    process_xtream(
-        &tx,
-        vods,
-        vods_cats,
-        &source,
-        media_type::MOVIE,
-        app,
-        source_id,
-        "movies",
-        "Movies",
-        &mut processed_so_far,
-        total_items,
-    )?;
-
-    process_xtream(
-        &tx,
-        series,
-        series_cats,
-        &source,
-        media_type::SERIE,
-        app,
-        source_id,
-        "series",
-        "TV Shows",
-        &mut processed_so_far,
-        total_items,
-    )?;
+        "fetching_live",
+        "Fetching Live TV channels...",
+        Some(5.0),
+        true,
+        None,
+        None,
+        None,
+    );
+    let live_res = get_xtream_http_list_with_client::<XtreamStream>(
+        &client,
+        url.clone(),
+        GET_LIVE_STREAMS,
+    )
+    .await;
 
     crate::utils::emit_source_refresh_progress(
         app,
         source_id,
-        "finalizing",
-        "Finalizing database...",
-        Some(95.0),
-        false,
-        Some(processed_so_far),
-        Some(total_items),
+        "fetching_vods",
+        "Fetching Movies...",
+        Some(15.0),
+        true,
+        None,
+        None,
         None,
     );
+    let vods_res = get_xtream_http_list_with_client::<XtreamStream>(
+        &client,
+        url.clone(),
+        GET_VODS,
+    )
+    .await;
 
-    if wipe {
-        sql::restore_preserve(&tx, source.id.context("no source id")?, channel_preserve)?;
+    crate::utils::emit_source_refresh_progress(
+        app,
+        source_id,
+        "fetching_series",
+        "Fetching TV Shows...",
+        Some(25.0),
+        true,
+        None,
+        None,
+        None,
+    );
+    let series_res = get_xtream_http_list_with_client::<XtreamStream>(
+        &client,
+        url.clone(),
+        GET_SERIES,
+    )
+    .await;
+
+    // If all stream requests failed, abort without modifying existing database
+    if live_res.is_err() && vods_res.is_err() && series_res.is_err() {
+        let err_msg = live_res
+            .err()
+            .map(|e| e.to_string())
+            .unwrap_or_else(|| "Failed to retrieve any streams".to_string());
+        bail!("Failed to retrieve Xtream catalog: {}", err_msg);
     }
-    sql::analyze(&tx)?;
-    tx.commit()?;
+
+    let live = live_res.unwrap_or_default();
+    let vods = vods_res.unwrap_or_default();
+    let series = series_res.unwrap_or_default();
+    let total_items = live.len() + vods.len() + series.len();
+
+    let app_clone = app.cloned();
+    tokio::task::spawn_blocking(move || {
+        let app_ref = app_clone.as_ref();
+        let mut sql = sql::get_conn()?;
+        let tx = sql.transaction()?;
+        let mut channel_preserve: Vec<ChannelPreserve> = Vec::new();
+
+        if wipe {
+            crate::utils::emit_source_refresh_progress(
+                app_ref,
+                source_id,
+                "preparing",
+                "Preparing database...",
+                Some(30.0),
+                false,
+                Some(0),
+                Some(total_items),
+                None,
+            );
+            channel_preserve =
+                sql::get_preserve(&tx, source.id.context("no source id")?).unwrap_or_default();
+            sql::wipe(&tx, source.id.context("Source should have id")?)?;
+        } else {
+            source.id = Some(sql::create_or_find_source_by_name(&tx, &source)?);
+        }
+
+        let mut processed_so_far: usize = 0;
+
+        process_xtream(
+            &tx,
+            live,
+            live_cats,
+            &source,
+            media_type::LIVESTREAM,
+            app_ref,
+            source_id,
+            "live",
+            "Live TV",
+            &mut processed_so_far,
+            total_items,
+        )?;
+
+        process_xtream(
+            &tx,
+            vods,
+            vods_cats,
+            &source,
+            media_type::MOVIE,
+            app_ref,
+            source_id,
+            "movies",
+            "Movies",
+            &mut processed_so_far,
+            total_items,
+        )?;
+
+        process_xtream(
+            &tx,
+            series,
+            series_cats,
+            &source,
+            media_type::SERIE,
+            app_ref,
+            source_id,
+            "series",
+            "TV Shows",
+            &mut processed_so_far,
+            total_items,
+        )?;
+
+        crate::utils::emit_source_refresh_progress(
+            app_ref,
+            source_id,
+            "finalizing",
+            "Finalizing database...",
+            Some(95.0),
+            false,
+            Some(processed_so_far),
+            Some(total_items),
+            None,
+        );
+
+        if wipe {
+            sql::restore_preserve(&tx, source.id.context("no source id")?, channel_preserve)?;
+        }
+        tx.commit()?;
+        Ok::<(), anyhow::Error>(())
+    })
+    .await??;
+
     Ok(())
+}
+
+fn trim_bytes(b: &[u8]) -> &[u8] {
+    let mut start = 0;
+    while start < b.len() && b[start].is_ascii_whitespace() {
+        start += 1;
+    }
+    let mut end = b.len();
+    while end > start && b[end - 1].is_ascii_whitespace() {
+        end -= 1;
+    }
+    &b[start..end]
+}
+
+async fn get_xtream_http_list_with_client<T>(
+    client: &Client,
+    mut url: Url,
+    action: &str,
+) -> Result<Vec<T>>
+where
+    T: serde::de::DeserializeOwned,
+{
+    url.query_pairs_mut().append_pair("action", action);
+    let resp = client.get(url).send().await?;
+    if !resp.status().is_success() {
+        bail!("HTTP {} for action {}", resp.status(), action);
+    }
+    let bytes = resp.bytes().await?;
+    let trimmed = trim_bytes(&bytes);
+    if trimmed.is_empty() || trimmed == b"{}" || trimmed == b"null" {
+        return Ok(Vec::new());
+    }
+    match serde_json::from_slice::<Vec<T>>(&bytes) {
+        Ok(list) => Ok(list),
+        Err(e) => {
+            if let Ok(map) = serde_json::from_slice::<HashMap<String, T>>(&bytes) {
+                return Ok(map.into_values().collect());
+            }
+            Err(anyhow!("Failed to parse {action}: {e}"))
+        }
+    }
 }
 
 async fn get_xtream_http_data_with_client<T>(
@@ -323,7 +400,8 @@ where
 {
     let client = Client::builder()
         .user_agent(user_agent)
-        .connect_timeout(Duration::from_secs(30))
+        .connect_timeout(Duration::from_secs(15))
+        .timeout(Duration::from_secs(60))
         .build()?;
     get_xtream_http_data_with_client(&client, url, action).await
 }
@@ -345,18 +423,22 @@ fn process_xtream(
         .into_iter()
         .filter_map(|f| {
             let category_id = get_serde_json_string(&f.category_id);
-            category_id.map(|cid| (cid, f.category_name))
+            let name = f.category_name.filter(|n| !n.trim().is_empty());
+            match (category_id, name) {
+                (Some(cid), Some(name)) => Some((cid, name.trim().to_string())),
+                _ => None,
+            }
         })
         .collect();
     let mut groups: HashMap<String, i64> = HashMap::new();
     let stage_total = streams.len();
-    let emit_interval = (stage_total / 80).max(25);
+    let emit_interval = (stage_total / 40).max(50);
 
     if stage_total > 0 && app.is_some() {
         let pct = if total_items > 0 {
-            3.0 + ((*processed_so_far as f64 / total_items as f64) * 92.0)
+            30.0 + ((*processed_so_far as f64 / total_items as f64) * 65.0)
         } else {
-            3.0
+            30.0
         };
         crate::utils::emit_source_refresh_progress(
             app,
@@ -373,19 +455,15 @@ fn process_xtream(
 
     for (idx, live) in streams.into_iter().enumerate() {
         let category_name = get_cat_name(&cats, get_serde_json_string(&live.category_id));
-        convert_xtream_live_to_channel(live, &source, stream_type.clone(), category_name)
-            .and_then(|mut channel| {
-                sql::set_channel_group_id(
-                    &mut groups,
-                    &mut channel,
-                    &tx,
-                    source.id.as_ref().unwrap(),
-                )
-                .unwrap_or_else(|e| log::log(format!("{:?}", e)));
-                sql::insert_channel(&tx, channel)?;
-                Ok(())
-            })
-            .unwrap_or_else(|e| log::log(format!("{:?}", e)));
+        if let Ok(mut channel) = convert_xtream_live_to_channel(live, source, stream_type, category_name) {
+            let _ = sql::set_channel_group_id(
+                &mut groups,
+                &mut channel,
+                tx,
+                source.id.as_ref().unwrap(),
+            );
+            let _ = sql::insert_channel(tx, channel);
+        }
 
         *processed_so_far += 1;
         let current_in_stage = idx + 1;
@@ -393,9 +471,9 @@ fn process_xtream(
             && app.is_some()
         {
             let pct = if total_items > 0 {
-                3.0 + ((*processed_so_far as f64 / total_items as f64) * 92.0)
+                30.0 + ((*processed_so_far as f64 / total_items as f64) * 65.0)
             } else {
-                3.0
+                30.0
             };
             crate::utils::emit_source_refresh_progress(
                 app,
@@ -429,7 +507,17 @@ fn convert_xtream_live_to_channel(
     stream_type: u8,
     category_name: Option<String>,
 ) -> Result<Channel> {
-    let stream_id = get_serde_json_u64(&stream.stream_id);
+    let stream_id = get_serde_json_u64(&stream.stream_id)
+        .or_else(|| get_serde_json_u64(&stream.series_id));
+    let series_id_str = get_serde_json_string(&stream.series_id)
+        .or_else(|| get_serde_json_string(&stream.stream_id));
+    let name = stream
+        .name
+        .filter(|n| !n.trim().is_empty())
+        .context("No name")?
+        .trim()
+        .to_string();
+
     Ok(Channel {
         id: None,
         group: category_name.map(|x| x.trim().to_string()),
@@ -437,11 +525,11 @@ fn convert_xtream_live_to_channel(
             .stream_icon
             .or(stream.cover)
             .map(|x| x.trim().to_string()),
-        media_type: stream_type.clone(),
-        name: stream.name.context("No name")?.trim().to_string(),
+        media_type: stream_type,
+        name,
         source_id: source.id,
         url: if stream_type == media_type::SERIE {
-            get_serde_json_string(&stream.series_id)
+            series_id_str
         } else {
             Some(get_url(
                 stream_id.context("missing stream id")?.to_string(),
@@ -659,6 +747,7 @@ fn episode_to_channel(
     series_id: u64,
     season_id: i64,
 ) -> Result<Channel> {
+    let episode_stream_id = get_serde_json_u64(&episode.id);
     Ok(Channel {
         id: None,
         group: None,
@@ -677,7 +766,7 @@ fn episode_to_channel(
         series_id: Some(series_id),
         episode_num: get_serde_json_i64(&episode.episode_num),
         season_id: Some(season_id),
-        stream_id: None,
+        stream_id: episode_stream_id,
         group_id: None,
         favorite: false,
         tv_archive: None,

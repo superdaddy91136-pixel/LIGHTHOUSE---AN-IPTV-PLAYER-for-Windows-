@@ -28,7 +28,15 @@ pub fn get_conn() -> Result<PooledConnection<SqliteConnectionManager>> {
 }
 
 fn create_connection_pool() -> Pool<SqliteConnectionManager> {
-    let manager = SqliteConnectionManager::file(get_and_create_sqlite_db_path());
+    let manager = SqliteConnectionManager::file(get_and_create_sqlite_db_path())
+        .with_init(|conn| {
+            conn.execute_batch(
+                "PRAGMA journal_mode = WAL;
+                 PRAGMA busy_timeout = 5000;
+                 PRAGMA synchronous = NORMAL;
+                 PRAGMA foreign_keys = ON;",
+            )
+        });
     r2d2::Pool::builder().max_size(20).build(manager).unwrap()
 }
 
@@ -120,6 +128,13 @@ fn structure_exists() -> Result<bool> {
 }
 
 pub fn create_or_initialize_db() -> Result<()> {
+    let sql = get_conn()?;
+    sql.execute_batch(
+        "PRAGMA journal_mode = WAL;
+         PRAGMA busy_timeout = 5000;
+         PRAGMA synchronous = NORMAL;
+         PRAGMA foreign_keys = ON;",
+    )?;
     if !structure_exists()? {
         create_structure()?;
     }
@@ -253,6 +268,12 @@ fn apply_migrations() -> Result<()> {
               ON channels(favorite, media_type, hidden);
             "#,
         ),
+        M::up(
+            r#"
+              CREATE INDEX IF NOT EXISTS index_channels_source_media_hidden
+              ON channels(source_id, media_type, hidden, series_id);
+            "#,
+        ),
     ]);
     migrations.to_latest(&mut sql)?;
     Ok(())
@@ -316,7 +337,7 @@ pub fn insert_season(tx: &Transaction, season: Season) -> Result<i64> {
 }
 
 pub fn insert_channel(tx: &Transaction, channel: Channel) -> Result<()> {
-    tx.execute(
+    let mut stmt = tx.prepare_cached(
         r#"
 INSERT INTO channels (name, group_id, image, url, source_id, media_type, series_id, favorite, stream_id, tv_archive, season_id, episode_num)
 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
@@ -331,38 +352,38 @@ DO UPDATE SET
     tv_archive = excluded.tv_archive,
     season_id = excluded.season_id;
 "#,
-        params![
-            channel.name,
-            channel.group_id,
-            channel.image,
-            channel.url,
-            channel.source_id,
-            channel.media_type as u8,
-            channel.series_id,
-            channel.favorite,
-            channel.stream_id,
-            channel.tv_archive,
-            channel.season_id,
-            channel.episode_num
-        ],
     )?;
+    stmt.execute(params![
+        channel.name,
+        channel.group_id,
+        channel.image,
+        channel.url,
+        channel.source_id,
+        channel.media_type as u8,
+        channel.series_id,
+        channel.favorite,
+        channel.stream_id,
+        channel.tv_archive,
+        channel.season_id,
+        channel.episode_num
+    ])?;
     Ok(())
 }
 
 pub fn insert_channel_headers(tx: &Transaction, headers: ChannelHttpHeaders) -> Result<()> {
-    tx.execute(
+    let mut stmt = tx.prepare_cached(
         r#"
 INSERT OR IGNORE INTO channel_http_headers (channel_id, referrer, user_agent, http_origin, ignore_ssl)
 VALUES (?, ?, ?, ?, ?);
 "#,
-        params![
-            headers.channel_id,
-            headers.referrer,
-            headers.user_agent,
-            headers.http_origin,
-            headers.ignore_ssl
-        ],
     )?;
+    stmt.execute(params![
+        headers.channel_id,
+        headers.referrer,
+        headers.user_agent,
+        headers.http_origin,
+        headers.ignore_ssl
+    ])?;
     Ok(())
 }
 
@@ -373,16 +394,18 @@ fn get_or_insert_group(
     source_id: &i64,
     media_type: u8,
 ) -> Result<i64> {
-    let rows_changed = tx.execute(
+    let mut insert_stmt = tx.prepare_cached(
         r#"
         INSERT OR IGNORE INTO groups (name, image, source_id, media_type)
         VALUES (?, ?, ?, ?);
         "#,
-        params![group, &image, source_id, media_type],
     )?;
+    let rows_changed = insert_stmt.execute(params![group, &image, source_id, media_type])?;
     if rows_changed == 0 {
-        return Ok(tx.query_row(
+        let mut select_stmt = tx.prepare_cached(
             "SELECT id FROM groups WHERE name = ? and source_id = ?",
+        )?;
+        return Ok(select_stmt.query_row(
             params![group, source_id],
             |row| row.get::<_, i64>("id"),
         )?);
@@ -1073,7 +1096,7 @@ pub fn delete_channels_by_source(tx: &Transaction, source_id: i64) -> Result<()>
         DELETE FROM channels
         WHERE source_id = ?
     "#,
-        params![source_id.to_string()],
+        params![source_id],
     )?;
     Ok(())
 }
@@ -1721,8 +1744,12 @@ pub fn update_source(source: Source) -> Result<()> {
 }
 
 pub fn wipe(tx: &Transaction, id: i64) -> Result<()> {
-    delete_seasons_by_source(tx, id)?;
-    delete_channels_by_source(tx, id)?;
+    // Only wipe top-level catalog channels (Live TV, Movies, TV Show titles).
+    // Preserve episodes (series_id IS NOT NULL) and seasons so cached episodes, watch history, and Continue Watching are protected.
+    tx.execute(
+        "DELETE FROM channels WHERE source_id = ? AND series_id IS NULL",
+        params![id],
+    )?;
     delete_groups_by_source(tx, id)?;
     Ok(())
 }
@@ -1853,47 +1880,72 @@ pub fn restore_preserve(
     source_id: i64,
     preserve: Vec<ChannelPreserve>,
 ) -> Result<()> {
+    if preserve.is_empty() {
+        return Ok(());
+    }
+    let mut update_group_stmt = tx.prepare_cached(
+        "UPDATE groups SET hidden = ? WHERE name = ? AND source_id = ?",
+    )?;
+    let mut update_by_stream_id_stmt = tx.prepare_cached(
+        "UPDATE channels SET favorite = ?, favorite_added = ?, last_watched = ?, hidden = ?
+         WHERE source_id = ? AND stream_id = ?",
+    )?;
+    let mut update_by_url_stmt = tx.prepare_cached(
+        "UPDATE channels SET favorite = ?, favorite_added = ?, last_watched = ?, hidden = ?
+         WHERE source_id = ? AND url = ?",
+    )?;
+    let mut update_by_name_stmt = tx.prepare_cached(
+        "UPDATE channels SET favorite = ?, favorite_added = ?, last_watched = ?, hidden = ?
+         WHERE source_id = ? AND name = ? AND media_type = ?
+           AND series_id IS ? AND season_id IS ? AND episode_num IS ?",
+    )?;
+
     for item in preserve {
         if item.is_group {
-            tx.execute(
-                r#"
-                  UPDATE groups
-                  SET hidden = ?
-                  WHERE name = ?
-                  AND source_id = ?
-                "#,
-                params![item.hidden, item.name, source_id],
-            )?;
+            let _ = update_group_stmt.execute(params![item.hidden, item.name, source_id]);
+        } else if let Some(stream_id) = item.stream_id {
+            let rows = update_by_stream_id_stmt.execute(params![
+                item.favorite,
+                item.favorite_added,
+                item.last_watched,
+                item.hidden,
+                source_id,
+                stream_id,
+            ])?;
+            if rows == 0 {
+                if let Some(ref url) = item.url {
+                    let _ = update_by_url_stmt.execute(params![
+                        item.favorite,
+                        item.favorite_added,
+                        item.last_watched,
+                        item.hidden,
+                        source_id,
+                        url,
+                    ]);
+                }
+            }
+        } else if let Some(ref url) = item.url {
+            let _ = update_by_url_stmt.execute(params![
+                item.favorite,
+                item.favorite_added,
+                item.last_watched,
+                item.hidden,
+                source_id,
+                url,
+            ]);
         } else {
-            tx.execute(
-                r#"
-                  UPDATE channels
-                  SET favorite = ?, favorite_added = ?, last_watched = ?, hidden = ?
-                  WHERE source_id = ?
-                  AND (
-                    (? IS NOT NULL AND stream_id = ?)
-                    OR (? IS NOT NULL AND url = ?)
-                    OR (name = ? AND media_type = ?
-                        AND series_id IS ? AND season_id IS ? AND episode_num IS ?)
-                  )
-                "#,
-                params![
-                    item.favorite,
-                    item.favorite_added,
-                    item.last_watched,
-                    item.hidden,
-                    source_id,
-                    item.stream_id,
-                    item.stream_id,
-                    item.url,
-                    item.url,
-                    item.name,
-                    item.media_type,
-                    item.series_id,
-                    item.season_id,
-                    item.episode_num,
-                ],
-            )?;
+            let _ = update_by_name_stmt.execute(params![
+                item.favorite,
+                item.favorite_added,
+                item.last_watched,
+                item.hidden,
+                source_id,
+                item.name,
+                item.media_type,
+                item.series_id,
+                item.season_id,
+                item.episode_num,
+            ]);
         }
     }
     Ok(())
