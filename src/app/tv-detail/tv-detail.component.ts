@@ -1293,6 +1293,7 @@ export class TvDetailComponent implements OnInit, AfterViewInit, OnDestroy {
           };
         }),
         currentSeasonNum: enrichedEp.seasonNum,
+        currentEpisodeNum: enrichedEp.episodeNum,
         episodes: this.enrichedEpisodes.map((e) => ({
           id: e.channel.id!,
           channel: e.channel,

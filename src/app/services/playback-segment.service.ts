@@ -1,4 +1,5 @@
 import { Injectable } from '@angular/core';
+import { invoke } from '@tauri-apps/api/core';
 import { Channel } from '../models/channel';
 import { MediaType } from '../models/mediaType';
 import { extractImdbId, prepareSearchQuery, scoreMatch, TMDB_MINIMUM_CONFIDENCE_THRESHOLD } from '../utils/tmdb-matcher';
@@ -256,19 +257,36 @@ export class PlaybackSegmentService {
     const timer = setTimeout(() => controller.abort(), FETCH_TIMEOUT_MS);
 
     try {
-      const response = await fetch(url, {
-        method: 'GET',
-        headers: { Accept: 'application/json' },
-        signal: controller.signal,
-      });
+      let raw: any = null;
+
+      // 1. Try native Tauri command to avoid browser CORS restrictions
+      try {
+        const text = await invoke<string>('fetch_playback_segments', { url });
+        if (text) {
+          raw = JSON.parse(text);
+        }
+      } catch (ipcErr) {
+        // Fall back to direct fetch if native IPC is unavailable
+      }
+
+      // 2. Direct browser fetch fallback
+      if (!raw) {
+        const response = await fetch(url, {
+          method: 'GET',
+          headers: { Accept: 'application/json' },
+          signal: controller.signal,
+        });
+
+        if (!response.ok) {
+          clearTimeout(timer);
+          return null;
+        }
+
+        raw = await response.json();
+      }
 
       clearTimeout(timer);
 
-      if (!response.ok) {
-        return null;
-      }
-
-      const raw = await response.json();
       const segments = this.normalizeSegments(raw);
 
       const noIntro = Boolean(raw?.no_intro);
@@ -285,7 +303,7 @@ export class PlaybackSegmentService {
         noOutro,
         isConfirmedEmpty,
       };
-    } catch {
+    } catch (err) {
       clearTimeout(timer);
       return null;
     }

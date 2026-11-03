@@ -2901,9 +2901,9 @@
       <div class="up-next-header">
         <div class="up-next-header-left">
           <span class="up-next-pill">Up Next</span>
-          <span class="up-next-timer" id="upNextTimer">Playing in 10s</span>
+          <span class="up-next-timer" id="upNextTimer">Playing in 20s</span>
         </div>
-        <button type="button" class="up-next-close-btn" id="btnCancelUpNext" title="Dismiss">
+        <button type="button" class="up-next-close-btn" id="btnCancelUpNext" title="Watch Credits">
           <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor">
             <path d="M19 6.41L17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12 19 6.41z"/>
           </svg>
@@ -2928,7 +2928,7 @@
           <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor"><path d="M8 5v14l11-7z"/></svg>
           <span>Play Next</span>
         </button>
-        <button type="button" class="up-next-btn-cancel" id="btnDismissUpNext">Cancel</button>
+        <button type="button" class="up-next-btn-cancel" id="btnDismissUpNext">Watch Credits</button>
       </div>
     </div>
 
@@ -2937,9 +2937,9 @@
       <div class="movie-recs-header">
         <div class="movie-recs-header-left">
           <span class="movie-recs-pill">Recommended</span>
-          <span class="movie-recs-timer" id="movieRecsTimer">Playing in 10s</span>
+          <span class="movie-recs-timer" id="movieRecsTimer">Playing in 20s</span>
         </div>
-        <button type="button" class="up-next-close-btn" id="btnCancelMovieRecs" title="Dismiss">
+        <button type="button" class="up-next-close-btn" id="btnCancelMovieRecs" title="Watch Credits">
           <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor">
             <path d="M19 6.41L17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12 19 6.41z"/>
           </svg>
@@ -2954,11 +2954,11 @@
           <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor"><path d="M8 5v14l11-7z"/></svg>
           <span>Play Now</span>
         </button>
-        <button type="button" class="up-next-btn-cancel" id="btnDismissMovieRecs">Cancel</button>
+        <button type="button" class="up-next-btn-cancel" id="btnDismissMovieRecs">Watch Credits</button>
       </div>
     </div>
 
-    <!-- MANUAL SKIP SEGMENT BUTTON (SKIP INTRO / RECAP / CREDITS) -->
+    <!-- MANUAL SKIP SEGMENT BUTTON (SKIP INTRO / RECAP) -->
     <button type="button" class="skip-segment-btn" id="btnSkipSegment" style="display: none;">
       <span class="skip-segment-text" id="skipSegmentText">Skip Intro</span>
       <svg width="18" height="18" viewBox="0 0 24 24" fill="currentColor">
@@ -3208,17 +3208,21 @@
 
       let upNextState = {
         isShowing: false,
-        countdown: 10,
+        countdown: 20,
         timerId: null,
         cancelledForMediaId: null,
+        hasTriggeredForSession: false,
+        watchCreditsSelected: false,
         nextEpisode: null,
       };
 
       let movieRecsState = {
         isShowing: false,
-        countdown: 10,
+        countdown: 20,
         timerId: null,
         cancelledForMediaId: null,
+        hasTriggeredForSession: false,
+        watchCreditsSelected: false,
         items: [],
         selectedIndex: 0,
       };
@@ -5035,8 +5039,11 @@
         clearUpNextTimer();
         upNextState.isShowing = false;
         if (upNextCard) upNextCard.style.display = 'none';
-        if (cancelled && currentActiveChannelId) {
-          upNextState.cancelledForMediaId = currentActiveChannelId;
+        if (cancelled) {
+          upNextState.watchCreditsSelected = true;
+          if (currentActiveChannelId) {
+            upNextState.cancelledForMediaId = currentActiveChannelId;
+          }
         }
       }
 
@@ -5083,11 +5090,12 @@
 
       function showUpNextCard(nextEp) {
         if (!nextEp || !upNextCard) return;
-        if (upNextState.cancelledForMediaId === currentActiveChannelId) return;
-        if (upNextState.isShowing) return;
+        if (upNextState.watchCreditsSelected || upNextState.cancelledForMediaId === currentActiveChannelId) return;
+        if (upNextState.isShowing || upNextState.hasTriggeredForSession) return;
 
         upNextState.isShowing = true;
-        upNextState.countdown = 10;
+        upNextState.hasTriggeredForSession = true;
+        upNextState.countdown = 20;
         upNextState.nextEpisode = nextEp;
 
         const sNum = nextEp.seasonNum != null && nextEp.seasonNum > 0 ? String(nextEp.seasonNum).padStart(2, '0') : '';
@@ -5107,7 +5115,7 @@
           upNextEpTitle.textContent = cleanTitle || (nextEp.episodeNum ? `Episode ${nextEp.episodeNum}` : 'Next Episode');
         }
         if (upNextTimer) {
-          upNextTimer.textContent = `Playing in 10s`;
+          upNextTimer.textContent = `Playing in 20s`;
         }
 
         const thumbUrl = nextEp.stillUrl || (nextEp.channel && nextEp.channel.image);
@@ -5160,8 +5168,11 @@
         clearMovieRecsTimer();
         movieRecsState.isShowing = false;
         if (movieRecsCard) movieRecsCard.style.display = 'none';
-        if (cancelled && currentActiveChannelId) {
-          movieRecsState.cancelledForMediaId = currentActiveChannelId;
+        if (cancelled) {
+          movieRecsState.watchCreditsSelected = true;
+          if (currentActiveChannelId) {
+            movieRecsState.cancelledForMediaId = currentActiveChannelId;
+          }
         }
       }
 
@@ -5217,24 +5228,25 @@
         if (movieRecsSelectedTitle && selectedRec) {
           movieRecsSelectedTitle.textContent = selectedRec.title;
         }
-        movieRecsState.countdown = 10;
+        movieRecsState.countdown = 20;
         if (movieRecsTimer) {
-          movieRecsTimer.textContent = `Playing in 10s`;
+          movieRecsTimer.textContent = `Playing in 20s`;
         }
       }
 
       function showMovieRecsCard() {
         if (!movieRecsState.items || movieRecsState.items.length === 0 || !movieRecsCard) return;
-        if (movieRecsState.cancelledForMediaId === currentActiveChannelId) return;
-        if (movieRecsState.isShowing) return;
+        if (movieRecsState.watchCreditsSelected || movieRecsState.cancelledForMediaId === currentActiveChannelId) return;
+        if (movieRecsState.isShowing || movieRecsState.hasTriggeredForSession) return;
 
         movieRecsState.isShowing = true;
+        movieRecsState.hasTriggeredForSession = true;
         movieRecsState.selectedIndex = 0;
-        movieRecsState.countdown = 10;
+        movieRecsState.countdown = 20;
 
         renderMovieRecsGrid();
         if (movieRecsTimer) {
-          movieRecsTimer.textContent = `Playing in 10s`;
+          movieRecsTimer.textContent = `Playing in 20s`;
         }
 
         movieRecsCard.style.display = 'flex';
@@ -5256,30 +5268,27 @@
         const effDuration = duration > 0 ? duration : (cachedDuration > 0 ? cachedDuration : 0);
         if (effDuration < 60 || currentTime <= 5) return;
 
-        // Priority 1: High-precision verified timestamp segment (IntroDB / PlaybackSegmentService)
+        // Exact IntroDB credits timestamps must be the exclusive trigger for this feature.
+        // If no valid credits timestamp is available, do NOT guess or trigger based on playback percentage!
         const creditsSegment = Array.isArray(mediaSegments)
           ? mediaSegments.find(
-              (seg) => seg && seg.type === 'credits' && typeof seg.startTime === 'number' &&
-                       seg.startTime > 0 &&
-                       seg.startTime >= effDuration * 0.60 &&
-                       seg.startTime <= effDuration - 5
+              (seg) => seg && seg.type === 'credits' && typeof seg.startTime === 'number' && seg.startTime > 0
             )
           : null;
 
-        let creditStart;
-        if (creditsSegment) {
-          creditStart = creditsSegment.startTime;
-        } else if (detectedCreditStartTime != null && detectedCreditStartTime > 0 &&
-                   detectedCreditStartTime >= effDuration * 0.70 &&
-                   detectedCreditStartTime <= effDuration - 10) {
-          // Priority 2: Chapter-based credit detection from embedded MPV chapters
-          creditStart = detectedCreditStartTime;
-        } else {
-          // Priority 3: Percentage-based fallback (95% of duration)
-          creditStart = effDuration * 0.95;
+        if (!creditsSegment) {
+          return;
+        }
+
+        const creditStart = creditsSegment.startTime;
+        if (effDuration > 0 && creditStart >= effDuration) {
+          return;
         }
 
         if (currentContentMode === 'episode') {
+          if (upNextState.watchCreditsSelected || upNextState.cancelledForMediaId === currentActiveChannelId) return;
+          if (upNextState.hasTriggeredForSession) return;
+
           let nextEp = upNextState.nextEpisode;
           if (nextEp === undefined) {
             nextEp = getFallbackNextEpisode();
@@ -5288,40 +5297,39 @@
             if (upNextState.isShowing) hideUpNextCard(false);
             return;
           }
-          if (upNextState.cancelledForMediaId === currentActiveChannelId) return;
 
           if (currentTime >= creditStart) {
             if (!upNextState.isShowing) {
               showUpNextCard(nextEp);
             }
-          } else if (upNextState.isShowing && currentTime < creditStart - 3) {
-            hideUpNextCard(false);
           }
         } else if (currentContentMode === 'movie') {
+          if (movieRecsState.watchCreditsSelected || movieRecsState.cancelledForMediaId === currentActiveChannelId) return;
+          if (movieRecsState.hasTriggeredForSession) return;
+
           if (!movieRecsState.items || movieRecsState.items.length === 0) {
             if (movieRecsState.isShowing) hideMovieRecsCard(false);
             return;
           }
-          if (movieRecsState.cancelledForMediaId === currentActiveChannelId) return;
 
           if (currentTime >= creditStart) {
             if (!movieRecsState.isShowing) {
               showMovieRecsCard();
             }
-          } else if (movieRecsState.isShowing && currentTime < creditStart - 3) {
-            hideMovieRecsCard(false);
           }
         }
       }
 
-      // PLAYBACK SEGMENTS (SKIP INTRO / RECAP / CREDITS)
+      // PLAYBACK SEGMENTS (SKIP INTRO / RECAP)
       function showSkipSegmentBtn(segment) {
-        if (!btnSkipSegment) return;
+        if (!btnSkipSegment) {
+          return;
+        }
+        if (segment.type === 'credits') return; // Credits is handled exclusively via automatic Next Content recommendation
+
         let label = 'Skip Intro';
         if (segment.type === 'recap') {
           label = 'Skip Recap';
-        } else if (segment.type === 'credits') {
-          label = 'Skip Credits';
         } else if (segment.type === 'post_credits') {
           label = 'Skip Post-Credits';
         }
@@ -5337,7 +5345,8 @@
       }
 
       function checkSegmentBoundaries() {
-        if (!btnSkipSegment || !mediaSegments || mediaSegments.length === 0) {
+        if (!btnSkipSegment) return;
+        if (!mediaSegments || mediaSegments.length === 0) {
           hideSkipSegmentBtn();
           return;
         }
@@ -5349,9 +5358,10 @@
           }
         }
 
-        // Find active segment at currentTime
+        // Find active segment at currentTime (credits is strictly excluded from manual skip button!)
         const active = mediaSegments.find((seg) => {
-          return currentTime >= seg.startTime && currentTime < seg.endTime;
+          return (seg.type === 'intro' || seg.type === 'recap' || seg.type === 'post_credits') &&
+                 currentTime >= seg.startTime && currentTime < seg.endTime;
         });
 
         if (!active) {
@@ -5370,7 +5380,7 @@
       }
 
       function executeSkipSegment() {
-        if (!currentActiveSegment) return;
+        if (!currentActiveSegment || currentActiveSegment.type === 'credits') return;
         const targetTime = currentActiveSegment.endTime;
         lastSkippedSegment = currentActiveSegment;
         currentActiveSegment = null;
@@ -7055,13 +7065,15 @@
       tauriListen('embedded-player-segments-data', (event) => {
         if (!event?.payload) return;
         const incomingId = event.payload.channelId;
-        if (incomingId == null || currentActiveChannelId == null || incomingId === currentActiveChannelId) {
+        const isMatch = incomingId == null || currentActiveChannelId == null || String(incomingId) === String(currentActiveChannelId);
+        if (isMatch) {
           if (incomingId != null && currentActiveChannelId == null) {
             currentActiveChannelId = incomingId;
           }
           mediaSegments = Array.isArray(event.payload.segments) ? event.payload.segments : [];
           lastSkippedSegment = null;
           checkSegmentBoundaries();
+          checkUpNextTrigger();
         }
       });
 
@@ -7100,10 +7112,14 @@
         hideMovieRecsCard(false);
         upNextState.cancelledForMediaId = null;
         movieRecsState.cancelledForMediaId = null;
+        upNextState.hasTriggeredForSession = false;
+        upNextState.watchCreditsSelected = false;
+        movieRecsState.hasTriggeredForSession = false;
+        movieRecsState.watchCreditsSelected = false;
         detectedCreditStartTime = null;
 
         const chId = event?.payload?.channel_id ?? event?.payload?.channelId;
-        const isDifferentChannel = chId != null && currentActiveChannelId != null && currentActiveChannelId !== chId;
+        const isDifferentChannel = chId != null && currentActiveChannelId != null && String(currentActiveChannelId) !== String(chId);
         if (chId != null) {
           currentActiveChannelId = chId;
         }
@@ -7171,6 +7187,10 @@
         hideMovieRecsCard(false);
         upNextState.cancelledForMediaId = null;
         movieRecsState.cancelledForMediaId = null;
+        upNextState.hasTriggeredForSession = false;
+        upNextState.watchCreditsSelected = false;
+        movieRecsState.hasTriggeredForSession = false;
+        movieRecsState.watchCreditsSelected = false;
         detectedCreditStartTime = null;
         mediaSegments = [];
         currentActiveSegment = null;

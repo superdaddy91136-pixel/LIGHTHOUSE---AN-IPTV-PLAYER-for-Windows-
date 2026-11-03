@@ -2247,3 +2247,14 @@ pub async fn remove_external_subtitle(
 
     Ok(())
 }
+
+#[tauri::command]
+pub async fn fetch_playback_segments(url: String) -> Result<String, String> {
+    let client = reqwest::Client::builder()
+        .user_agent("Lighthouse")
+        .build()
+        .map_err(|e| e.to_string())?;
+    let resp = client.get(&url).send().await.map_err(|e| e.to_string())?;
+    let text = resp.text().await.map_err(|e| e.to_string())?;
+    Ok(text)
+}

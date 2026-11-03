@@ -65,6 +65,7 @@ export interface EmbeddedPlayerOptions {
   seriesTitle?: string;
   seasons?: SwitcherSeasonData[];
   currentSeasonNum?: number;
+  currentEpisodeNum?: number;
   episodes?: SwitcherEpisodeData[];
   onSwitchEpisode?: (channel: Channel) => void | Promise<void>;
   // Live TV channel switcher options
@@ -112,6 +113,7 @@ export class EmbeddedPlayerService implements OnDestroy {
   private seriesTitle?: string;
   private seasons: SwitcherSeasonData[] = [];
   private currentSeasonNum: number = 1;
+  private currentEpisodeNum?: number;
   private episodes: SwitcherEpisodeData[] = [];
   private onSwitchEpisodeCallback?: (channel: Channel) => void | Promise<void>;
   private lastPlayerOptions?: EmbeddedPlayerOptions;
@@ -188,10 +190,12 @@ export class EmbeddedPlayerService implements OnDestroy {
             source_id: stream.source_id,
             media_type: MediaType.movie,
           };
+          this.currentChannel = this.activeFallbackChannel;
           if (!this.isPlayingEmbedded) {
             this.currentMode = 'movie';
             emit('embedded-player-mode', { mode: 'movie' }).catch(console.warn);
           }
+          this.emitPlaybackSegments(this.activeFallbackChannel, this.lastPlayerOptions).catch(console.warn);
         }
       });
     });
@@ -358,8 +362,9 @@ export class EmbeddedPlayerService implements OnDestroy {
 
     // Listen for playback segments request from overlay
     this.unlistenRequestSegments = await listen('request-player-segments', () => {
-      if (this.currentChannel) {
-        this.emitPlaybackSegments(this.currentChannel, this.lastPlayerOptions).catch(console.warn);
+      const target = this.currentChannel || this.activeFallbackChannel;
+      if (target) {
+        this.emitPlaybackSegments(target, this.lastPlayerOptions).catch(console.warn);
       }
     });
   }
@@ -767,6 +772,11 @@ export class EmbeddedPlayerService implements OnDestroy {
     } else if (this.currentMode === 'episode') {
       this.currentSeasonNum = this.extractSeasonNumber(channel);
     }
+    if (options?.currentEpisodeNum) {
+      this.currentEpisodeNum = options.currentEpisodeNum;
+    } else if (this.currentMode === 'episode') {
+      this.currentEpisodeNum = channel.episode_num || this.extractEpisodeNumber(channel.name);
+    }
     if (options?.episodes && options.episodes.length > 0) {
       this.episodes = options.episodes;
     } else if (this.currentMode === 'episode') {
@@ -994,7 +1004,7 @@ export class EmbeddedPlayerService implements OnDestroy {
 
   public async emitPlaybackSegments(channel?: Channel, options?: EmbeddedPlayerOptions): Promise<void> {
     const opts = options || this.lastPlayerOptions;
-    const target = channel || this.currentChannel;
+    const target = channel || this.currentChannel || this.activeFallbackChannel;
     if (!target || !target.id || this.currentMode === 'live') {
       emit('embedded-player-segments-data', { channelId: target?.id, segments: [] }).catch(console.warn);
       return;
@@ -1002,12 +1012,14 @@ export class EmbeddedPlayerService implements OnDestroy {
 
     const isMovie = this.currentMode === 'movie';
     const seasonNum = opts?.currentSeasonNum || this.currentSeasonNum;
+    const episodeNum = opts?.currentEpisodeNum || this.currentEpisodeNum || this.extractEpisodeNumber(target.name);
     const seriesRef = opts?.seriesChannel || this.seriesChannel;
     const seriesTitle = opts?.seriesTitle || this.seriesTitle;
 
     const resolveOpts: ResolveSegmentOptions = {
       isMovie,
       seasonNum,
+      episodeNum,
       seriesChannel: seriesRef,
       seriesTitle,
     };
@@ -1025,8 +1037,9 @@ export class EmbeddedPlayerService implements OnDestroy {
     // 2. Fetch asynchronously in background without blocking playback
     try {
       const segments = await this.playbackSegmentService.getSegments(target, resolveOpts);
+      const activeId = this.currentChannel?.id || this.activeFallbackChannel?.id;
 
-      if (this.currentChannel?.id === target.id) {
+      if (activeId === target.id) {
         emit('embedded-player-segments-data', {
           channelId: target.id,
           segments: segments || [],

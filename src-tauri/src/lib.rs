@@ -117,7 +117,8 @@ pub fn run() {
             embedded_poc::get_overlay_top_crop,
             embedded_poc::save_external_subtitle,
             embedded_poc::get_saved_external_subtitles,
-            embedded_poc::remove_external_subtitle
+            embedded_poc::remove_external_subtitle,
+            embedded_poc::fetch_playback_segments
         ])
         .setup(|app| {
             app.manage(Mutex::new(AppState {
