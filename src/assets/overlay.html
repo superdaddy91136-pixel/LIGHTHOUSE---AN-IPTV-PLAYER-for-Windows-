@@ -2137,8 +2137,58 @@
     .up-next-btn-play,
     .up-next-btn-cancel,
     .up-next-close-btn,
-    .movie-rec-item {
+    .movie-rec-item,
+    .skip-segment-btn {
       pointer-events: auto !important;
+    }
+
+    /* MANUAL SKIP SEGMENT BUTTON (SKIP INTRO, RECAP, CREDITS) */
+    .skip-segment-btn {
+      position: absolute;
+      right: 28px;
+      bottom: 28px;
+      height: 42px;
+      padding: 0 18px;
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      background: rgba(18, 20, 28, 0.88);
+      border: 1px solid rgba(255, 255, 255, 0.24);
+      border-radius: 8px;
+      box-shadow: 0 10px 30px rgba(0, 0, 0, 0.7), inset 0 1px 0 rgba(255, 255, 255, 0.15);
+      backdrop-filter: blur(20px);
+      -webkit-backdrop-filter: blur(20px);
+      color: #ffffff;
+      font-family: inherit;
+      font-size: 14px;
+      font-weight: 600;
+      letter-spacing: 0.3px;
+      cursor: pointer;
+      z-index: 96;
+      pointer-events: auto !important;
+      user-select: none;
+      transition: bottom 0.26s cubic-bezier(0.16, 1, 0.3, 1), transform 0.16s ease, background 0.16s ease, border-color 0.16s ease, opacity 0.2s ease, right 0.26s ease;
+      opacity: 0.95;
+    }
+
+    .overlay-container.active .skip-segment-btn {
+      bottom: 108px;
+    }
+
+    .skip-segment-btn:hover {
+      background: rgba(35, 39, 52, 0.96);
+      border-color: rgba(255, 255, 255, 0.55);
+      transform: scale(1.04);
+      opacity: 1;
+    }
+
+    .skip-segment-btn:active {
+      transform: scale(0.97);
+    }
+
+    .up-next-card:not([style*="display: none"]) ~ .skip-segment-btn,
+    .movie-recs-card:not([style*="display: none"]) ~ .skip-segment-btn {
+      right: 404px;
     }
 
     /* UP NEXT (TV) & END-OF-PLAYBACK RECOMMENDATIONS (MOVIE) */
@@ -2908,6 +2958,14 @@
       </div>
     </div>
 
+    <!-- MANUAL SKIP SEGMENT BUTTON (SKIP INTRO / RECAP / CREDITS) -->
+    <button type="button" class="skip-segment-btn" id="btnSkipSegment" style="display: none;">
+      <span class="skip-segment-text" id="skipSegmentText">Skip Intro</span>
+      <svg width="18" height="18" viewBox="0 0 24 24" fill="currentColor">
+        <path d="M4 18l8.5-6L4 6v12zm9-12v12l8.5-6L13 6z"/>
+      </svg>
+    </button>
+
   </div>
 
   <script>
@@ -3138,6 +3196,13 @@
       const btnPlayMovieRec = document.getElementById('btnPlayMovieRec');
       const movieRecsSelectedTitle = document.getElementById('movieRecsSelectedTitle');
       const movieRecsGrid = document.getElementById('movieRecsGrid');
+
+      // PLAYBACK SEGMENTS (SKIP INTRO / RECAP / CREDITS)
+      const btnSkipSegment = document.getElementById('btnSkipSegment');
+      const skipSegmentText = document.getElementById('skipSegmentText');
+      let mediaSegments = [];
+      let currentActiveSegment = null;
+      let lastSkippedSegment = null;
 
       let detectedCreditStartTime = null;
 
@@ -3476,6 +3541,7 @@
         updateBufferedUI();
         maybeSaveProgress();
         checkUpNextTrigger();
+        checkSegmentBoundaries();
       }
 
       function updateVolumeIconElements(iconEls, volPct, isZeroOrMuted) {
@@ -5190,11 +5256,28 @@
         const effDuration = duration > 0 ? duration : (cachedDuration > 0 ? cachedDuration : 0);
         if (effDuration < 60 || currentTime <= 5) return;
 
-        const creditStart = (detectedCreditStartTime != null && detectedCreditStartTime > 0 &&
-                             detectedCreditStartTime >= effDuration * 0.70 &&
-                             detectedCreditStartTime <= effDuration - 10)
-          ? detectedCreditStartTime
-          : (effDuration * 0.95);
+        // Priority 1: High-precision verified timestamp segment (IntroDB / PlaybackSegmentService)
+        const creditsSegment = Array.isArray(mediaSegments)
+          ? mediaSegments.find(
+              (seg) => seg && seg.type === 'credits' && typeof seg.startTime === 'number' &&
+                       seg.startTime > 0 &&
+                       seg.startTime >= effDuration * 0.60 &&
+                       seg.startTime <= effDuration - 5
+            )
+          : null;
+
+        let creditStart;
+        if (creditsSegment) {
+          creditStart = creditsSegment.startTime;
+        } else if (detectedCreditStartTime != null && detectedCreditStartTime > 0 &&
+                   detectedCreditStartTime >= effDuration * 0.70 &&
+                   detectedCreditStartTime <= effDuration - 10) {
+          // Priority 2: Chapter-based credit detection from embedded MPV chapters
+          creditStart = detectedCreditStartTime;
+        } else {
+          // Priority 3: Percentage-based fallback (95% of duration)
+          creditStart = effDuration * 0.95;
+        }
 
         if (currentContentMode === 'episode') {
           let nextEp = upNextState.nextEpisode;
@@ -5229,6 +5312,79 @@
             hideMovieRecsCard(false);
           }
         }
+      }
+
+      // PLAYBACK SEGMENTS (SKIP INTRO / RECAP / CREDITS)
+      function showSkipSegmentBtn(segment) {
+        if (!btnSkipSegment) return;
+        let label = 'Skip Intro';
+        if (segment.type === 'recap') {
+          label = 'Skip Recap';
+        } else if (segment.type === 'credits') {
+          label = 'Skip Credits';
+        } else if (segment.type === 'post_credits') {
+          label = 'Skip Post-Credits';
+        }
+        if (skipSegmentText) {
+          skipSegmentText.textContent = label;
+        }
+        btnSkipSegment.style.display = 'flex';
+      }
+
+      function hideSkipSegmentBtn() {
+        if (!btnSkipSegment) return;
+        btnSkipSegment.style.display = 'none';
+      }
+
+      function checkSegmentBoundaries() {
+        if (!btnSkipSegment || !mediaSegments || mediaSegments.length === 0) {
+          hideSkipSegmentBtn();
+          return;
+        }
+
+        // If user sought outside of lastSkippedSegment, reset it so rewinding allows skipping again
+        if (lastSkippedSegment) {
+          if (currentTime < lastSkippedSegment.startTime || currentTime >= lastSkippedSegment.endTime) {
+            lastSkippedSegment = null;
+          }
+        }
+
+        // Find active segment at currentTime
+        const active = mediaSegments.find((seg) => {
+          return currentTime >= seg.startTime && currentTime < seg.endTime;
+        });
+
+        if (!active) {
+          currentActiveSegment = null;
+          hideSkipSegmentBtn();
+          return;
+        }
+
+        if (lastSkippedSegment === active) {
+          hideSkipSegmentBtn();
+          return;
+        }
+
+        currentActiveSegment = active;
+        showSkipSegmentBtn(active);
+      }
+
+      function executeSkipSegment() {
+        if (!currentActiveSegment) return;
+        const targetTime = currentActiveSegment.endTime;
+        lastSkippedSegment = currentActiveSegment;
+        currentActiveSegment = null;
+        hideSkipSegmentBtn();
+
+        sendMpv(['seek', targetTime, 'absolute']);
+        showControls();
+      }
+
+      if (btnSkipSegment) {
+        btnSkipSegment.addEventListener('click', (e) => {
+          e.stopPropagation();
+          executeSkipSegment();
+        });
       }
 
       if (btnPlayNextEp) {
@@ -6342,6 +6498,11 @@
         } else if (e.key === 'f' || e.key === 'F') {
           toggleFullscreen();
           e.preventDefault();
+        } else if ((e.key === 's' || e.key === 'S') && !e.ctrlKey && !e.altKey && !e.metaKey) {
+          if (currentActiveSegment && btnSkipSegment && btnSkipSegment.style.display !== 'none') {
+            executeSkipSegment();
+            e.preventDefault();
+          }
         }
       });
 
@@ -6891,6 +7052,19 @@
         }
       });
 
+      tauriListen('embedded-player-segments-data', (event) => {
+        if (!event?.payload) return;
+        const incomingId = event.payload.channelId;
+        if (incomingId == null || currentActiveChannelId == null || incomingId === currentActiveChannelId) {
+          if (incomingId != null && currentActiveChannelId == null) {
+            currentActiveChannelId = incomingId;
+          }
+          mediaSegments = Array.isArray(event.payload.segments) ? event.payload.segments : [];
+          lastSkippedSegment = null;
+          checkSegmentBoundaries();
+        }
+      });
+
       tauriListen('embedded-player-channels-data', (event) => {
         if (event?.payload) {
           if (event.payload.currentChannelId != null) {
@@ -6929,9 +7103,18 @@
         detectedCreditStartTime = null;
 
         const chId = event?.payload?.channel_id ?? event?.payload?.channelId;
+        const isDifferentChannel = chId != null && currentActiveChannelId != null && currentActiveChannelId !== chId;
         if (chId != null) {
           currentActiveChannelId = chId;
         }
+
+        if (isDifferentChannel || !mediaSegments || mediaSegments.length === 0) {
+          mediaSegments = [];
+          currentActiveSegment = null;
+          lastSkippedSegment = null;
+          hideSkipSegmentBtn();
+        }
+        tauriEmit('request-player-segments');
         currentMediaSessionId = `${currentActiveChannelId || 'media'}_${event?.payload?.url || event?.payload?.name || ''}_${Date.now()}`;
         const startTarget = (event?.payload?.startTime > 5)
           ? Math.round(event.payload.startTime)
@@ -6989,6 +7172,10 @@
         upNextState.cancelledForMediaId = null;
         movieRecsState.cancelledForMediaId = null;
         detectedCreditStartTime = null;
+        mediaSegments = [];
+        currentActiveSegment = null;
+        lastSkippedSegment = null;
+        hideSkipSegmentBtn();
         movieRecsState.items = [];
         clearTimeout(resumeSeekTimeout);
         flushSaveProgress();
@@ -7070,6 +7257,7 @@
       tauriEmit('request-player-episodes');
       tauriEmit('request-player-channels');
       tauriEmit('request-movie-recommendations');
+      tauriEmit('request-player-segments');
 
       tauriInvoke('get_overlay_top_crop').then((crop) => {
         if (typeof crop === 'number') {

@@ -25,6 +25,7 @@ import { MovieDetailService } from './movie-detail.service';
 import { TvDetailService } from './tv-detail.service';
 import { HomeDiscoveryStateService } from './home-discovery-state.service';
 import { TmdbEnrichmentService } from './tmdb-enrichment.service';
+import { PlaybackSegmentService, ResolveSegmentOptions } from './playback-segment.service';
 
 export type ContentMode = 'movie' | 'episode' | 'live';
 
@@ -113,6 +114,7 @@ export class EmbeddedPlayerService implements OnDestroy {
   private currentSeasonNum: number = 1;
   private episodes: SwitcherEpisodeData[] = [];
   private onSwitchEpisodeCallback?: (channel: Channel) => void | Promise<void>;
+  private lastPlayerOptions?: EmbeddedPlayerOptions;
 
   // Live TV switcher state
   private liveChannels: SwitcherChannelData[] = [];
@@ -136,6 +138,7 @@ export class EmbeddedPlayerService implements OnDestroy {
   private unlistenSaveProgress?: UnlistenFn;
   private unlistenRequestRecommendations?: UnlistenFn;
   private unlistenPlayRecommendedMovie?: UnlistenFn;
+  private unlistenRequestSegments?: UnlistenFn;
 
   private routerSubscription?: Subscription;
 
@@ -151,6 +154,7 @@ export class EmbeddedPlayerService implements OnDestroy {
     private tvDetailService: TvDetailService,
     private homeDiscoveryState: HomeDiscoveryStateService,
     private tmdbEnrichment: TmdbEnrichmentService,
+    private playbackSegmentService: PlaybackSegmentService,
   ) {
     this.initGlobalListeners();
     this.routerSubscription = this.router.events
@@ -349,6 +353,13 @@ export class EmbeddedPlayerService implements OnDestroy {
           const canvas = typeof this.hostTarget === 'string' ? this.hostTarget : this.resolveVideoCanvasId();
           await this.playMediaDirectly(targetChannel, canvas);
         });
+      }
+    });
+
+    // Listen for playback segments request from overlay
+    this.unlistenRequestSegments = await listen('request-player-segments', () => {
+      if (this.currentChannel) {
+        this.emitPlaybackSegments(this.currentChannel, this.lastPlayerOptions).catch(console.warn);
       }
     });
   }
@@ -656,6 +667,7 @@ export class EmbeddedPlayerService implements OnDestroy {
     this.activeFallbackChannel = undefined;
     this.seriesChannel = undefined;
     this.seriesTitle = undefined;
+    this.lastPlayerOptions = undefined;
     this.seasons = [];
     this.episodes = [];
     this.onSwitchEpisodeCallback = undefined;
@@ -702,6 +714,7 @@ export class EmbeddedPlayerService implements OnDestroy {
     this.activeFallbackChannel = undefined;
     this.seriesChannel = undefined;
     this.seriesTitle = undefined;
+    this.lastPlayerOptions = undefined;
     this.seasons = [];
     this.episodes = [];
     this.onSwitchEpisodeCallback = undefined;
@@ -789,6 +802,7 @@ export class EmbeddedPlayerService implements OnDestroy {
       }));
     }
     if (options?.onSwitchChannel) this.onSwitchChannelCallback = options.onSwitchChannel;
+    this.lastPlayerOptions = options;
 
     const startPos =
       options?.startTime ??
@@ -873,6 +887,8 @@ export class EmbeddedPlayerService implements OnDestroy {
       } else if (this.currentMode === 'movie') {
         this.emitMovieRecommendations(playChannel).catch(console.warn);
       }
+
+      this.emitPlaybackSegments(playChannel, options).catch(console.warn);
 
       if (!wasAlreadyPlaying) {
         this.attachKeyHandler();
@@ -974,6 +990,51 @@ export class EmbeddedPlayerService implements OnDestroy {
       })),
       nextEpisode: nextEp,
     }).catch(console.warn);
+  }
+
+  public async emitPlaybackSegments(channel?: Channel, options?: EmbeddedPlayerOptions): Promise<void> {
+    const opts = options || this.lastPlayerOptions;
+    const target = channel || this.currentChannel;
+    if (!target || !target.id || this.currentMode === 'live') {
+      emit('embedded-player-segments-data', { channelId: target?.id, segments: [] }).catch(console.warn);
+      return;
+    }
+
+    const isMovie = this.currentMode === 'movie';
+    const seasonNum = opts?.currentSeasonNum || this.currentSeasonNum;
+    const seriesRef = opts?.seriesChannel || this.seriesChannel;
+    const seriesTitle = opts?.seriesTitle || this.seriesTitle;
+
+    const resolveOpts: ResolveSegmentOptions = {
+      isMovie,
+      seasonNum,
+      seriesChannel: seriesRef,
+      seriesTitle,
+    };
+
+    // 1. Immediately emit memory-cached segments if available
+    const syncSegments = this.playbackSegmentService.getSegmentsSync(target, resolveOpts);
+
+    if (syncSegments && syncSegments.length > 0) {
+      emit('embedded-player-segments-data', {
+        channelId: target.id,
+        segments: syncSegments,
+      }).catch(console.warn);
+    }
+
+    // 2. Fetch asynchronously in background without blocking playback
+    try {
+      const segments = await this.playbackSegmentService.getSegments(target, resolveOpts);
+
+      if (this.currentChannel?.id === target.id) {
+        emit('embedded-player-segments-data', {
+          channelId: target.id,
+          segments: segments || [],
+        }).catch(console.warn);
+      }
+    } catch (err) {
+      console.warn('Failed to emit playback segments:', err);
+    }
   }
 
   public async emitMovieRecommendations(movieChannel?: Channel): Promise<void> {
@@ -2189,5 +2250,6 @@ export class EmbeddedPlayerService implements OnDestroy {
     if (this.unlistenSaveProgress) this.unlistenSaveProgress();
     if (this.unlistenRequestRecommendations) this.unlistenRequestRecommendations();
     if (this.unlistenPlayRecommendedMovie) this.unlistenPlayRecommendedMovie();
+    if (this.unlistenRequestSegments) this.unlistenRequestSegments();
   }
 }

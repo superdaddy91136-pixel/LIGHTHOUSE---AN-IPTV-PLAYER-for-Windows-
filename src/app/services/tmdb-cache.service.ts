@@ -4,12 +4,14 @@ import {
   TmdbMediaEnrichment,
   TmdbSeasonDetail,
 } from '../models/tmdb';
+import { MediaSegmentsRecord } from '../models/playback-segment';
 
 const DB_NAME = 'fred_tv_tmdb_db';
-const DB_VERSION = 1;
+const DB_VERSION = 2;
 const STORE_MEDIA = 'media_enrichment';
 const STORE_FAILED = 'failed_matches';
 const STORE_SEASONS = 'season_details';
+const STORE_SEGMENTS = 'playback_segments';
 
 const DEFAULT_STALE_MS = 30 * 24 * 60 * 60 * 1000; // 30 days
 const DEFAULT_FAILED_TTL_MS = 14 * 24 * 60 * 60 * 1000; // 14 days
@@ -25,6 +27,7 @@ export class TmdbCacheService {
   private memoryCache: Map<number, TmdbMediaEnrichment> = new Map();
   private tmdbIdMemoryCache: Map<number, TmdbMediaEnrichment> = new Map();
   private seasonMemoryCache: Map<string, TmdbSeasonDetail> = new Map();
+  private segmentMemoryCache: Map<string, MediaSegmentsRecord> = new Map();
   private failedMemoryCache: Map<string, number> = new Map(); // searchKey -> retryAfter
 
   constructor() {
@@ -62,6 +65,13 @@ export class TmdbCacheService {
         // 3. Season detail store keyed by composite string `${tmdbId}_s${seasonNumber}`
         if (!db.objectStoreNames.contains(STORE_SEASONS)) {
           db.createObjectStore(STORE_SEASONS, { keyPath: 'seasonKey' });
+        }
+
+        // 4. Playback segments store keyed by composite string `mediaKey`
+        if (!db.objectStoreNames.contains(STORE_SEGMENTS)) {
+          const segStore = db.createObjectStore(STORE_SEGMENTS, { keyPath: 'mediaKey' });
+          segStore.createIndex('imdbId', 'imdbId', { unique: false });
+          segStore.createIndex('lastUpdated', 'lastUpdated', { unique: false });
         }
       };
 
@@ -429,6 +439,59 @@ export class TmdbCacheService {
   }
 
   /**
+   * Retrieves cached playback segments synchronously from in-memory cache.
+   */
+  public getPlaybackSegmentsSync(mediaKey: string): MediaSegmentsRecord | undefined {
+    return this.segmentMemoryCache.get(mediaKey);
+  }
+
+  /**
+   * Retrieves cached playback segments from memory or IndexedDB.
+   */
+  public async getPlaybackSegments(mediaKey: string): Promise<MediaSegmentsRecord | undefined> {
+    const mem = this.segmentMemoryCache.get(mediaKey);
+    if (mem) return mem;
+
+    try {
+      const db = await this.initDb();
+      return new Promise<MediaSegmentsRecord | undefined>((resolve) => {
+        const tx = db.transaction(STORE_SEGMENTS, 'readonly');
+        const store = tx.objectStore(STORE_SEGMENTS);
+        const req = store.get(mediaKey);
+        req.onsuccess = () => {
+          const res = req.result as MediaSegmentsRecord | undefined;
+          if (res) {
+            this.segmentMemoryCache.set(mediaKey, res);
+          }
+          resolve(res);
+        };
+        req.onerror = () => resolve(undefined);
+      });
+    } catch {
+      return undefined;
+    }
+  }
+
+  /**
+   * Stores playback segments in both in-memory cache and IndexedDB.
+   */
+  public async setPlaybackSegments(record: MediaSegmentsRecord): Promise<void> {
+    this.segmentMemoryCache.set(record.mediaKey, record);
+    try {
+      const db = await this.initDb();
+      return new Promise<void>((resolve) => {
+        const tx = db.transaction(STORE_SEGMENTS, 'readwrite');
+        const store = tx.objectStore(STORE_SEGMENTS);
+        const req = store.put(record);
+        req.onsuccess = () => resolve();
+        req.onerror = () => resolve();
+      });
+    } catch {
+      // Ignore background persistence errors
+    }
+  }
+
+  /**
    * Clears the entire local TMDB cache.
    */
   async clearCache(): Promise<void> {
@@ -436,14 +499,22 @@ export class TmdbCacheService {
     this.tmdbIdMemoryCache.clear();
     this.seasonMemoryCache.clear();
     this.failedMemoryCache.clear();
+    this.segmentMemoryCache.clear();
 
     try {
       const db = await this.initDb();
       return new Promise<void>((resolve, reject) => {
-        const tx = db.transaction([STORE_MEDIA, STORE_FAILED, STORE_SEASONS], 'readwrite');
+        const storeNames = [STORE_MEDIA, STORE_FAILED, STORE_SEASONS];
+        if (db.objectStoreNames.contains(STORE_SEGMENTS)) {
+          storeNames.push(STORE_SEGMENTS);
+        }
+        const tx = db.transaction(storeNames, 'readwrite');
         tx.objectStore(STORE_MEDIA).clear();
         tx.objectStore(STORE_FAILED).clear();
         tx.objectStore(STORE_SEASONS).clear();
+        if (db.objectStoreNames.contains(STORE_SEGMENTS)) {
+          tx.objectStore(STORE_SEGMENTS).clear();
+        }
         tx.oncomplete = () => resolve();
         tx.onerror = () => reject(tx.error);
       });

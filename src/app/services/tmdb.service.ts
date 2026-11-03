@@ -361,6 +361,22 @@ export class TmdbService {
   }
 
   /**
+   * Fetch external IDs for a TV show (IMDb ID, TVDB ID, etc.).
+   */
+  async getTvExternalIds(tvId: number): Promise<any | null> {
+    if (!tvId) return null;
+    return await this.safeGet<any>(`/tv/${tvId}/external_ids`);
+  }
+
+  /**
+   * Fetch external IDs for a specific TV episode (episode-specific IMDb ID, etc.).
+   */
+  async getTvEpisodeExternalIds(tvId: number, seasonNumber: number, episodeNumber: number): Promise<any | null> {
+    if (!tvId || seasonNumber == null || episodeNumber == null) return null;
+    return await this.safeGet<any>(`/tv/${tvId}/season/${seasonNumber}/episode/${episodeNumber}/external_ids`);
+  }
+
+  /**
    * Parses raw TMDB movie details into our normalized detail-screen ready model.
    */
   parseMovieDetails(
