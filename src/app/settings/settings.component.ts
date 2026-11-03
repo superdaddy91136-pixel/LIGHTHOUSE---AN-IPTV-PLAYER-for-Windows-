@@ -234,8 +234,10 @@ export class SettingsComponent {
 
     this.refreshAllCurrentSource = source.name || "Unnamed source";
     if (progress.error) {
-      this.refreshAllFailureCount += 1;
-      this.refreshAllSettledSourceIds.add(progress.source_id);
+      if (!this.refreshAllSettledSourceIds.has(progress.source_id)) {
+        this.refreshAllFailureCount += 1;
+        this.refreshAllSettledSourceIds.add(progress.source_id);
+      }
     } else if (progress.stage === "complete") {
       this.refreshAllSettledSourceIds.add(progress.source_id);
     }

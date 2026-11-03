@@ -315,41 +315,7 @@ pub fn insert_season(tx: &Transaction, season: Season) -> Result<i64> {
     )?)
 }
 
-pub fn insert_channel(tx: &Transaction, channel: Channel) -> Result<i64> {
-    // Provider stream IDs are stable across normal refreshes. Updating by this
-    // identity retains the channel primary key and its local resume position.
-    if let Some(stream_id) = channel.stream_id {
-        let changed = tx.execute(
-            r#"
-            UPDATE channels
-            SET name = ?, group_id = ?, image = ?, url = ?, media_type = ?,
-                series_id = ?, tv_archive = ?, season_id = ?, episode_num = ?
-            WHERE source_id = ? AND media_type = ? AND stream_id = ?
-            "#,
-            params![
-                &channel.name,
-                channel.group_id,
-                &channel.image,
-                &channel.url,
-                channel.media_type,
-                channel.series_id,
-                channel.tv_archive,
-                channel.season_id,
-                channel.episode_num,
-                channel.source_id,
-                channel.media_type,
-                stream_id,
-            ],
-        )?;
-        if changed > 0 {
-            return Ok(tx.query_row(
-                "SELECT id FROM channels WHERE source_id = ? AND media_type = ? AND stream_id = ?",
-                params![channel.source_id, channel.media_type, stream_id],
-                |row| row.get(0),
-            )?);
-        }
-    }
-
+pub fn insert_channel(tx: &Transaction, channel: Channel) -> Result<()> {
     tx.execute(
         r#"
 INSERT INTO channels (name, group_id, image, url, source_id, media_type, series_id, favorite, stream_id, tv_archive, season_id, episode_num)
@@ -360,6 +326,7 @@ DO UPDATE SET
     media_type = excluded.media_type,
     stream_id = excluded.stream_id,
     image = excluded.image,
+    group_id = excluded.group_id,
     series_id = excluded.series_id,
     tv_archive = excluded.tv_archive,
     season_id = excluded.season_id;
@@ -379,20 +346,7 @@ DO UPDATE SET
             channel.episode_num
         ],
     )?;
-    Ok(tx.query_row(
-        r#"
-        SELECT id FROM channels
-        WHERE name = ? AND source_id = ? AND url IS ? AND series_id IS ? AND season_id IS ?
-        "#,
-        params![
-            &channel.name,
-            channel.source_id,
-            &channel.url,
-            channel.series_id,
-            channel.season_id
-        ],
-        |row| row.get(0),
-    )?)
+    Ok(())
 }
 
 pub fn insert_channel_headers(tx: &Transaction, headers: ChannelHttpHeaders) -> Result<()> {
@@ -1118,10 +1072,6 @@ pub fn delete_channels_by_source(tx: &Transaction, source_id: i64) -> Result<()>
         r#"
         DELETE FROM channels
         WHERE source_id = ?
-        -- Retain rows that own user state so matching imports preserve their IDs.
-        AND last_watched IS NULL
-        AND COALESCE(favorite, 0) != 1
-        AND COALESCE(hidden, 0) != 1
     "#,
         params![source_id.to_string()],
     )?;
@@ -1395,12 +1345,12 @@ pub fn set_source_enabled(value: bool, source_id: i64) -> Result<()> {
 }
 
 pub fn add_custom_channel(tx: &Transaction, channel: CustomChannel) -> Result<()> {
-    let channel_id = insert_channel(tx, channel.data)?;
+    insert_channel(tx, channel.data)?;
     if let Some(mut headers) = channel.headers {
         if channel_headers_empty(&headers) {
             return Ok(());
         }
-        headers.channel_id = Some(channel_id);
+        headers.channel_id = Some(tx.last_insert_rowid());
         insert_channel_headers(tx, headers)?;
     }
     Ok(())

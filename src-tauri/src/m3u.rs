@@ -178,6 +178,7 @@ pub fn read_m3u8(app: Option<&AppHandle>, mut source: Source, wipe: bool) -> Res
     if wipe {
         sql::restore_preserve(&tx, source.id.context("no source id")?, channel_preserve)?;
     }
+    sql::analyze(&tx)?;
     tx.commit()?;
     Ok(())
 }
@@ -229,9 +230,9 @@ fn commit_channel(
             channel.name, e
         ))
     });
-    let channel_id = sql::insert_channel(tx, channel)?;
+    sql::insert_channel(tx, channel)?;
     if let Some(mut headers) = headers {
-        headers.channel_id = Some(channel_id);
+        headers.channel_id = Some(tx.last_insert_rowid());
         sql::insert_channel_headers(tx, headers)?;
     }
     Ok(())
@@ -253,7 +254,7 @@ pub async fn get_m3u8_from_link(app: Option<&AppHandle>, source: Source, wipe: b
     let user_agent = get_user_agent_from_source(&source)?;
     let client = reqwest::Client::builder()
         .user_agent(user_agent)
-        .timeout(std::time::Duration::from_secs(60))
+        .connect_timeout(std::time::Duration::from_secs(30))
         .build()?;
     let url = source.url.clone().context("Invalid source")?;
     let mut response = client.get(&url).send().await?;

@@ -12,7 +12,7 @@ use crate::types::XtreamStatus;
 use crate::utils::get_local_time;
 use crate::utils::get_user_agent_from_source;
 use anyhow::anyhow;
-use anyhow::{Context, Result};
+use anyhow::{Context, Result, bail};
 use base64::Engine;
 use base64::prelude::BASE64_STANDARD;
 use chrono::DateTime;
@@ -151,7 +151,7 @@ pub async fn get_xtream(app: Option<&AppHandle>, mut source: Source, wipe: bool)
     let user_agent = get_user_agent_from_source(&source)?;
     let client = Client::builder()
         .user_agent(user_agent)
-        .timeout(Duration::from_secs(60))
+        .connect_timeout(Duration::from_secs(30))
         .build()?;
     let (live, live_cats, vods, vods_cats, series, series_cats) = join!(
         get_xtream_http_data_with_client::<Vec<XtreamStream>>(
@@ -178,10 +178,45 @@ pub async fn get_xtream(app: Option<&AppHandle>, mut source: Source, wipe: bool)
         ),
     );
 
-    let live_len = live.as_ref().map(|v| v.len()).unwrap_or(0);
-    let vods_len = vods.as_ref().map(|v| v.len()).unwrap_or(0);
-    let series_len = series.as_ref().map(|v| v.len()).unwrap_or(0);
-    let total_items = live_len + vods_len + series_len;
+    // Verify all requested catalog sections succeeded before touching database.
+    // If any request failed, abort cleanly to ensure valid existing data is never wiped.
+    let mut fetch_errors = Vec::new();
+    if let Err(e) = &live {
+        fetch_errors.push(format!("Live streams: {:#}", e));
+    }
+    if let Err(e) = &live_cats {
+        fetch_errors.push(format!("Live categories: {:#}", e));
+    }
+    if let Err(e) = &vods {
+        fetch_errors.push(format!("VOD streams: {:#}", e));
+    }
+    if let Err(e) = &vods_cats {
+        fetch_errors.push(format!("VOD categories: {:#}", e));
+    }
+    if let Err(e) = &series {
+        fetch_errors.push(format!("Series streams: {:#}", e));
+    }
+    if let Err(e) = &series_cats {
+        fetch_errors.push(format!("Series categories: {:#}", e));
+    }
+
+    if !fetch_errors.is_empty() {
+        let err_str = fetch_errors.join("; ");
+        log::log(format!(
+            "Failed to retrieve Xtream data for source {}: {}",
+            source_id, err_str
+        ));
+        bail!("Failed to retrieve Xtream catalog: {}", err_str);
+    }
+
+    let live = live.unwrap();
+    let live_cats = live_cats.unwrap();
+    let vods = vods.unwrap();
+    let vods_cats = vods_cats.unwrap();
+    let series = series.unwrap();
+    let series_cats = series_cats.unwrap();
+
+    let total_items = live.len() + vods.len() + series.len();
 
     let mut sql = sql::get_conn()?;
     let tx = sql.transaction()?;
@@ -206,88 +241,48 @@ pub async fn get_xtream(app: Option<&AppHandle>, mut source: Source, wipe: bool)
     }
 
     let mut processed_so_far: usize = 0;
-    let mut fail_count = 0;
 
-    live.and_then(|live_list| {
-        process_xtream(
-            &tx,
-            live_list,
-            live_cats?,
-            &source,
-            media_type::LIVESTREAM,
-            app,
-            source_id,
-            "live",
-            "Live TV",
-            &mut processed_so_far,
-            total_items,
-        )
-    })
-    .unwrap_or_else(|e| {
-        log::log(format!("{:?}", e.context("Failed to process live")));
-        fail_count += 1;
-    });
+    process_xtream(
+        &tx,
+        live,
+        live_cats,
+        &source,
+        media_type::LIVESTREAM,
+        app,
+        source_id,
+        "live",
+        "Live TV",
+        &mut processed_so_far,
+        total_items,
+    )?;
 
-    vods.and_then(|vods_list: Vec<XtreamStream>| {
-        process_xtream(
-            &tx,
-            vods_list,
-            vods_cats?,
-            &source,
-            media_type::MOVIE,
-            app,
-            source_id,
-            "movies",
-            "Movies",
-            &mut processed_so_far,
-            total_items,
-        )
-    })
-    .unwrap_or_else(|e| {
-        log::log(format!("{:?}", e.context("Failed to process vods")));
-        fail_count += 1;
-    });
+    process_xtream(
+        &tx,
+        vods,
+        vods_cats,
+        &source,
+        media_type::MOVIE,
+        app,
+        source_id,
+        "movies",
+        "Movies",
+        &mut processed_so_far,
+        total_items,
+    )?;
 
-    series
-        .and_then(|series_list: Vec<XtreamStream>| {
-            process_xtream(
-                &tx,
-                series_list,
-                series_cats?,
-                &source,
-                media_type::SERIE,
-                app,
-                source_id,
-                "series",
-                "TV Shows",
-                &mut processed_so_far,
-                total_items,
-            )
-        })
-        .unwrap_or_else(|e| {
-            log::log(format!("{:?}", e.context("Failed to process series")));
-            fail_count += 1;
-        });
-
-    if fail_count > 2 {
-        match tx.rollback() {
-            Ok(_) => {}
-            Err(e) => log::log(format!("Failed to rollback tx: {:?}", e)),
-        }
-        let err_str = "Too many Xtream requests failed".to_string();
-        crate::utils::emit_source_refresh_progress(
-            app,
-            source_id,
-            "error",
-            &format!("Refresh failed: {}", err_str),
-            None,
-            false,
-            None,
-            None,
-            Some(err_str),
-        );
-        return Err(anyhow::anyhow!("Too many Xtream requests failed"));
-    }
+    process_xtream(
+        &tx,
+        series,
+        series_cats,
+        &source,
+        media_type::SERIE,
+        app,
+        source_id,
+        "series",
+        "TV Shows",
+        &mut processed_so_far,
+        total_items,
+    )?;
 
     crate::utils::emit_source_refresh_progress(
         app,
@@ -304,6 +299,7 @@ pub async fn get_xtream(app: Option<&AppHandle>, mut source: Source, wipe: bool)
     if wipe {
         sql::restore_preserve(&tx, source.id.context("no source id")?, channel_preserve)?;
     }
+    sql::analyze(&tx)?;
     tx.commit()?;
     Ok(())
 }
@@ -327,7 +323,7 @@ where
 {
     let client = Client::builder()
         .user_agent(user_agent)
-        .timeout(Duration::from_secs(60))
+        .connect_timeout(Duration::from_secs(30))
         .build()?;
     get_xtream_http_data_with_client(&client, url, action).await
 }
