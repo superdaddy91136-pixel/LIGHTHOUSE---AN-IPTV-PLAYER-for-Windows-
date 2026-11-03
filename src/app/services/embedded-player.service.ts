@@ -60,6 +60,7 @@ export interface EmbeddedPlayerOptions {
   title?: string;
   mode?: ContentMode;
   startTime?: number;
+  duration?: number;
   // TV Episode switcher options
   seriesChannel?: Channel;
   seriesTitle?: string;
@@ -818,6 +819,12 @@ export class EmbeddedPlayerService implements OnDestroy {
         ? this.getSavedPosition(channel.id, channel)
         : 0);
 
+    const savedDuration =
+      options?.duration ??
+      (this.currentMode !== 'live' && channel.id
+        ? this.getSavedDuration(channel.id, channel)
+        : 0);
+
     const playChannel: Channel = {
       ...channel,
       name: options?.title || channel.name,
@@ -865,6 +872,7 @@ export class EmbeddedPlayerService implements OnDestroy {
         channel_id: channel.id,
         channelId: channel.id,
         startTime: startPos,
+        duration: savedDuration,
         mode: this.currentMode,
         stableMediaKey: stableMediaKey,
       }).catch(console.warn);
@@ -1454,6 +1462,32 @@ export class EmbeddedPlayerService implements OnDestroy {
       }
     } catch (e) {
       console.warn('Error reading saved position:', e);
+    }
+    return 0;
+  }
+
+  public getSavedDuration(channelId?: number, channel?: Channel): number {
+    if (!channelId && !channel?.id) return 0;
+    const id = channelId || channel?.id;
+    try {
+      const storeRaw = localStorage.getItem('fred_tv_watch_progress');
+      if (storeRaw) {
+        const store = JSON.parse(storeRaw);
+        if (store && id && store[id]?.duration > 0) {
+          return Math.round(store[id].duration);
+        }
+      }
+      const durRaw = localStorage.getItem(`playback_dur_${id}`);
+      if (durRaw) {
+        const dur = parseFloat(durRaw);
+        if (!isNaN(dur) && dur > 0) return Math.round(dur);
+      }
+      const chAny = (channel || (this.currentChannel?.id === id ? this.currentChannel : undefined)) as any;
+      if (chAny?.duration && chAny.duration > 0) {
+        return Math.round(chAny.duration);
+      }
+    } catch (e) {
+      console.warn('Error reading saved duration:', e);
     }
     return 0;
   }

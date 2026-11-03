@@ -2977,6 +2977,8 @@
       let cachedDuration = 0;
       let cachedEnd = null;
       let currentActiveChannelId = null;
+      let currentPlaybackSessionId = 0;
+      let isMediaLoaded = false;
       let currentActiveMediaKey = null;
       let loadedExternalSubtitles = [];
       let lastProgressSaveTime = 0;
@@ -3440,34 +3442,79 @@
         progressBuffer.style.width = `${bufferPct}%`;
       }
 
-      function getSavedPositionForChannel(chId) {
-        if (!chId) return 0;
+      function getSavedPlaybackStateForChannel(chId) {
+        if (!chId) return { time: 0, duration: 0, percent: 0 };
         try {
+          const thresholdRatio = currentContentMode === 'episode' ? 0.90 : 0.95;
+          const thresholdPct = currentContentMode === 'episode' ? 90 : 95;
+
           const storeRaw = localStorage.getItem('fred_tv_watch_progress');
           if (storeRaw) {
             const store = JSON.parse(storeRaw);
             if (store && store[chId]) {
               const entry = store[chId];
+              if (entry.completed === true) return { time: 0, duration: entry.duration || 0, percent: 0 };
               const t = typeof entry === 'number' ? entry : (entry.time || 0);
               const dur = entry.duration || 0;
-              const threshold = currentContentMode === 'episode' ? 0.90 : 0.95;
-              if (dur > 0 && (t >= dur - 30 || (t / dur) >= threshold)) return 0;
-              if (t > 5) return Math.round(t);
+              const pct = entry.percent != null ? entry.percent : (dur > 0 ? (t / dur) * 100 : 0);
+              if (pct >= thresholdPct) return { time: 0, duration: dur, percent: 0 };
+              if (dur > 0 && (t >= dur - 30 || (t / dur) >= thresholdRatio)) {
+                return { time: 0, duration: dur, percent: 0 };
+              }
+              if (t > 5) {
+                return {
+                  time: Math.round(t),
+                  duration: Math.round(dur),
+                  percent: dur > 0 ? Math.min(100, Math.max(0, (t / dur) * 100)) : Math.min(100, Math.max(0, pct))
+                };
+              }
             }
           }
+
+          const pctRaw = localStorage.getItem('watch_progress_' + chId);
+          if (pctRaw && parseFloat(pctRaw) >= thresholdPct) return { time: 0, duration: 0, percent: 0 };
+
           const posRaw = localStorage.getItem('playback_pos_' + chId);
           if (posRaw) {
             const pos = parseFloat(posRaw);
             const durRaw = localStorage.getItem('playback_dur_' + chId);
             const dur = durRaw ? parseFloat(durRaw) : 0;
-            const threshold = currentContentMode === 'episode' ? 0.90 : 0.95;
-            if (dur > 0 && (pos >= dur - 30 || (pos / dur) >= threshold)) return 0;
-            if (!isNaN(pos) && pos > 5) return Math.round(pos);
+            if (dur > 0 && (pos >= dur - 30 || (pos / dur) >= thresholdRatio)) {
+              return { time: 0, duration: dur, percent: 0 };
+            }
+            if (!isNaN(pos) && pos > 5) {
+              const pct = dur > 0 ? Math.min(100, Math.max(0, (pos / dur) * 100)) : 0;
+              return { time: Math.round(pos), duration: Math.round(dur), percent: pct };
+            }
           }
         } catch (e) {
-          console.warn('overlay getSavedPosition error:', e);
+          console.warn('overlay getSavedPlaybackState error:', e);
         }
-        return 0;
+        return { time: 0, duration: 0, percent: 0 };
+      }
+
+      function getSavedPositionForChannel(chId) {
+        return getSavedPlaybackStateForChannel(chId).time;
+      }
+
+      function setProgressUI(currentSec, totalSec, pctOverride) {
+        let pct = 0;
+        if (typeof pctOverride === 'number') {
+          pct = Math.min(100, Math.max(0, pctOverride));
+        } else if (totalSec > 0) {
+          pct = Math.min(100, Math.max(0, (currentSec / totalSec) * 100));
+        }
+        if (!isDragging) {
+          if (progressFill) progressFill.style.width = `${pct}%`;
+          if (progressThumb) progressThumb.style.left = `${pct}%`;
+        }
+        if (remainingTimeDisplay) {
+          if (totalSec > 0 && totalSec >= currentSec) {
+            remainingTimeDisplay.textContent = formatRemainingTime(totalSec - currentSec);
+          } else {
+            remainingTimeDisplay.textContent = '00:00';
+          }
+        }
       }
 
       function applyResumeSeek() {
@@ -3475,17 +3522,18 @@
           return;
         }
         const target = pendingResumeTime;
+        const currentSession = currentPlaybackSessionId;
         hasResumedForCurrentMedia = true;
         pendingResumeTime = 0;
         lastProgressSaveTime = Date.now() + 6000;
-        console.log('[overlay] Resuming playback at', target, 'seconds');
+        console.log('[overlay] Resuming playback at', target, 'seconds for session', currentSession);
         sendMpv(['seek', target, 'absolute']);
         currentTime = target;
         updateTimeUI();
 
         clearTimeout(resumeSeekTimeout);
         resumeSeekTimeout = setTimeout(() => {
-          if (currentContentMode !== 'live' && currentTime < 5 && target > 5) {
+          if (currentPlaybackSessionId === currentSession && currentContentMode !== 'live' && currentTime < 5 && target > 5) {
             console.log('[overlay] Retrying seek to', target);
             sendMpv(['seek', target, 'absolute']);
           }
@@ -3494,6 +3542,7 @@
 
       function maybeSaveProgress() {
         if (!currentActiveChannelId || currentContentMode === 'live') return;
+        if (!isMediaLoaded) return;
         if (pendingResumeTime > 5 && !hasResumedForCurrentMedia) return;
         if (currentTime <= 5) return;
         const effDuration = duration > 0 ? duration : (cachedDuration > 0 ? cachedDuration : 0);
@@ -3533,14 +3582,19 @@
       }
 
       function updateTimeUI() {
+        if (!isDragging) {
+          if (duration > 0) {
+            const pct = Math.min(100, Math.max(0, (currentTime / duration) * 100));
+            progressFill.style.width = `${pct}%`;
+            progressThumb.style.left = `${pct}%`;
+          } else if (currentTime <= 0) {
+            progressFill.style.width = '0%';
+            progressThumb.style.left = '0%';
+          }
+        }
         if (remainingTimeDisplay) {
           const rem = Math.max(0, duration - currentTime);
-          remainingTimeDisplay.textContent = formatRemainingTime(rem);
-        }
-        if (!isDragging && duration > 0) {
-          const pct = Math.min(100, Math.max(0, (currentTime / duration) * 100));
-          progressFill.style.width = `${pct}%`;
-          progressThumb.style.left = `${pct}%`;
+          remainingTimeDisplay.textContent = (duration > 0 || currentTime > 0) ? formatRemainingTime(rem) : '00:00';
         }
         updateBufferedUI();
         maybeSaveProgress();
@@ -4800,6 +4854,13 @@
             flushSaveProgress();
             currentActiveChannelId = ep.id;
             episodesData.currentEpisodeId = ep.id;
+            currentPlaybackSessionId++;
+            isMediaLoaded = false;
+            const savedState = getSavedPlaybackStateForChannel(ep.id);
+            currentTime = savedState.time;
+            duration = savedState.duration;
+            cachedDuration = duration;
+            setProgressUI(currentTime, duration, savedState.percent);
             renderEpisodes();
             tauriEmit('select-player-episode', {
               episodeId: ep.id,
@@ -4972,6 +5033,13 @@
           const nextEp = episodesData.episodes[currentIndex + 1];
           currentActiveChannelId = nextEp.id;
           episodesData.currentEpisodeId = nextEp.id;
+          currentPlaybackSessionId++;
+          isMediaLoaded = false;
+          const savedState = getSavedPlaybackStateForChannel(nextEp.id);
+          currentTime = savedState.time;
+          duration = savedState.duration;
+          cachedDuration = duration;
+          setProgressUI(currentTime, duration, savedState.percent);
           renderEpisodes();
           tauriEmit('select-player-episode', {
             episodeId: nextEp.id,
@@ -5056,6 +5124,13 @@
           flushSaveProgress();
           currentActiveChannelId = nextEp.id;
           episodesData.currentEpisodeId = nextEp.id;
+          currentPlaybackSessionId++;
+          isMediaLoaded = false;
+          const savedState = getSavedPlaybackStateForChannel(nextEp.id);
+          currentTime = savedState.time;
+          duration = savedState.duration;
+          cachedDuration = duration;
+          setProgressUI(currentTime, duration, savedState.percent);
           renderEpisodes();
           tauriEmit('select-player-episode', {
             episodeId: nextEp.id,
@@ -5181,6 +5256,14 @@
         clearMovieRecsTimer();
         flushSaveProgress();
         hideMovieRecsCard(false);
+        currentActiveChannelId = rec.id;
+        currentPlaybackSessionId++;
+        isMediaLoaded = false;
+        const savedState = getSavedPlaybackStateForChannel(rec.id);
+        currentTime = savedState.time;
+        duration = savedState.duration;
+        cachedDuration = duration;
+        setProgressUI(currentTime, duration, savedState.percent);
         tauriEmit('play-recommended-movie', {
           channelId: rec.id,
           channel: rec.channel,
@@ -6529,6 +6612,11 @@
           const raw = typeof event.payload === 'string' ? event.payload : JSON.stringify(event.payload);
           const parsed = JSON.parse(raw);
 
+          // If no active playback session, ignore in-flight MPV events
+          if (!currentActiveChannelId) {
+            return;
+          }
+
           // 1. MPV command responses (e.g. from get_property)
           if (parsed.request_id === 200 && Array.isArray(parsed.data)) {
             tracks = parsed.data;
@@ -6603,7 +6691,13 @@
           }
 
           // 2. Lifecycle events: demuxer finished / tracks ready
+          if (parsed.event === 'start-file') {
+            isMediaLoaded = false;
+            return;
+          }
+
           if (parsed.event === 'file-loaded') {
+            isMediaLoaded = true;
             hideSeekToast();
             requestTrackInfo();
             attachSavedExternalSubtitles();
@@ -6621,10 +6715,14 @@
           }
 
           if (parsed.event === 'playback-restart') {
+            isMediaLoaded = true;
             hideSeekToast();
             pollNerdStats();
             sendMpv(['get_property', 'demuxer-cache-duration'], 307);
             sendMpv(['get_property', 'demuxer-cache-state'], 308);
+            if (pendingResumeTime > 5 && !hasResumedForCurrentMedia) {
+              applyResumeSeek();
+            }
             return;
           }
 
@@ -6669,6 +6767,9 @@
             switch (parsed.name) {
               case 'time-pos':
                 if (typeof parsed.data === 'number') {
+                  if (!isMediaLoaded) {
+                    return;
+                  }
                   if (pendingResumeTime > 5 && !hasResumedForCurrentMedia) {
                     applyResumeSeek();
                     return;
@@ -6680,6 +6781,7 @@
               case 'duration':
                 if (typeof parsed.data === 'number' && parsed.data > 0) {
                   duration = parsed.data;
+                  cachedDuration = parsed.data;
                   if (pendingResumeTime > 5 && !hasResumedForCurrentMedia) {
                     applyResumeSeek();
                   }
@@ -7117,12 +7219,23 @@
         movieRecsState.hasTriggeredForSession = false;
         movieRecsState.watchCreditsSelected = false;
         detectedCreditStartTime = null;
+        clearTimeout(resumeSeekTimeout);
 
         const chId = event?.payload?.channel_id ?? event?.payload?.channelId;
         const isDifferentChannel = chId != null && currentActiveChannelId != null && String(currentActiveChannelId) !== String(chId);
+
+        // If switching from another active channel, flush its progress before changing ID
+        if (isDifferentChannel) {
+          flushSaveProgress();
+        }
+
         if (chId != null) {
           currentActiveChannelId = chId;
         }
+
+        // Advance session sequence to invalidate any stale in-flight MPV events
+        currentPlaybackSessionId++;
+        isMediaLoaded = false;
 
         if (isDifferentChannel || !mediaSegments || mediaSegments.length === 0) {
           mediaSegments = [];
@@ -7132,19 +7245,36 @@
         }
         tauriEmit('request-player-segments');
         currentMediaSessionId = `${currentActiveChannelId || 'media'}_${event?.payload?.url || event?.payload?.name || ''}_${Date.now()}`;
+
+        // Retrieve saved playback progress for this specific channel
+        const saved = getSavedPlaybackStateForChannel(currentActiveChannelId);
         const startTarget = (event?.payload?.startTime > 5)
           ? Math.round(event.payload.startTime)
-          : getSavedPositionForChannel(currentActiveChannelId);
+          : saved.time;
+        const knownDuration = (event?.payload?.duration > 0)
+          ? Math.round(event.payload.duration)
+          : saved.duration;
 
         if (startTarget > 5 && currentContentMode !== 'live') {
           pendingResumeTime = startTarget;
           hasResumedForCurrentMedia = false;
           lastProgressSaveTime = Date.now() + 8000;
+          currentTime = startTarget;
+          duration = knownDuration > 0 ? knownDuration : 0;
+          cachedDuration = duration;
+          const initialPct = (knownDuration > 0) ? Math.min(100, Math.max(0, (startTarget / knownDuration) * 100)) : (saved.percent || 0);
+          setProgressUI(currentTime, duration, initialPct);
         } else {
           pendingResumeTime = 0;
           hasResumedForCurrentMedia = true;
-          lastProgressSaveTime = Date.now() + 2000;
+          lastProgressSaveTime = Date.now() + 3000;
+          currentTime = 0;
+          duration = knownDuration > 0 ? knownDuration : 0;
+          cachedDuration = duration;
+          setProgressUI(0, duration, 0);
         }
+
+        if (progressBuffer) progressBuffer.style.width = '0%';
 
         hasAppliedSubPreferenceForCurrentMedia = false;
         tracks = [];
@@ -7203,6 +7333,8 @@
         hasResumedForCurrentMedia = false;
         hasAppliedSubPreferenceForCurrentMedia = false;
         currentActiveChannelId = null;
+        currentPlaybackSessionId = 0;
+        isMediaLoaded = false;
         currentMediaSessionId = null;
         setTopCrop(0);
         setContentMode('movie');
@@ -7218,9 +7350,8 @@
         duration = 0;
         cachedDuration = 0;
         cachedEnd = null;
-        updateTimeUI();
+        setProgressUI(0, 0, 0);
         if (progressBuffer) progressBuffer.style.width = '0%';
-        if (remainingTimeDisplay) remainingTimeDisplay.textContent = '00:00';
         currentRawTitle = '';
         renderFormattedTitles();
         nerdStats = {
