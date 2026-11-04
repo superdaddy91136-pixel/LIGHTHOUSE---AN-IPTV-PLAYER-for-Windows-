@@ -12,6 +12,7 @@ export interface MediaSegmentsRecord {
   channelId?: number;
   imdbId?: string;
   tmdbId?: number;
+  tvdbId?: number;
   season?: number;
   episode?: number;
   segments: PlaybackSegment[];

@@ -5351,7 +5351,7 @@
         const effDuration = duration > 0 ? duration : (cachedDuration > 0 ? cachedDuration : 0);
         if (effDuration < 60 || currentTime <= 5) return;
 
-        // Exact IntroDB credits timestamps must be the exclusive trigger for this feature.
+        // Exact credits timestamps from TheIntroDB must be the exclusive trigger for this feature.
         // If no valid credits timestamp is available, do NOT guess or trigger based on playback percentage!
         const creditsSegment = Array.isArray(mediaSegments)
           ? mediaSegments.find(

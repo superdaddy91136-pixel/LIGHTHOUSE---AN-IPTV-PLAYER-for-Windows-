@@ -17,7 +17,22 @@ export interface ResolveSegmentOptions {
   seriesTitle?: string;
 }
 
-const INTRODB_BASE_URL = 'https://api.introdb.app';
+export interface MediaIdentifierResolution {
+  tvdbId?: number;
+  tmdbId?: number;
+  imdbId?: string;
+}
+
+export interface FetchSegmentsQuery {
+  tvdbId?: number;
+  tmdbId?: number;
+  imdbId?: string;
+  isMovie: boolean;
+  seasonNum?: number;
+  episodeNum?: number;
+}
+
+const THEINTRODB_BASE_URL = 'https://api.theintrodb.org/v4/media';
 const CINEMETA_BASE_URL = 'https://v3-cinemeta.strem.io/catalog';
 const FETCH_TIMEOUT_MS = 6000;
 const NEGATIVE_CACHE_TTL_MS = 7 * 24 * 60 * 60 * 1000; // 7 days
@@ -47,13 +62,13 @@ export class PlaybackSegmentService {
       const imdbId = extractImdbId(channel.name) || extractImdbId(channel.url);
       if (imdbId) return `mv_${imdbId}`;
       const enrichment = this.tmdbEnrichment.getEnrichmentSync(channel);
-      if (enrichment?.imdbId) return `mv_${enrichment.imdbId}`;
       if (enrichment?.tmdbId) return `mv_tmdb_${enrichment.tmdbId}`;
+      if (enrichment?.imdbId) return `mv_${enrichment.imdbId}`;
       return `mv_ch_${channel.id}`;
     }
 
-    const s = seasonNum != null && seasonNum > 0 ? seasonNum : 1;
-    const e = episodeNum != null && episodeNum > 0 ? episodeNum : 1;
+    const s = seasonNum != null && seasonNum >= 0 ? seasonNum : 1;
+    const e = episodeNum != null && episodeNum >= 0 ? episodeNum : 1;
     const seriesPrefix = identifier || channel.series_id || channel.id;
     return `tv_${seriesPrefix}_s${s}_e${e}`;
   }
@@ -82,9 +97,10 @@ export class PlaybackSegmentService {
   }
 
   /**
-   * Asynchronously retrieves playback segments.
+   * Asynchronously retrieves playback segments from TheIntroDB v4.
    * Returns immediately from IndexedDB/memory cache if present;
-   * otherwise resolves IMDb ID and fetches from public IntroDB API in the background.
+   * otherwise resolves best available identifiers (TVDB -> TMDB -> IMDb)
+   * and fetches from TheIntroDB v4 API in the background.
    */
   public async getSegments(channel?: Channel, options?: ResolveSegmentOptions): Promise<PlaybackSegment[]> {
     if (!channel?.id) return [];
@@ -92,15 +108,39 @@ export class PlaybackSegmentService {
     const isMovie = this.resolveIsMovie(channel, options);
     const { seasonNum, episodeNum } = this.resolveSeasonAndEpisode(channel, options);
 
-    // 1. Resolve IMDb ID (direct -> TMDB enrichment -> Cinemeta public fallback)
-    const resolvedImdbId = isMovie
-      ? await this.resolveMovieImdbId(channel)
-      : await this.resolveSeriesImdbId(channel, options?.seriesChannel, options?.seriesTitle);
+    // 1. Resolve best available media identifiers (TVDB -> TMDB -> IMDb)
+    const ids = isMovie
+      ? await this.resolveMovieIdentifiers(channel)
+      : await this.resolveSeriesIdentifiers(channel, options?.seriesChannel, options?.seriesTitle);
 
-    const mediaKey = this.buildMediaKey(channel, isMovie, seasonNum, episodeNum, resolvedImdbId);
+    const primaryIdStr = ids.tvdbId
+      ? `tvdb_${ids.tvdbId}`
+      : (ids.tmdbId ? `tmdb_${ids.tmdbId}` : ids.imdbId);
+
+    const mediaKey = this.buildMediaKey(channel, isMovie, seasonNum, episodeNum, primaryIdStr);
 
     // 2. Check local cache (memory + IndexedDB)
-    const cachedRecord = await this.cacheService.getPlaybackSegments(mediaKey);
+    let cachedRecord = await this.cacheService.getPlaybackSegments(mediaKey);
+
+    if (!cachedRecord && ids.tmdbId) {
+      const tmdbKey = this.buildMediaKey(channel, isMovie, seasonNum, episodeNum, `tmdb_${ids.tmdbId}`);
+      if (tmdbKey !== mediaKey) {
+        cachedRecord = await this.cacheService.getPlaybackSegments(tmdbKey);
+      }
+    }
+    if (!cachedRecord && ids.imdbId) {
+      const imdbKey = this.buildMediaKey(channel, isMovie, seasonNum, episodeNum, ids.imdbId);
+      if (imdbKey !== mediaKey) {
+        cachedRecord = await this.cacheService.getPlaybackSegments(imdbKey);
+      }
+    }
+    if (!cachedRecord) {
+      const fallbackKey = this.buildMediaKey(channel, isMovie, seasonNum, episodeNum);
+      if (fallbackKey !== mediaKey) {
+        cachedRecord = await this.cacheService.getPlaybackSegments(fallbackKey);
+      }
+    }
+
     if (cachedRecord) {
       if (cachedRecord.segments.length > 0) {
         return cachedRecord.segments;
@@ -112,19 +152,21 @@ export class PlaybackSegmentService {
       }
     }
 
-    // If we could not resolve an IMDb ID at all, do NOT negative-cache
-    if (!resolvedImdbId) {
+    // If we could not resolve ANY valid identifier, do not negative-cache
+    if (!ids.tvdbId && !ids.tmdbId && !ids.imdbId) {
       return [];
     }
 
-    // 3. Fetch timestamps from public API
+    // 3. Fetch timestamps from TheIntroDB v4 API
     try {
-      const fetchResult = await this.fetchSegmentsFromApi(
-        resolvedImdbId,
+      const fetchResult = await this.fetchSegmentsFromApi({
+        tvdbId: ids.tvdbId,
+        tmdbId: ids.tmdbId,
+        imdbId: ids.imdbId,
         isMovie,
         seasonNum,
-        episodeNum
-      );
+        episodeNum,
+      });
 
       if (!fetchResult) {
         return cachedRecord ? cachedRecord.segments : [];
@@ -134,7 +176,10 @@ export class PlaybackSegmentService {
 
       const record: MediaSegmentsRecord = {
         mediaKey,
-        imdbId: resolvedImdbId,
+        channelId: channel.id,
+        tvdbId: ids.tvdbId,
+        tmdbId: ids.tmdbId,
+        imdbId: ids.imdbId,
         season: isMovie ? undefined : seasonNum,
         episode: isMovie ? undefined : episodeNum,
         segments,
@@ -149,7 +194,7 @@ export class PlaybackSegmentService {
         lastUpdated: Date.now(),
       };
 
-      // Only persist to IndexedDB if segments exist OR IntroDB confirmed absence
+      // Only persist to IndexedDB if segments exist OR TheIntroDB confirmed absence
       if (segments.length > 0 || isConfirmedEmpty) {
         await this.cacheService.setPlaybackSegments(record);
       }
@@ -164,7 +209,6 @@ export class PlaybackSegmentService {
   /**
    * Public, keyless resolution of IMDb IDs via Cinemeta catalog search.
    * Validates candidates against query, media type, and year using scoreMatch.
-   * Does NOT blindly accept the first search result.
    */
   public async resolveImdbIdFromCinemeta(
     rawTitle: string,
@@ -233,26 +277,38 @@ export class PlaybackSegmentService {
   }
 
   /**
-   * Internal fetcher querying the public IntroDB endpoint.
+   * Internal fetcher querying TheIntroDB v4 endpoint.
    */
-  private async fetchSegmentsFromApi(
-    imdbId: string,
-    isMovie: boolean,
-    seasonNum?: number,
-    episodeNum?: number
-  ): Promise<{
+  private async fetchSegmentsFromApi(query: FetchSegmentsQuery): Promise<{
     segments: PlaybackSegment[];
     noIntro?: boolean;
     noRecap?: boolean;
     noOutro?: boolean;
     isConfirmedEmpty?: boolean;
   } | null> {
-    const s = seasonNum != null && seasonNum > 0 ? seasonNum : 1;
-    const e = episodeNum != null && episodeNum > 0 ? episodeNum : 1;
+    const params = new URLSearchParams();
 
-    const url = isMovie
-      ? `${INTRODB_BASE_URL}/segments?imdb_id=${encodeURIComponent(imdbId)}&is_movie=true`
-      : `${INTRODB_BASE_URL}/segments?imdb_id=${encodeURIComponent(imdbId)}&season=${s}&episode=${e}`;
+    // Priority: tvdb_id -> tmdb_id -> imdb_id
+    if (query.tvdbId) {
+      params.set('tvdb_id', String(query.tvdbId));
+    } else if (query.tmdbId) {
+      params.set('tmdb_id', String(query.tmdbId));
+    } else if (query.imdbId) {
+      params.set('imdb_id', query.imdbId);
+    } else {
+      return null;
+    }
+
+    if (!query.isMovie) {
+      const s = query.seasonNum != null && query.seasonNum >= 0 ? query.seasonNum : 1;
+      const e = query.episodeNum != null && query.episodeNum >= 0 ? query.episodeNum : 1;
+      params.set('season', String(s));
+      params.set('episode', String(e));
+    }
+
+    params.set('details', 'true');
+
+    const url = `${THEINTRODB_BASE_URL}?${params.toString()}`;
 
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), FETCH_TIMEOUT_MS);
@@ -278,6 +334,29 @@ export class PlaybackSegmentService {
           signal: controller.signal,
         });
 
+        if (response.status === 404) {
+          clearTimeout(timer);
+          try {
+            const errBody = await response.json();
+            if (errBody?.code === 'no_submissions' || errBody?.code === 'episode_not_found') {
+              return {
+                segments: [],
+                noIntro: true,
+                noRecap: true,
+                noOutro: true,
+                isConfirmedEmpty: true,
+              };
+            }
+          } catch {}
+          return {
+            segments: [],
+            noIntro: true,
+            noRecap: true,
+            noOutro: true,
+            isConfirmedEmpty: true,
+          };
+        }
+
         if (!response.ok) {
           clearTimeout(timer);
           return null;
@@ -288,20 +367,33 @@ export class PlaybackSegmentService {
 
       clearTimeout(timer);
 
+      // Handle TheIntroDB error codes if returned via native IPC
+      if (raw?.error) {
+        if (raw.code === 'no_submissions' || raw.code === 'episode_not_found') {
+          return {
+            segments: [],
+            noIntro: true,
+            noRecap: true,
+            noOutro: true,
+            isConfirmedEmpty: true,
+          };
+        }
+        return null;
+      }
+
       const segments = this.normalizeSegments(raw);
 
-      const noIntro = Boolean(raw?.no_intro);
-      const noRecap = Boolean(raw?.no_recap);
-      const noOutro = Boolean(raw?.no_outro);
+      const hasIntro = segments.some((s) => s.type === 'intro');
+      const hasRecap = segments.some((s) => s.type === 'recap');
+      const hasCredits = segments.some((s) => s.type === 'credits');
 
-      // Confirmed empty: no segments AND IntroDB confirmed absence
-      const isConfirmedEmpty = segments.length === 0 && (noIntro && (isMovie || noOutro));
+      const isConfirmedEmpty = segments.length === 0;
 
       return {
         segments,
-        noIntro,
-        noRecap,
-        noOutro,
+        noIntro: !hasIntro,
+        noRecap: !hasRecap,
+        noOutro: !hasCredits,
         isConfirmedEmpty,
       };
     } catch (err) {
@@ -311,37 +403,44 @@ export class PlaybackSegmentService {
   }
 
   /**
-   * Normalizes and validates raw segment payloads from the API.
-   * Maps IntroDB 'outro' to internal 'credits' segment and 'post_credits' to 'post_credits'.
+   * Normalizes and validates raw segment payloads from TheIntroDB v4 (or legacy formats).
+   * Supports multiple segment ranges per type (arrays), timestamp conversion from ms,
+   * and maps outro/credits to 'credits' and post_credits to 'post_credits'.
    */
   public normalizeSegments(raw: any): PlaybackSegment[] {
     if (!raw || typeof raw !== 'object') return [];
 
     const segments: PlaybackSegment[] = [];
+    const fallbackDurationSec =
+      typeof raw.group_duration_ms === 'number' && raw.group_duration_ms > 0
+        ? raw.group_duration_ms / 1000
+        : undefined;
+
+    const processEntries = (type: PlaybackSegmentType, data: any) => {
+      if (!data) return;
+      if (Array.isArray(data)) {
+        for (const item of data) {
+          const seg = this.validateSegment(type, item, fallbackDurationSec);
+          if (seg) segments.push(seg);
+        }
+      } else if (typeof data === 'object') {
+        const seg = this.validateSegment(type, data, fallbackDurationSec);
+        if (seg) segments.push(seg);
+      }
+    };
 
     // 1. Intro
-    if (raw.intro && typeof raw.intro === 'object') {
-      const seg = this.validateSegment('intro', raw.intro);
-      if (seg) segments.push(seg);
-    }
+    processEntries('intro', raw.intro);
 
     // 2. Recap
-    if (raw.recap && typeof raw.recap === 'object') {
-      const seg = this.validateSegment('recap', raw.recap);
-      if (seg) segments.push(seg);
-    }
+    processEntries('recap', raw.recap);
 
-    // 3. Outro -> mapped to internal 'credits'
-    if (raw.outro && typeof raw.outro === 'object') {
-      const seg = this.validateSegment('credits', raw.outro);
-      if (seg) segments.push(seg);
-    }
+    // 3. Credits / Outro -> mapped to internal 'credits'
+    processEntries('credits', raw.credits);
+    processEntries('credits', raw.outro);
 
     // 4. Post-credits -> mapped to 'post_credits'
-    if (raw.post_credits && typeof raw.post_credits === 'object') {
-      const seg = this.validateSegment('post_credits', raw.post_credits);
-      if (seg) segments.push(seg);
-    }
+    processEntries('post_credits', raw.post_credits);
 
     // Sort by startTime ascending
     segments.sort((a, b) => a.startTime - b.startTime);
@@ -351,23 +450,59 @@ export class PlaybackSegmentService {
   /**
    * Validates a single segment candidate.
    * Ensures start >= 0, end > start, duration >= 2s, and non-NaN timestamps.
+   * Handles null start_ms for intro/recap (defaults to 0) and null end_ms for credits.
    */
-  private validateSegment(type: PlaybackSegmentType, raw: any): PlaybackSegment | null {
-    const startSec = typeof raw.start_sec === 'number'
-      ? raw.start_sec
-      : (typeof raw.start_ms === 'number' ? raw.start_ms / 1000 : NaN);
+  private validateSegment(
+    type: PlaybackSegmentType,
+    raw: any,
+    fallbackDurationSec?: number
+  ): PlaybackSegment | null {
+    if (!raw || typeof raw !== 'object') return null;
 
-    const endSec = typeof raw.end_sec === 'number'
-      ? raw.end_sec
-      : (typeof raw.end_ms === 'number' ? raw.end_ms / 1000 : NaN);
+    // 1. Resolve startSec
+    let startSec: number;
+    if (typeof raw.start_sec === 'number') {
+      startSec = raw.start_sec;
+    } else if (typeof raw.start_ms === 'number') {
+      startSec = raw.start_ms / 1000;
+    } else if (raw.start_sec === null || raw.start_ms === null || raw.start_ms === undefined) {
+      if (type === 'intro' || type === 'recap') {
+        startSec = 0;
+      } else {
+        return null;
+      }
+    } else {
+      return null;
+    }
+
+    // 2. Resolve endSec
+    let endSec: number;
+    if (typeof raw.end_sec === 'number') {
+      endSec = raw.end_sec;
+    } else if (typeof raw.end_ms === 'number') {
+      endSec = raw.end_ms / 1000;
+    } else if (raw.end_sec === null || raw.end_ms === null || raw.end_ms === undefined) {
+      if (type === 'credits') {
+        endSec =
+          fallbackDurationSec != null && fallbackDurationSec > startSec
+            ? fallbackDurationSec
+            : startSec + 3600;
+      } else {
+        return null;
+      }
+    } else {
+      return null;
+    }
 
     if (isNaN(startSec) || isNaN(endSec)) return null;
     if (startSec < 0 || endSec <= startSec) return null;
     if (endSec - startSec < 2) return null; // Must be at least 2 seconds long
+    if (type === 'credits' && startSec === 0) return null; // 0 start for credits denotes no segment
 
-    const confidence = typeof raw.confidence === 'number' && !isNaN(raw.confidence)
-      ? Math.round(raw.confidence * 100) / 100
-      : undefined;
+    const confidence =
+      typeof raw.confidence === 'number' && !isNaN(raw.confidence)
+        ? Math.round(raw.confidence * 100) / 100
+        : undefined;
 
     return {
       type,
@@ -378,12 +513,19 @@ export class PlaybackSegmentService {
   }
 
   /**
-   * Resolves the movie's IMDb ID using stream name, URL, TMDB enrichment, or Cinemeta fallback.
+   * Resolves movie identifiers (preferring TVDB -> TMDB -> IMDb).
+   * Works accurately even when IPTV channel names do not contain IMDb IDs.
    */
-  private async resolveMovieImdbId(channel: Channel): Promise<string | undefined> {
-    const directImdb = extractImdbId(channel.name) || extractImdbId(channel.url);
-    if (directImdb) return directImdb;
+  public async resolveMovieIdentifiers(channel: Channel): Promise<MediaIdentifierResolution> {
+    const result: MediaIdentifierResolution = {};
 
+    // 1. Direct IMDb ID from channel name or URL
+    const directImdb = extractImdbId(channel.name) || extractImdbId(channel.url);
+    if (directImdb) {
+      result.imdbId = directImdb;
+    }
+
+    // 2. TMDB enrichment (sync -> cache -> fetch)
     let enrichment = this.tmdbEnrichment.getEnrichmentSync(channel);
     if (!enrichment && channel.id) {
       enrichment = await this.cacheService.getEnrichment(channel.id);
@@ -392,13 +534,19 @@ export class PlaybackSegmentService {
       enrichment = await this.tmdbEnrichment.getEnrichment(channel);
     }
 
-    if (enrichment?.imdbId) return enrichment.imdbId;
-
     if (enrichment?.tmdbId) {
-      const movieDetails = await this.tmdbService.getMovieDetails(enrichment.tmdbId);
-      if (movieDetails?.imdb_id) return movieDetails.imdb_id;
+      result.tmdbId = enrichment.tmdbId;
+    }
+    if (enrichment?.imdbId) {
+      result.imdbId = enrichment.imdbId;
     }
 
+    // If we already have TMDB ID or IMDb ID, we are ready!
+    if (result.tmdbId || result.imdbId) {
+      return result;
+    }
+
+    // 3. Cinemeta public fallback using title and year
     const targetYear =
       extractYear(channel.name) ||
       extractYear(channel.url) ||
@@ -411,44 +559,85 @@ export class PlaybackSegmentService {
 
     for (const title of titleCandidates) {
       const cinemetaImdb = await this.resolveImdbIdFromCinemeta(title, 'movie', targetYear);
-      if (cinemetaImdb) return cinemetaImdb;
-    }
-
-    return undefined;
-  }
-
-  /**
-   * Resolves the series' IMDb ID from channel, series container, TMDB external IDs, or Cinemeta fallback.
-   */
-  private async resolveSeriesImdbId(
-    channel: Channel,
-    seriesChannel?: Channel,
-    seriesTitle?: string
-  ): Promise<string | undefined> {
-    const target = seriesChannel || channel;
-
-    // 1. Direct IMDb ID in series title or URL
-    const directImdb = extractImdbId(target.name) || extractImdbId(target.url);
-    if (directImdb) {
-      const findRes = await this.tmdbService.findByExternalId(directImdb);
-      if (findRes?.tv_results?.length > 0) return directImdb;
-      if (findRes?.tv_episode_results?.length > 0) {
-        const showId = findRes.tv_episode_results[0].show_id;
-        if (showId) {
-          const extIds = await this.tmdbService.getTvExternalIds(showId);
-          if (extIds?.imdb_id) return extIds.imdb_id;
-        }
+      if (cinemetaImdb) {
+        result.imdbId = cinemetaImdb;
+        try {
+          const findRes = await this.tmdbService.findByExternalId(cinemetaImdb);
+          if (findRes?.movie_results?.[0]?.id) {
+            result.tmdbId = findRes.movie_results[0].id;
+          }
+        } catch {}
+        return result;
       }
     }
 
-    // 2. TMDB enrichment for series
-    const enrichment = this.tmdbEnrichment.getEnrichmentSync(target);
-    if (enrichment?.tmdbId && enrichment.mediaType === 'tv') {
-      const extIds = await this.tmdbService.getTvExternalIds(enrichment.tmdbId);
-      if (extIds?.imdb_id) return extIds.imdb_id;
+    return result;
+  }
+
+  /**
+   * Resolves TV series identifiers (preferring TVDB -> TMDB -> IMDb).
+   */
+  public async resolveSeriesIdentifiers(
+    channel: Channel,
+    seriesChannel?: Channel,
+    seriesTitle?: string
+  ): Promise<MediaIdentifierResolution> {
+    const result: MediaIdentifierResolution = {};
+    const target = seriesChannel || channel;
+
+    // 1. Direct IMDb ID in series title or URL
+    const directImdb =
+      extractImdbId(target.name) ||
+      extractImdbId(target.url) ||
+      extractImdbId(channel.name) ||
+      extractImdbId(channel.url);
+
+    if (directImdb) {
+      result.imdbId = directImdb;
+      try {
+        const findRes = await this.tmdbService.findByExternalId(directImdb);
+        if (findRes?.tv_results?.length > 0) {
+          result.tmdbId = findRes.tv_results[0].id;
+        } else if (findRes?.tv_episode_results?.length > 0) {
+          result.tmdbId = findRes.tv_episode_results[0].show_id;
+        }
+      } catch {}
     }
 
-    // 3. Cinemeta public fallback using series title candidates
+    // 2. TMDB enrichment for series
+    let enrichment = this.tmdbEnrichment.getEnrichmentSync(target);
+    if (!enrichment && target.id) {
+      enrichment = await this.cacheService.getEnrichment(target.id);
+    }
+    if (!enrichment && target.id) {
+      enrichment = await this.tmdbEnrichment.getEnrichment(target);
+    }
+
+    if (enrichment?.tmdbId && enrichment.mediaType === 'tv') {
+      result.tmdbId = enrichment.tmdbId;
+      if (enrichment.imdbId) {
+        result.imdbId = enrichment.imdbId;
+      }
+    }
+
+    // 3. If we have TMDB ID, query external IDs to get TVDB ID
+    if (result.tmdbId) {
+      try {
+        const extIds = await this.tmdbService.getTvExternalIds(result.tmdbId);
+        if (extIds?.tvdb_id) {
+          result.tvdbId = Number(extIds.tvdb_id);
+        }
+        if (extIds?.imdb_id && !result.imdbId) {
+          result.imdbId = extIds.imdb_id;
+        }
+      } catch {}
+    }
+
+    if (result.tvdbId || result.tmdbId || result.imdbId) {
+      return result;
+    }
+
+    // 4. Cinemeta public fallback using series title candidates
     const titleCandidates = [
       seriesTitle,
       seriesChannel?.name,
@@ -456,22 +645,45 @@ export class PlaybackSegmentService {
     ].filter((t): t is string => !!t && t.trim().length > 0);
 
     for (const title of titleCandidates) {
-      const imdbId = await this.resolveImdbIdFromCinemeta(title, 'tv');
-      if (imdbId) return imdbId;
-    }
-
-    // 4. Fallback: check if the episode itself has an IMDb ID and resolve its series via TMDB
-    const episodeImdbId = extractImdbId(channel.name) || extractImdbId(channel.url);
-    if (episodeImdbId) {
-      const findRes = await this.tmdbService.findByExternalId(episodeImdbId);
-      const epMatch = findRes?.tv_episode_results?.[0];
-      if (epMatch?.show_id) {
-        const extIds = await this.tmdbService.getTvExternalIds(epMatch.show_id);
-        if (extIds?.imdb_id) return extIds.imdb_id;
+      const cinemetaImdb = await this.resolveImdbIdFromCinemeta(title, 'tv');
+      if (cinemetaImdb) {
+        result.imdbId = cinemetaImdb;
+        try {
+          const findRes = await this.tmdbService.findByExternalId(cinemetaImdb);
+          const showId = findRes?.tv_results?.[0]?.id || findRes?.tv_episode_results?.[0]?.show_id;
+          if (showId) {
+            result.tmdbId = showId;
+            const extIds = await this.tmdbService.getTvExternalIds(showId);
+            if (extIds?.tvdb_id) {
+              result.tvdbId = Number(extIds.tvdb_id);
+            }
+          }
+        } catch {}
+        return result;
       }
     }
 
-    return undefined;
+    // 5. Fallback: check if the episode itself has an IMDb ID and resolve its series via TMDB
+    const episodeImdbId = extractImdbId(channel.name) || extractImdbId(channel.url);
+    if (episodeImdbId && episodeImdbId !== directImdb) {
+      try {
+        const findRes = await this.tmdbService.findByExternalId(episodeImdbId);
+        const epMatch = findRes?.tv_episode_results?.[0];
+        if (epMatch?.show_id) {
+          result.tmdbId = epMatch.show_id;
+          const extIds = await this.tmdbService.getTvExternalIds(epMatch.show_id);
+          if (extIds?.tvdb_id) {
+            result.tvdbId = Number(extIds.tvdb_id);
+          }
+          if (extIds?.imdb_id) {
+            result.imdbId = extIds.imdb_id;
+          }
+          return result;
+        }
+      } catch {}
+    }
+
+    return result;
   }
 
   private extractFastSeriesIdentifier(channel: Channel, seriesChannel?: Channel, seriesTitle?: string): string {
@@ -484,8 +696,8 @@ export class PlaybackSegmentService {
 
     const target = seriesChannel || channel;
     const enrichment = this.tmdbEnrichment.getEnrichmentSync(target);
-    if (enrichment?.imdbId) return enrichment.imdbId;
     if (enrichment?.tmdbId) return `tmdb_${enrichment.tmdbId}`;
+    if (enrichment?.imdbId) return enrichment.imdbId;
 
     return String(seriesTitle || target.series_id || target.id || 'unknown');
   }
@@ -494,8 +706,8 @@ export class PlaybackSegmentService {
     const direct = extractImdbId(channel.name) || extractImdbId(channel.url);
     if (direct) return direct;
     const enrichment = this.tmdbEnrichment.getEnrichmentSync(channel);
-    if (enrichment?.imdbId) return enrichment.imdbId;
     if (enrichment?.tmdbId) return `tmdb_${enrichment.tmdbId}`;
+    if (enrichment?.imdbId) return enrichment.imdbId;
     return undefined;
   }
 

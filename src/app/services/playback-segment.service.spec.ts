@@ -2,12 +2,13 @@ import { PlaybackSegmentService } from './playback-segment.service';
 
 describe('PlaybackSegmentService', () => {
   let service: PlaybackSegmentService;
-  const mockTmdbEnrichment: any = { getEnrichmentSync: () => undefined };
-  const mockTmdbService: any = { findByExternalId: () => Promise.resolve(null) };
+  const mockTmdbEnrichment: any = { getEnrichmentSync: () => undefined, getEnrichment: () => Promise.resolve(undefined) };
+  const mockTmdbService: any = { findByExternalId: () => Promise.resolve(null), getTvExternalIds: () => Promise.resolve(null) };
   const mockCacheService: any = {
     getPlaybackSegmentsSync: () => undefined,
     getPlaybackSegments: () => Promise.resolve(undefined),
     setPlaybackSegments: () => Promise.resolve(),
+    getEnrichment: () => Promise.resolve(undefined),
   };
 
   beforeEach(() => {
@@ -15,7 +16,71 @@ describe('PlaybackSegmentService', () => {
   });
 
   describe('normalizeSegments', () => {
-    it('should correctly normalize and validate IntroDB segment payloads', () => {
+    it('should correctly normalize and validate TheIntroDB v4 array segment payloads', () => {
+      const v4Payload = {
+        tvdb_id: 71663,
+        type: 'tv',
+        season: 1,
+        episode: 1,
+        group_duration_ms: 1400000,
+        intro: [
+          {
+            start_ms: null,
+            end_ms: 24724,
+            confidence: 0.88,
+          },
+        ],
+        recap: [
+          {
+            start_ms: 0,
+            end_ms: 0, // 0-length no-recap marker
+          },
+        ],
+        credits: [
+          {
+            start_ms: 1332112,
+            end_ms: null, // Runs until group_duration_ms
+            confidence: 0.6,
+          },
+        ],
+      };
+
+      const segments = service.normalizeSegments(v4Payload);
+
+      expect(segments.length).toBe(2);
+      // Intro: start null -> 0, end 24724ms -> 24.7s
+      expect(segments[0].type).toBe('intro');
+      expect(segments[0].startTime).toBe(0);
+      expect(segments[0].endTime).toBe(24.7);
+      expect(segments[0].confidence).toBe(0.88);
+
+      // Credits: start 1332112ms -> 1332.1s, end null -> group_duration_ms (1400s)
+      expect(segments[1].type).toBe('credits');
+      expect(segments[1].startTime).toBe(1332.1);
+      expect(segments[1].endTime).toBe(1400);
+      expect(segments[1].confidence).toBe(0.6);
+    });
+
+    it('should handle multiple intro ranges in TheIntroDB v4 format', () => {
+      const payload = {
+        intro: [
+          { start_ms: 30000, end_ms: 90000 },
+          { start_ms: 120000, end_ms: 150000 },
+        ],
+      };
+
+      const segments = service.normalizeSegments(payload);
+      expect(segments.length).toBe(2);
+      expect(segments[0].type).toBe('intro');
+      expect(segments[0].startTime).toBe(30);
+      expect(segments[0].endTime).toBe(90);
+
+      expect(segments[1].type).toBe('intro');
+      expect(segments[1].startTime).toBe(120);
+      expect(segments[1].endTime).toBe(150);
+    });
+
+    it('should correctly normalize and validate legacy/single-object segment payloads', () => {
       const rawPayload = {
         imdb_id: 'tt0944947',
         media_type: 'tv',
@@ -80,10 +145,10 @@ describe('PlaybackSegmentService', () => {
       expect(segments[0].endTime).toBe(90);
     });
 
-    it('should correctly map outro to credits and handle post_credits', () => {
+    it('should correctly map outro and credits and handle post_credits', () => {
       const payload = {
         outro: { start_sec: 1800, end_sec: 1860 },
-        post_credits: { start_sec: 1900, end_sec: 1920 },
+        post_credits: [{ start_sec: 1900, end_sec: 1920 }],
       };
 
       const segments = service.normalizeSegments(payload);
@@ -98,8 +163,8 @@ describe('PlaybackSegmentService', () => {
   describe('buildMediaKey', () => {
     it('should generate consistent TV media keys', () => {
       const channel: any = { id: 101, name: 'Show S02E05', series_id: 50 };
-      const key = service.buildMediaKey(channel, false, 2, 5, 'tt0903747');
-      expect(key).toBe('tv_tt0903747_s2_e5');
+      const key = service.buildMediaKey(channel, false, 2, 5, 'tvdb_71663');
+      expect(key).toBe('tv_tvdb_71663_s2_e5');
     });
 
     it('should generate consistent Movie media keys with IMDb ID', () => {
