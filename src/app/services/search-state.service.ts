@@ -14,8 +14,10 @@ export interface TabSearchState {
   searchKeyword: string;
   rawSearchResults: UniversalSearchResults;
   searchResults: UniversalSearchResults;
+  allSearchResultsList?: Channel[];
+  displayedSearchResults?: Channel[];
   searchTypeFilter: 'all' | 'movies' | 'tv' | 'live';
-  searchSortBy: 'provider' | 'alphabetical';
+  searchSortBy: 'relevance' | 'provider' | 'alphabetical';
   searchSortOrder: 'asc' | 'desc';
   isSearchExpanded: boolean;
   scrollPosition?: number;

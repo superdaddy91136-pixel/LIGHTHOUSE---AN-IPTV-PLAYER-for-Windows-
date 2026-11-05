@@ -518,10 +518,11 @@ pub fn search(filters: Filters) -> Result<Vec<Channel>> {
     };
     let query = filters.query.unwrap_or("".to_string());
     let keywords: Vec<String> = match filters.use_keywords {
-        true => query
-            .split(" ")
-            .map(|f| format!("%{f}%").to_string())
-            .collect(),
+        true => {
+            let mut words: Vec<&str> = query.split(' ').filter(|w| !w.is_empty()).collect();
+            words.sort_by(|a, b| b.len().cmp(&a.len()));
+            words.into_iter().map(|f| format!("%{f}%")).collect()
+        }
         false => vec![format!("%{query}%")],
     };
     let mut sql_query = format!(
@@ -601,10 +602,11 @@ fn search_series(filters: Filters) -> Result<Vec<Channel>> {
     let offset: u16 = filters.page as u16 * PAGE_SIZE as u16 - PAGE_SIZE as u16;
     let query = filters.query.unwrap_or("".to_string());
     let keywords: Vec<String> = match filters.use_keywords {
-        true => query
-            .split(" ")
-            .map(|f| format!("%{f}%").to_string())
-            .collect(),
+        true => {
+            let mut words: Vec<&str> = query.split(' ').filter(|w| !w.is_empty()).collect();
+            words.sort_by(|a, b| b.len().cmp(&a.len()));
+            words.into_iter().map(|f| format!("%{f}%")).collect()
+        }
         false => vec![format!("%{query}%")],
     };
     let mut sql_query = format!(
@@ -689,10 +691,11 @@ pub fn bulk_update(filters: Filters, action: u8) -> Result<()> {
 
     let query = filters.query.as_deref().unwrap_or("");
     let keywords: Vec<String> = match filters.use_keywords {
-        true => query
-            .split(" ")
-            .map(|f| format!("%{f}%").to_string())
-            .collect(),
+        true => {
+            let mut words: Vec<&str> = query.split(' ').filter(|w| !w.is_empty()).collect();
+            words.sort_by(|a, b| b.len().cmp(&a.len()));
+            words.into_iter().map(|f| format!("%{f}%")).collect()
+        }
         false => vec![format!("%{query}%")],
     };
 
@@ -894,10 +897,11 @@ fn search_hidden(filters: Filters) -> Result<Vec<Channel>> {
 
     let query = filters.query.unwrap_or("".to_string());
     let keywords: Vec<String> = match filters.use_keywords {
-        true => query
-            .split(" ")
-            .map(|f| format!("%{f}%").to_string())
-            .collect(),
+        true => {
+            let mut words: Vec<&str> = query.split(' ').filter(|w| !w.is_empty()).collect();
+            words.sort_by(|a, b| b.len().cmp(&a.len()));
+            words.into_iter().map(|f| format!("%{f}%")).collect()
+        }
         false => vec![format!("%{query}%")],
     };
 
@@ -1002,21 +1006,28 @@ pub fn search_group(filters: Filters) -> Result<Vec<Channel>> {
     let query = filters.query.unwrap_or("".to_string());
     let media_types = filters.media_types.context("no media types")?;
     let keywords: Vec<String> = match filters.use_keywords {
-        true => query
-            .split(" ")
-            .map(|f| format!("%{f}%").to_string())
-            .collect(),
+        true => {
+            let mut words: Vec<&str> = query.split(' ').filter(|w| !w.is_empty()).collect();
+            words.sort_by(|a, b| b.len().cmp(&a.len()));
+            words.into_iter().map(|f| format!("%{f}%")).collect()
+        }
         false => vec![format!("%{query}%")],
     };
     let mut params: Vec<&dyn rusqlite::ToSql> = Vec::with_capacity(2 + filters.source_ids.len());
+    let count_subquery = if query.trim().is_empty() {
+        "(SELECT COUNT(1) FROM channels c WHERE c.group_id = groups.id AND c.hidden = 0) as channel_count"
+    } else {
+        "NULL as channel_count"
+    };
     let mut sql_query = format!(
         r#"
-        SELECT *, (SELECT COUNT(1) FROM channels c WHERE c.group_id = groups.id AND c.hidden = 0) as channel_count
+        SELECT *, {}
         FROM groups
         WHERE ({})
         AND source_id in ({})
         AND (media_type IS NULL OR media_type in ({}))
     "#,
+        count_subquery,
         get_keywords_sql(keywords.len()),
         generate_placeholders(filters.source_ids.len()),
         generate_placeholders(media_types.len())

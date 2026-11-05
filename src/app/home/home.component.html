@@ -325,6 +325,18 @@
 
     <!-- UNIVERSAL SEARCH RESULTS MODE -->
     <ng-container *ngIf="isSearching && !isLiveTvTab">
+      <!-- Back Button to Exit Search -->
+      <button 
+        type="button" 
+        class="lh-back-btn detail-back-btn detail-tooltip-trigger" 
+        (click)="exitSearch($event)" 
+        aria-label="Go back">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round">
+          <path d="M15 18l-6-6 6-6" />
+        </svg>
+        <span class="detail-tooltip detail-tooltip--below-start" role="tooltip">Go back</span>
+      </button>
+
       <div class="search-results-container" [@fade]="channelsVisible ? 'visible' : 'hidden'">
         <!-- Search Toolbar: Content Type Filter and Sorting Controls -->
         <div class="search-toolbar mb-4" *ngIf="totalSearchResultsCount > 0">
@@ -368,8 +380,19 @@
 
           <!-- Sorting & Direction Controls -->
           <div class="search-sort-controls">
-            <!-- Sort Method: Provider order vs Alphabetical -->
+            <!-- Sort Method: Relevance vs Provider order vs Alphabetical -->
             <div class="search-sort-pill-group" role="group" aria-label="Sort method">
+              <button 
+                type="button" 
+                class="search-sort-pill" 
+                [class.active]="searchSortBy === 'relevance'" 
+                (click)="setSearchSortBy('relevance')"
+                title="Relevance">
+                <svg viewBox="0 0 24 24" fill="currentColor" class="sort-type-icon">
+                  <path d="M12,17.27L18.18,21L16.54,13.97L22,9.24L14.81,8.62L12,2L9.19,8.62L2,9.24L7.45,13.97L5.82,21L12,17.27Z"/>
+                </svg>
+                <span>Relevance</span>
+              </button>
               <button 
                 type="button" 
                 class="search-sort-pill" 
@@ -422,56 +445,20 @@
           </div>
         </div>
 
-        <!-- 1. Movies Section -->
-        <div class="search-group-section mb-4" *ngIf="searchResults.movies.length > 0">
-          <div class="search-group-header mb-3">
-            <h4 class="search-group-title mb-0">Movies</h4>
-            <span class="search-group-badge">{{ searchResults.movies.length }}</span>
-          </div>
-          <div #searchRowMovies class="search-row-track" appDragScroll (scroll)="onSearchRowScroll('movies', $event)">
-            <app-channel-tile *ngFor="let movie of searchResults.movies; let i = index; trackBy: trackChannelById"
-              class="search-card-item" [id]="i + 1000" [channel]="movie" [viewMode]="viewModeEnum.All"></app-channel-tile>
-          </div>
-        </div>
-
-        <!-- 2. TV Shows Section -->
-        <div class="search-group-section mb-4" *ngIf="searchResults.tvShows.length > 0">
-          <div class="search-group-header mb-3">
-            <h4 class="search-group-title mb-0">TV Shows</h4>
-            <span class="search-group-badge">{{ searchResults.tvShows.length }}</span>
-          </div>
-          <div #searchRowTvShows class="search-row-track" appDragScroll (scroll)="onSearchRowScroll('tvShows', $event)">
-            <app-channel-tile *ngFor="let show of searchResults.tvShows; let i = index; trackBy: trackChannelById"
-              class="search-card-item" [id]="i + 2000" [channel]="show" [viewMode]="viewModeEnum.All"></app-channel-tile>
-          </div>
-        </div>
-
-        <!-- 3. Live Channels Section -->
-        <div class="search-group-section mb-4" *ngIf="searchResults.channels.length > 0">
-          <div class="search-group-header mb-3">
-            <h4 class="search-group-title mb-0">Live Channels</h4>
-            <span class="search-group-badge">{{ searchResults.channels.length }}</span>
-          </div>
-          <div #searchRowChannels class="search-row-track" appDragScroll (scroll)="onSearchRowScroll('channels', $event)">
-            <app-channel-tile *ngFor="let channel of searchResults.channels; let i = index; trackBy: trackChannelById"
-              class="search-card-item" [id]="i" [channel]="channel" [viewMode]="viewModeEnum.All" [isLiveTvCard]="true"></app-channel-tile>
-          </div>
-        </div>
-
-        <!-- 4. Folders Section -->
-        <div class="search-group-section mb-4" *ngIf="searchResults.categories.length > 0">
-          <div class="search-group-header mb-3">
-            <h4 class="search-group-title mb-0">Folders</h4>
-            <span class="search-group-badge">{{ searchResults.categories.length }}</span>
-          </div>
-          <div #searchRowCategories class="search-row-track" appDragScroll (scroll)="onSearchRowScroll('categories', $event)">
-            <app-channel-tile *ngFor="let group of searchResults.categories; let i = index; trackBy: trackChannelById"
-              class="search-card-item" [id]="i + 3000" [channel]="group" [viewMode]="viewModeEnum.Categories" [isLiveTvCard]="isLiveTvSearch"></app-channel-tile>
-          </div>
+        <!-- UNIFIED MIXED RESULTS GRID -->
+        <div class="row g-2 g-md-3" *ngIf="displayedSearchResults.length > 0">
+          <app-channel-tile 
+            *ngFor="let item of displayedSearchResults; let i = index; trackBy: trackChannelById"
+            class="col-compact-card" 
+            [id]="i + 1000" 
+            [channel]="item" 
+            [viewMode]="item.media_type === mediaTypeEnum.group ? viewModeEnum.Categories : viewModeEnum.All"
+            [isLiveTvCard]="item.media_type === mediaTypeEnum.livestream">
+          </app-channel-tile>
         </div>
 
         <!-- Empty state when no matches in any group -->
-        <div *ngIf="!loading && visibleSearchResultsCount === 0" class="text-center py-5 text-muted">
+        <div *ngIf="!loading && displayedSearchResults.length === 0" class="text-center py-5 text-muted">
           <p class="fs-5">No items found for "{{ searchKeyword }}"</p>
           <button 
             *ngIf="isHomeSearchTab && totalSearchResultsCount > 0 && searchTypeFilter !== 'all'" 
