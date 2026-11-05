@@ -209,13 +209,15 @@ export class PlaybackSegmentService {
     const primarySegments = theIntroDbResult ? theIntroDbResult.segments : [];
     const hasIntro = primarySegments.some((s) => s.type === 'intro');
     const hasCredits = primarySegments.some((s) => s.type === 'credits');
+    const hasRecap = primarySegments.some((s) => s.type === 'recap');
+    const hasPreview = primarySegments.some((s) => s.type === 'preview');
 
     // 4. Check if useful timestamp data is missing
     // For movies: credits/outro is the core timestamp
-    // For TV episodes: missing intro or missing credits means useful data is missing
+    // For TV episodes: missing intro, credits, recap, or preview means useful data is missing
     const isUsefulDataMissing = isMovie
       ? !hasCredits
-      : (!hasIntro || !hasCredits);
+      : (!hasIntro || !hasCredits || !hasRecap || !hasPreview);
 
     let secondarySegments: PlaybackSegment[] = [];
     let skipDbResult: {

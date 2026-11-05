@@ -5505,6 +5505,8 @@
         if (skipSegmentText) {
           skipSegmentText.textContent = label;
         }
+        btnSkipSegment.setAttribute('title', `${label} (S)`);
+        btnSkipSegment.setAttribute('aria-label', label);
         btnSkipSegment.style.display = 'flex';
       }
 
@@ -5522,16 +5524,30 @@
 
         // If user sought outside of lastSkippedSegment, reset it so rewinding allows skipping again
         if (lastSkippedSegment) {
-          if (currentTime < lastSkippedSegment.startTime || currentTime >= lastSkippedSegment.endTime) {
+          if (currentTime < lastSkippedSegment.startTime - 1 || currentTime >= lastSkippedSegment.endTime) {
             lastSkippedSegment = null;
           }
         }
 
-        // Find active segment at currentTime (credits is strictly excluded from manual skip button!)
-        const active = mediaSegments.find((seg) => {
-          return (seg.type === 'intro' || seg.type === 'recap' || seg.type === 'post_credits' || seg.type === 'preview') &&
-                 currentTime >= seg.startTime && currentTime < seg.endTime;
-        });
+        // Prioritize currentActiveSegment if still within its boundary to prevent flickering in overlapping regions
+        let active = null;
+        if (
+          currentActiveSegment &&
+          currentActiveSegment !== lastSkippedSegment &&
+          currentTime >= currentActiveSegment.startTime &&
+          currentTime < currentActiveSegment.endTime
+        ) {
+          active = currentActiveSegment;
+        } else {
+          // Find first matching active segment at currentTime (credits is strictly handled by Up Next)
+          active = mediaSegments.find((seg) => {
+            return (
+              (seg.type === 'intro' || seg.type === 'recap' || seg.type === 'post_credits' || seg.type === 'preview') &&
+              currentTime >= seg.startTime &&
+              currentTime < seg.endTime
+            );
+          }) || null;
+        }
 
         if (!active) {
           currentActiveSegment = null;
@@ -5550,7 +5566,11 @@
 
       function executeSkipSegment() {
         if (!currentActiveSegment || currentActiveSegment.type === 'credits') return;
-        const targetTime = currentActiveSegment.endTime;
+        const effDuration = duration > 0 ? duration : (cachedDuration > 0 ? cachedDuration : 0);
+        let targetTime = currentActiveSegment.endTime;
+        if (effDuration > 0 && targetTime >= effDuration) {
+          targetTime = Math.max(0, effDuration - 1);
+        }
         lastSkippedSegment = currentActiveSegment;
         currentActiveSegment = null;
         hideSkipSegmentBtn();

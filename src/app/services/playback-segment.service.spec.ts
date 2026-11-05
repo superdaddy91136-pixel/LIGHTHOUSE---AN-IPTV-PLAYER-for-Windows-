@@ -304,6 +304,39 @@ describe('PlaybackSegmentService', () => {
       expect(result[0].startTime).toBe(50);
       expect(result[0].source).toBe('theintrodb');
     });
+
+    it('should correctly merge all four segment types (recap, intro, credits, preview)', () => {
+      // Primary provides intro and credits
+      const primary: any[] = [
+        { type: 'intro', startTime: 30, endTime: 60, confidence: 0.9, source: 'theintrodb' },
+        { type: 'credits', startTime: 2500, endTime: 2550, confidence: 0.9, source: 'theintrodb' },
+      ];
+      // Secondary provides recap and preview
+      const secondary: any[] = [
+        { type: 'recap', startTime: 0, endTime: 28, confidence: 0.85, source: 'skipdb' },
+        { type: 'preview', startTime: 2555, endTime: 2580, confidence: 0.8, source: 'skipdb' },
+      ];
+
+      const result = service.mergeSegments(primary, secondary);
+
+      expect(result.length).toBe(4);
+      // Correct chronological order: recap -> intro -> credits -> preview
+      expect(result[0].type).toBe('recap');
+      expect(result[0].startTime).toBe(0);
+      expect(result[0].source).toBe('skipdb');
+
+      expect(result[1].type).toBe('intro');
+      expect(result[1].startTime).toBe(30);
+      expect(result[1].source).toBe('theintrodb');
+
+      expect(result[2].type).toBe('credits');
+      expect(result[2].startTime).toBe(2500);
+      expect(result[2].source).toBe('theintrodb');
+
+      expect(result[3].type).toBe('preview');
+      expect(result[3].startTime).toBe(2555);
+      expect(result[3].source).toBe('skipdb');
+    });
   });
 
   describe('SkipDB Configuration', () => {
