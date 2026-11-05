@@ -35,7 +35,7 @@ export interface FetchSegmentsQuery {
 const THEINTRODB_BASE_URL = 'https://api.theintrodb.org/v4/media';
 const CINEMETA_BASE_URL = 'https://v3-cinemeta.strem.io/catalog';
 const FETCH_TIMEOUT_MS = 6000;
-const NEGATIVE_CACHE_TTL_MS = 7 * 24 * 60 * 60 * 1000; // 7 days
+const NEGATIVE_CACHE_TTL_MS = 2 * 60 * 60 * 1000; // 2 hours (allows newly submitted timestamps to become visible)
 
 @Injectable({
   providedIn: 'root',
@@ -173,6 +173,7 @@ export class PlaybackSegmentService {
       }
 
       const { segments, noIntro, noRecap, noOutro, isConfirmedEmpty } = fetchResult;
+      const hasPreview = segments.some((s) => s.type === 'preview');
 
       const record: MediaSegmentsRecord = {
         mediaKey,
@@ -187,9 +188,11 @@ export class PlaybackSegmentService {
         hasRecap: segments.some((s) => s.type === 'recap'),
         hasCredits: segments.some((s) => s.type === 'credits'),
         hasPostCredits: segments.some((s) => s.type === 'post_credits'),
+        hasPreview,
         noIntro,
         noRecap,
         noOutro,
+        noPreview: !hasPreview,
         isConfirmedEmpty,
         lastUpdated: Date.now(),
       };
@@ -277,7 +280,39 @@ export class PlaybackSegmentService {
   }
 
   /**
+   * Resolves external IDs (TVDB and TMDB) directly and keylessly from Cinemeta metadata endpoint.
+   */
+  public async resolveExternalIdsFromCinemeta(imdbId: string): Promise<{ tvdbId?: number; tmdbId?: number }> {
+    if (!imdbId || !imdbId.startsWith('tt')) return {};
+    const url = `https://v3-cinemeta.strem.io/meta/series/${encodeURIComponent(imdbId)}.json`;
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), FETCH_TIMEOUT_MS);
+    try {
+      const resp = await fetch(url, {
+        method: 'GET',
+        headers: { Accept: 'application/json' },
+        signal: controller.signal,
+      });
+      clearTimeout(timer);
+      if (!resp.ok) return {};
+      const data = await resp.json();
+      const meta = data?.meta;
+      const tvdbId = typeof meta?.tvdb_id === 'number' ? meta.tvdb_id : (meta?.tvdb_id ? parseInt(meta.tvdb_id, 10) : undefined);
+      const tmdbId = typeof meta?.moviedb_id === 'number' ? meta.moviedb_id : (meta?.moviedb_id ? parseInt(meta.moviedb_id, 10) : undefined);
+      return {
+        tvdbId: tvdbId && !isNaN(tvdbId) ? tvdbId : undefined,
+        tmdbId: tmdbId && !isNaN(tmdbId) ? tmdbId : undefined,
+      };
+    } catch {
+      clearTimeout(timer);
+      return {};
+    }
+  }
+
+  /**
    * Internal fetcher querying TheIntroDB v4 endpoint.
+   * Tries available identifiers in fallback sequence (tvdb_id -> imdb_id -> tmdb_id)
+   * to ensure valid submissions aren't missed if an external mapping is unbound.
    */
   private async fetchSegmentsFromApi(query: FetchSegmentsQuery): Promise<{
     segments: PlaybackSegment[];
@@ -286,126 +321,132 @@ export class PlaybackSegmentService {
     noOutro?: boolean;
     isConfirmedEmpty?: boolean;
   } | null> {
-    const params = new URLSearchParams();
+    const candidateIds: Array<{ key: 'tvdb_id' | 'imdb_id' | 'tmdb_id'; value: string | number }> = [];
 
-    // Priority: tvdb_id -> tmdb_id -> imdb_id
+    // Priority: tvdb_id -> imdb_id -> tmdb_id
     if (query.tvdbId) {
-      params.set('tvdb_id', String(query.tvdbId));
-    } else if (query.tmdbId) {
-      params.set('tmdb_id', String(query.tmdbId));
-    } else if (query.imdbId) {
-      params.set('imdb_id', query.imdbId);
-    } else {
-      return null;
+      candidateIds.push({ key: 'tvdb_id', value: query.tvdbId });
+    }
+    if (query.imdbId) {
+      candidateIds.push({ key: 'imdb_id', value: query.imdbId });
+    }
+    if (query.tmdbId) {
+      candidateIds.push({ key: 'tmdb_id', value: query.tmdbId });
     }
 
-    if (!query.isMovie) {
-      const s = query.seasonNum != null && query.seasonNum >= 0 ? query.seasonNum : 1;
-      const e = query.episodeNum != null && query.episodeNum >= 0 ? query.episodeNum : 1;
-      params.set('season', String(s));
-      params.set('episode', String(e));
-    }
+    if (candidateIds.length === 0) return null;
 
-    params.set('details', 'true');
+    let successfulPayload: any = null;
+    let confirmedEmptyCount = 0;
 
-    const url = `${THEINTRODB_BASE_URL}?${params.toString()}`;
+    for (const cand of candidateIds) {
+      const params = new URLSearchParams();
+      params.set(cand.key, String(cand.value));
 
-    const controller = new AbortController();
-    const timer = setTimeout(() => controller.abort(), FETCH_TIMEOUT_MS);
+      if (!query.isMovie) {
+        const s = query.seasonNum != null && query.seasonNum >= 0 ? query.seasonNum : 1;
+        const e = query.episodeNum != null && query.episodeNum >= 0 ? query.episodeNum : 1;
+        params.set('season', String(s));
+        params.set('episode', String(e));
+      }
 
-    try {
-      let raw: any = null;
+      params.set('details', 'true');
 
-      // 1. Try native Tauri command to avoid browser CORS restrictions
+      const url = `${THEINTRODB_BASE_URL}?${params.toString()}`;
+
       try {
-        const text = await invoke<string>('fetch_playback_segments', { url });
-        if (text) {
-          raw = JSON.parse(text);
+        let raw: any = null;
+
+        // 1. Try native Tauri command to avoid browser CORS restrictions
+        try {
+          const text = await invoke<string>('fetch_playback_segments', { url });
+          if (text) {
+            raw = JSON.parse(text);
+          }
+        } catch (ipcErr) {
+          // Fall back to direct fetch if native IPC is unavailable
         }
-      } catch (ipcErr) {
-        // Fall back to direct fetch if native IPC is unavailable
-      }
 
-      // 2. Direct browser fetch fallback
-      if (!raw) {
-        const response = await fetch(url, {
-          method: 'GET',
-          headers: { Accept: 'application/json' },
-          signal: controller.signal,
-        });
-
-        if (response.status === 404) {
+        // 2. Direct browser fetch fallback
+        if (!raw) {
+          const controller = new AbortController();
+          const timer = setTimeout(() => controller.abort(), FETCH_TIMEOUT_MS);
+          const response = await fetch(url, {
+            method: 'GET',
+            headers: { Accept: 'application/json' },
+            signal: controller.signal,
+          });
           clearTimeout(timer);
-          try {
-            const errBody = await response.json();
-            if (errBody?.code === 'no_submissions' || errBody?.code === 'episode_not_found') {
-              return {
-                segments: [],
-                noIntro: true,
-                noRecap: true,
-                noOutro: true,
-                isConfirmedEmpty: true,
-              };
-            }
-          } catch {}
-          return {
-            segments: [],
-            noIntro: true,
-            noRecap: true,
-            noOutro: true,
-            isConfirmedEmpty: true,
-          };
+
+          if (response.status === 404) {
+            try {
+              const errBody = await response.json();
+              if (errBody?.code === 'no_submissions' || errBody?.code === 'episode_not_found') {
+                confirmedEmptyCount++;
+              }
+            } catch {}
+            continue;
+          }
+
+          if (!response.ok) {
+            continue;
+          }
+
+          raw = await response.json();
         }
 
-        if (!response.ok) {
-          clearTimeout(timer);
-          return null;
+        // Handle error body returned by native IPC (which succeeds with response body on 404)
+        if (raw?.error) {
+          if (raw.code === 'no_submissions' || raw.code === 'episode_not_found') {
+            confirmedEmptyCount++;
+          }
+          continue;
         }
 
-        raw = await response.json();
+        // Check if payload contains any valid segment fields or valid TVDB media record
+        if (raw && (raw.intro || raw.recap || raw.credits || raw.outro || raw.preview || raw.tvdb_id)) {
+          successfulPayload = raw;
+          break; // Successfully retrieved data!
+        }
+      } catch (err) {
+        // Continue to next identifier
       }
+    }
 
-      clearTimeout(timer);
-
-      // Handle TheIntroDB error codes if returned via native IPC
-      if (raw?.error) {
-        if (raw.code === 'no_submissions' || raw.code === 'episode_not_found') {
-          return {
-            segments: [],
-            noIntro: true,
-            noRecap: true,
-            noOutro: true,
-            isConfirmedEmpty: true,
-          };
-        }
-        return null;
+    if (!successfulPayload) {
+      if (confirmedEmptyCount > 0 && confirmedEmptyCount === candidateIds.length) {
+        return {
+          segments: [],
+          noIntro: true,
+          noRecap: true,
+          noOutro: true,
+          isConfirmedEmpty: true,
+        };
       }
-
-      const segments = this.normalizeSegments(raw);
-
-      const hasIntro = segments.some((s) => s.type === 'intro');
-      const hasRecap = segments.some((s) => s.type === 'recap');
-      const hasCredits = segments.some((s) => s.type === 'credits');
-
-      const isConfirmedEmpty = segments.length === 0;
-
-      return {
-        segments,
-        noIntro: !hasIntro,
-        noRecap: !hasRecap,
-        noOutro: !hasCredits,
-        isConfirmedEmpty,
-      };
-    } catch (err) {
-      clearTimeout(timer);
       return null;
     }
+
+    const segments = this.normalizeSegments(successfulPayload);
+
+    const hasIntro = segments.some((s) => s.type === 'intro');
+    const hasRecap = segments.some((s) => s.type === 'recap');
+    const hasCredits = segments.some((s) => s.type === 'credits');
+
+    const isConfirmedEmpty = segments.length === 0;
+
+    return {
+      segments,
+      noIntro: !hasIntro,
+      noRecap: !hasRecap,
+      noOutro: !hasCredits,
+      isConfirmedEmpty,
+    };
   }
 
   /**
    * Normalizes and validates raw segment payloads from TheIntroDB v4 (or legacy formats).
    * Supports multiple segment ranges per type (arrays), timestamp conversion from ms,
-   * and maps outro/credits to 'credits' and post_credits to 'post_credits'.
+   * maps outro/credits to 'credits', post_credits to 'post_credits', and preview to 'preview'.
    */
   public normalizeSegments(raw: any): PlaybackSegment[] {
     if (!raw || typeof raw !== 'object') return [];
@@ -442,6 +483,9 @@ export class PlaybackSegmentService {
     // 4. Post-credits -> mapped to 'post_credits'
     processEntries('post_credits', raw.post_credits);
 
+    // 5. Preview -> mapped to 'preview'
+    processEntries('preview', raw.preview);
+
     // Sort by startTime ascending
     segments.sort((a, b) => a.startTime - b.startTime);
     return segments;
@@ -450,7 +494,7 @@ export class PlaybackSegmentService {
   /**
    * Validates a single segment candidate.
    * Ensures start >= 0, end > start, duration >= 2s, and non-NaN timestamps.
-   * Handles null start_ms for intro/recap (defaults to 0) and null end_ms for credits.
+   * Handles null start_ms for intro/recap/preview (defaults to 0) and null end_ms for credits/preview/post_credits.
    */
   private validateSegment(
     type: PlaybackSegmentType,
@@ -466,7 +510,7 @@ export class PlaybackSegmentService {
     } else if (typeof raw.start_ms === 'number') {
       startSec = raw.start_ms / 1000;
     } else if (raw.start_sec === null || raw.start_ms === null || raw.start_ms === undefined) {
-      if (type === 'intro' || type === 'recap') {
+      if (type === 'intro' || type === 'recap' || type === 'preview') {
         startSec = 0;
       } else {
         return null;
@@ -482,7 +526,7 @@ export class PlaybackSegmentService {
     } else if (typeof raw.end_ms === 'number') {
       endSec = raw.end_ms / 1000;
     } else if (raw.end_sec === null || raw.end_ms === null || raw.end_ms === undefined) {
-      if (type === 'credits') {
+      if (type === 'credits' || type === 'preview' || type === 'post_credits') {
         endSec =
           fallbackDurationSec != null && fallbackDurationSec > startSec
             ? fallbackDurationSec
@@ -609,6 +653,9 @@ export class PlaybackSegmentService {
     if (!enrichment && target.id) {
       enrichment = await this.cacheService.getEnrichment(target.id);
     }
+    if (!enrichment && channel.series_id) {
+      enrichment = this.cacheService.getEnrichmentSync(channel.series_id) || (await this.cacheService.getEnrichment(channel.series_id));
+    }
     if (!enrichment && target.id) {
       enrichment = await this.tmdbEnrichment.getEnrichment(target);
     }
@@ -638,34 +685,36 @@ export class PlaybackSegmentService {
     }
 
     // 4. Cinemeta public fallback using series title candidates
-    const titleCandidates = [
-      seriesTitle,
-      seriesChannel?.name,
-      channel.name,
-    ].filter((t): t is string => !!t && t.trim().length > 0);
+    if (!result.tvdbId || !result.imdbId) {
+      const titleCandidates = [
+        seriesTitle,
+        seriesChannel?.name,
+        channel.name,
+      ].filter((t): t is string => !!t && t.trim().length > 0);
 
-    for (const title of titleCandidates) {
-      const cinemetaImdb = await this.resolveImdbIdFromCinemeta(title, 'tv');
-      if (cinemetaImdb) {
-        result.imdbId = cinemetaImdb;
-        try {
-          const findRes = await this.tmdbService.findByExternalId(cinemetaImdb);
-          const showId = findRes?.tv_results?.[0]?.id || findRes?.tv_episode_results?.[0]?.show_id;
-          if (showId) {
-            result.tmdbId = showId;
-            const extIds = await this.tmdbService.getTvExternalIds(showId);
-            if (extIds?.tvdb_id) {
-              result.tvdbId = Number(extIds.tvdb_id);
+      for (const title of titleCandidates) {
+        const cinemetaImdb = await this.resolveImdbIdFromCinemeta(title, 'tv');
+        if (cinemetaImdb) {
+          if (!result.imdbId) result.imdbId = cinemetaImdb;
+          try {
+            const findRes = await this.tmdbService.findByExternalId(cinemetaImdb);
+            const showId = findRes?.tv_results?.[0]?.id || findRes?.tv_episode_results?.[0]?.show_id;
+            if (showId) {
+              result.tmdbId = showId;
+              const extIds = await this.tmdbService.getTvExternalIds(showId);
+              if (extIds?.tvdb_id) {
+                result.tvdbId = Number(extIds.tvdb_id);
+              }
             }
-          }
-        } catch {}
-        return result;
+          } catch {}
+          break;
+        }
       }
     }
 
     // 5. Fallback: check if the episode itself has an IMDb ID and resolve its series via TMDB
     const episodeImdbId = extractImdbId(channel.name) || extractImdbId(channel.url);
-    if (episodeImdbId && episodeImdbId !== directImdb) {
+    if (!result.tvdbId && episodeImdbId && episodeImdbId !== directImdb) {
       try {
         const findRes = await this.tmdbService.findByExternalId(episodeImdbId);
         const epMatch = findRes?.tv_episode_results?.[0];
@@ -678,7 +727,19 @@ export class PlaybackSegmentService {
           if (extIds?.imdb_id) {
             result.imdbId = extIds.imdb_id;
           }
-          return result;
+        }
+      } catch {}
+    }
+
+    // 6. Free keyless resolution of TVDB ID via Cinemeta meta endpoint if not yet resolved
+    if (result.imdbId && !result.tvdbId) {
+      try {
+        const cinemetaIds = await this.resolveExternalIdsFromCinemeta(result.imdbId);
+        if (cinemetaIds.tvdbId) {
+          result.tvdbId = cinemetaIds.tvdbId;
+        }
+        if (cinemetaIds.tmdbId && !result.tmdbId) {
+          result.tmdbId = cinemetaIds.tmdbId;
         }
       } catch {}
     }
@@ -730,12 +791,20 @@ export class PlaybackSegmentService {
 
     const name = channel.name || '';
     if (s == null) {
-      const sMatch = name.match(/\b[Ss](\d{1,2})\b/) || name.match(/[Ss](\d{1,2})/);
+      const sMatch =
+        name.match(/\b[Ss](\d{1,2})\s*[Ee]\d{1,3}\b/) ||
+        name.match(/\b[Ss](\d{1,2})\b/) ||
+        name.match(/\b(\d{1,2})x\d{1,3}\b/) ||
+        name.match(/\bseason\s*(\d{1,2})\b/i);
       s = sMatch ? parseInt(sMatch[1], 10) : 1;
     }
 
     if (e == null) {
-      const eMatch = name.match(/\b[Ee](\d{1,3})\b/) || name.match(/[Ee](\d{1,3})/);
+      const eMatch =
+        name.match(/\b[Ss]\d{1,2}\s*[Ee](\d{1,3})\b/) ||
+        name.match(/\b[Ee](\d{1,3})\b/) ||
+        name.match(/\b\d{1,2}x(\d{1,3})\b/) ||
+        name.match(/\b(?:episode|ep)[\s._-]*(\d{1,3})\b/i);
       e = eMatch ? parseInt(eMatch[1], 10) : 1;
     }
 

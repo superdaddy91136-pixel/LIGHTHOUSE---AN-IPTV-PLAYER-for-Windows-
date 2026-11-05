@@ -1,4 +1,4 @@
-export type PlaybackSegmentType = 'intro' | 'recap' | 'credits' | 'post_credits';
+export type PlaybackSegmentType = 'intro' | 'recap' | 'credits' | 'post_credits' | 'preview';
 
 export interface PlaybackSegment {
   type: PlaybackSegmentType;
@@ -20,9 +20,11 @@ export interface MediaSegmentsRecord {
   hasRecap: boolean;
   hasCredits: boolean;
   hasPostCredits?: boolean;
+  hasPreview?: boolean;
   noIntro?: boolean;
   noRecap?: boolean;
   noOutro?: boolean;
+  noPreview?: boolean;
   isConfirmedEmpty?: boolean;
   lastUpdated: number;
 }

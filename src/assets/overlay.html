@@ -5171,9 +5171,17 @@
 
       function getFallbackNextEpisode() {
         if (!episodesData.episodes || episodesData.episodes.length === 0) return null;
-        const curIdx = episodesData.episodes.findIndex(
-          (ep) => ep.id === episodesData.currentEpisodeId || ep.isCurrent
+        let curIdx = episodesData.episodes.findIndex(
+          (ep) => (ep.id != null && (String(ep.id) === String(episodesData.currentEpisodeId) || String(ep.id) === String(currentActiveChannelId))) ||
+                  (ep.channel && (String(ep.channel.id) === String(episodesData.currentEpisodeId) || String(ep.channel.id) === String(currentActiveChannelId))) ||
+                  ep.isCurrent
         );
+        if (curIdx === -1 && (episodesData.currentEpisodeId != null || currentActiveChannelId != null)) {
+          const targetId = episodesData.currentEpisodeId != null ? episodesData.currentEpisodeId : currentActiveChannelId;
+          curIdx = episodesData.episodes.findIndex(
+            (ep) => ep.episodeNum != null && String(ep.episodeNum) === String(targetId)
+          );
+        }
         if (curIdx !== -1 && curIdx + 1 < episodesData.episodes.length) {
           const next = episodesData.episodes[curIdx + 1];
           return {
@@ -5189,8 +5197,19 @@
         return null;
       }
 
+      function getNextEpisodeData() {
+        if (upNextState.nextEpisode && upNextState.nextEpisode.id) {
+          return upNextState.nextEpisode;
+        }
+        const fallback = getFallbackNextEpisode();
+        if (fallback) {
+          return fallback;
+        }
+        return upNextState.nextEpisode || null;
+      }
+
       function showUpNextCard(nextEp) {
-        if (!nextEp || !upNextCard) return;
+        if (!upNextCard) return;
         if (upNextState.watchCreditsSelected || upNextState.cancelledForMediaId === currentActiveChannelId) return;
         if (upNextState.isShowing || upNextState.hasTriggeredForSession) return;
 
@@ -5199,63 +5218,94 @@
         upNextState.countdown = 20;
         upNextState.nextEpisode = nextEp;
 
-        const sNum = nextEp.seasonNum != null && nextEp.seasonNum > 0 ? String(nextEp.seasonNum).padStart(2, '0') : '';
-        const eNum = nextEp.episodeNum != null && nextEp.episodeNum > 0 ? String(nextEp.episodeNum).padStart(2, '0') : '';
-        if (upNextEpMeta) {
-          upNextEpMeta.textContent = (sNum && eNum) ? `S${sNum}E${eNum}` : 'Next Episode';
+        const hasNext = !!(nextEp && nextEp.id);
+        const btnPlayNextEp = document.getElementById('btnPlayNextEp');
+        if (btnPlayNextEp) {
+          btnPlayNextEp.style.display = hasNext ? 'inline-flex' : 'none';
         }
 
-        const cleanShow = sanitizeShowTitle(nextEp.seriesTitle || episodesData.seriesTitle || '');
-        const cleanTitle = sanitizeEpisodeTitle(
-          nextEp.title || nextEp.channel?.name || '',
-          cleanShow,
-          nextEp.episodeNum,
-          nextEp.seasonNum
-        );
-        if (upNextEpTitle) {
-          upNextEpTitle.textContent = cleanTitle || (nextEp.episodeNum ? `Episode ${nextEp.episodeNum}` : 'Next Episode');
-        }
-        if (upNextTimer) {
-          upNextTimer.textContent = `Playing in 20s`;
-        }
+        if (hasNext) {
+          const sNum = nextEp.seasonNum != null && nextEp.seasonNum > 0 ? String(nextEp.seasonNum).padStart(2, '0') : '';
+          const eNum = nextEp.episodeNum != null && nextEp.episodeNum > 0 ? String(nextEp.episodeNum).padStart(2, '0') : '';
+          if (upNextEpMeta) {
+            upNextEpMeta.textContent = (sNum && eNum) ? `S${sNum}E${eNum}` : 'Next Episode';
+          }
 
-        const thumbUrl = nextEp.stillUrl || (nextEp.channel && nextEp.channel.image);
-        const posterUrl = nextEp.posterUrl || episodesData.seriesPoster;
-        const artUrl = thumbUrl || posterUrl;
+          const cleanShow = sanitizeShowTitle(nextEp.seriesTitle || episodesData.seriesTitle || '');
+          const cleanTitle = sanitizeEpisodeTitle(
+            nextEp.title || nextEp.channel?.name || '',
+            cleanShow,
+            nextEp.episodeNum,
+            nextEp.seasonNum
+          );
+          if (upNextEpTitle) {
+            upNextEpTitle.textContent = cleanTitle || (nextEp.episodeNum ? `Episode ${nextEp.episodeNum}` : 'Next Episode');
+          }
+          if (upNextTimer) {
+            upNextTimer.textContent = `Playing in 20s`;
+            upNextTimer.style.display = 'inline';
+          }
 
-        if (upNextThumb && upNextThumbFallback) {
-          if (artUrl) {
-            upNextThumb.src = artUrl;
-            upNextThumb.style.display = 'block';
-            upNextThumbFallback.style.display = 'none';
+          const thumbUrl = nextEp.stillUrl || (nextEp.channel && nextEp.channel.image);
+          const posterUrl = nextEp.posterUrl || episodesData.seriesPoster;
+          const artUrl = thumbUrl || posterUrl;
 
-            upNextThumb.onerror = () => {
-              if (thumbUrl && posterUrl && upNextThumb.src !== posterUrl) {
-                upNextThumb.src = posterUrl;
-              } else {
-                upNextThumb.style.display = 'none';
-                upNextThumbFallback.style.display = 'flex';
-              }
-            };
-          } else {
-            upNextThumb.style.display = 'none';
-            upNextThumbFallback.style.display = 'flex';
+          if (upNextThumb && upNextThumbFallback) {
+            if (artUrl) {
+              upNextThumb.src = artUrl;
+              upNextThumb.style.display = 'block';
+              upNextThumbFallback.style.display = 'none';
+
+              upNextThumb.onerror = () => {
+                if (thumbUrl && posterUrl && upNextThumb.src !== posterUrl) {
+                  upNextThumb.src = posterUrl;
+                } else {
+                  upNextThumb.style.display = 'none';
+                  upNextThumbFallback.style.display = 'flex';
+                }
+              };
+            } else {
+              upNextThumb.style.display = 'none';
+              upNextThumbFallback.style.display = 'flex';
+            }
+          }
+        } else {
+          if (upNextEpMeta) {
+            upNextEpMeta.textContent = 'CREDITS';
+          }
+          if (upNextEpTitle) {
+            upNextEpTitle.textContent = episodesData.seriesTitle || 'End of Episode';
+          }
+          if (upNextTimer) {
+            upNextTimer.style.display = 'none';
+          }
+          if (upNextThumb && upNextThumbFallback) {
+            if (episodesData.seriesPoster) {
+              upNextThumb.src = episodesData.seriesPoster;
+              upNextThumb.style.display = 'block';
+              upNextThumbFallback.style.display = 'none';
+            } else {
+              upNextThumb.style.display = 'none';
+              upNextThumbFallback.style.display = 'flex';
+            }
           }
         }
 
         upNextCard.style.display = 'flex';
         clearUpNextTimer();
 
-        upNextState.timerId = setInterval(() => {
-          upNextState.countdown -= 1;
-          if (upNextTimer) {
-            upNextTimer.textContent = `Playing in ${Math.max(0, upNextState.countdown)}s`;
-          }
-          if (upNextState.countdown <= 0) {
-            clearUpNextTimer();
-            executePlayNextEpisode();
-          }
-        }, 1000);
+        if (hasNext) {
+          upNextState.timerId = setInterval(() => {
+            upNextState.countdown -= 1;
+            if (upNextTimer) {
+              upNextTimer.textContent = `Playing in ${Math.max(0, upNextState.countdown)}s`;
+            }
+            if (upNextState.countdown <= 0) {
+              clearUpNextTimer();
+              executePlayNextEpisode();
+            }
+          }, 1000);
+        }
       }
 
       function clearMovieRecsTimer() {
@@ -5394,18 +5444,26 @@
           return;
         }
 
+        if (currentTime < creditStart - 2) {
+          if (upNextState.isShowing) {
+            hideUpNextCard(false);
+          }
+          if (movieRecsState.isShowing) {
+            hideMovieRecsCard(false);
+          }
+          if (!upNextState.watchCreditsSelected) {
+            upNextState.hasTriggeredForSession = false;
+          }
+          if (!movieRecsState.watchCreditsSelected) {
+            movieRecsState.hasTriggeredForSession = false;
+          }
+        }
+
         if (currentContentMode === 'episode') {
           if (upNextState.watchCreditsSelected || upNextState.cancelledForMediaId === currentActiveChannelId) return;
           if (upNextState.hasTriggeredForSession) return;
 
-          let nextEp = upNextState.nextEpisode;
-          if (nextEp === undefined) {
-            nextEp = getFallbackNextEpisode();
-          }
-          if (!nextEp) {
-            if (upNextState.isShowing) hideUpNextCard(false);
-            return;
-          }
+          let nextEp = getNextEpisodeData();
 
           if (currentTime >= creditStart) {
             if (!upNextState.isShowing) {
@@ -5429,7 +5487,7 @@
         }
       }
 
-      // PLAYBACK SEGMENTS (SKIP INTRO / RECAP)
+      // PLAYBACK SEGMENTS (SKIP INTRO / RECAP / PREVIEW / POST-CREDITS)
       function showSkipSegmentBtn(segment) {
         if (!btnSkipSegment) {
           return;
@@ -5441,6 +5499,8 @@
           label = 'Skip Recap';
         } else if (segment.type === 'post_credits') {
           label = 'Skip Post-Credits';
+        } else if (segment.type === 'preview') {
+          label = 'Skip Preview';
         }
         if (skipSegmentText) {
           skipSegmentText.textContent = label;
@@ -5469,7 +5529,7 @@
 
         // Find active segment at currentTime (credits is strictly excluded from manual skip button!)
         const active = mediaSegments.find((seg) => {
-          return (seg.type === 'intro' || seg.type === 'recap' || seg.type === 'post_credits') &&
+          return (seg.type === 'intro' || seg.type === 'recap' || seg.type === 'post_credits' || seg.type === 'preview') &&
                  currentTime >= seg.startTime && currentTime < seg.endTime;
         });
 
@@ -7262,6 +7322,10 @@
 
         if (chId != null) {
           currentActiveChannelId = chId;
+        }
+
+        if (event?.payload?.mode) {
+          setContentMode(event.payload.mode);
         }
 
         // Advance session sequence to invalidate any stale in-flight MPV events

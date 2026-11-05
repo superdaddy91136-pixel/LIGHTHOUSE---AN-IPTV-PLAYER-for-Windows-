@@ -977,60 +977,92 @@ export class EmbeddedPlayerService implements OnDestroy {
       try {
         const channelId = this.currentChannel.id;
         const seriesKey = this.getSeriesKey(this.currentChannel);
-        let found = this.getPersistedNextEpisode(seriesKey, channelId);
-        if (found === undefined) {
-          found = await this.findNextEpisode(this.currentChannel);
-          if (seriesKey) {
-            this.setPersistedNextEpisode(seriesKey, channelId, found);
+
+        // 1. Check if next episode is immediately available in active season episodes list
+        if (this.episodes && this.episodes.length > 0) {
+          const curIdx = this.episodes.findIndex(
+            (e) => e.id === channelId || e.isCurrent || (e.channel && e.channel.id === channelId)
+          );
+          if (curIdx !== -1 && curIdx + 1 < this.episodes.length) {
+            const nextItem = this.episodes[curIdx + 1];
+            if (nextItem && nextItem.channel) {
+              const epNum = nextItem.episodeNum ?? this.extractEpisodeNumber(nextItem.channel.name);
+              const sNum = nextItem.seasonNum ?? this.extractSeasonNumber(nextItem.channel);
+              const cleanShow = sanitizeShowTitle(this.seriesTitle || this.extractSeriesTitle(nextItem.channel));
+              const cleanEpTitle = nextItem.title || sanitizeEpisodeTitle(nextItem.channel.name, cleanShow, epNum, sNum);
+
+              nextEp = {
+                id: nextItem.id,
+                title: cleanEpTitle || `Episode ${epNum}`,
+                rawTitle: nextItem.channel.name,
+                episodeNum: epNum,
+                seasonNum: sNum,
+                seriesTitle: cleanShow,
+                stillUrl: nextItem.stillUrl || nextItem.channel.image,
+                posterUrl: this.seriesChannel?.image || this.currentChannel?.image,
+                channel: nextItem.channel,
+              };
+            }
           }
         }
-        if (found) {
-          const epNum = found.episode_num ?? this.extractEpisodeNumber(found.name);
-          const sNum = found.season_id != null
-            ? (this.seasons.find((s) => s.id === found.season_id)?.seasonNum || this.extractSeasonNumber(found))
-            : this.extractSeasonNumber(found);
-          const cleanShow = sanitizeShowTitle(this.seriesTitle || this.extractSeriesTitle(found));
-          const cleanEpTitle = sanitizeEpisodeTitle(found.name, cleanShow, epNum, sNum);
-          const refSeries = this.seriesChannel || this.currentChannel;
-          let stillUrl = found.image;
-          const cachedEnrichment = refSeries ? this.tmdbEnrichment.getEnrichmentSync(refSeries) : undefined;
-          const tmdbId = cachedEnrichment?.tmdbId;
-          if (!stillUrl && tmdbId && sNum > 0 && epNum > 0) {
-            stillUrl = this.tmdbEnrichment.getEpisodeStillSync(tmdbId, sNum, epNum);
+
+        // 2. If not found in current season list (e.g. season finale or cross-season), resolve via database/cache
+        if (!nextEp) {
+          let found = this.getPersistedNextEpisode(seriesKey, channelId);
+          if (found === undefined) {
+            found = await this.findNextEpisode(this.currentChannel);
+            if (seriesKey) {
+              this.setPersistedNextEpisode(seriesKey, channelId, found);
+            }
           }
-          const posterUrl = this.seriesChannel?.image || this.currentChannel?.image;
+          if (found) {
+            const epNum = found.episode_num ?? this.extractEpisodeNumber(found.name);
+            const sNum = found.season_id != null
+              ? (this.seasons.find((s) => s.id === found.season_id)?.seasonNum || this.extractSeasonNumber(found))
+              : this.extractSeasonNumber(found);
+            const cleanShow = sanitizeShowTitle(this.seriesTitle || this.extractSeriesTitle(found));
+            const cleanEpTitle = sanitizeEpisodeTitle(found.name, cleanShow, epNum, sNum);
+            const refSeries = this.seriesChannel || this.currentChannel;
+            let stillUrl = found.image;
+            const cachedEnrichment = refSeries ? this.tmdbEnrichment.getEnrichmentSync(refSeries) : undefined;
+            const tmdbId = cachedEnrichment?.tmdbId;
+            if (!stillUrl && tmdbId && sNum > 0 && epNum > 0) {
+              stillUrl = this.tmdbEnrichment.getEpisodeStillSync(tmdbId, sNum, epNum);
+            }
+            const posterUrl = this.seriesChannel?.image || this.currentChannel?.image;
 
-          nextEp = {
-            id: found.id!,
-            title: cleanEpTitle || `Episode ${epNum}`,
-            rawTitle: found.name,
-            episodeNum: epNum,
-            seasonNum: sNum,
-            seriesTitle: cleanShow,
-            stillUrl: stillUrl || found.image,
-            posterUrl: posterUrl,
-            channel: found,
-          };
+            nextEp = {
+              id: found.id!,
+              title: cleanEpTitle || `Episode ${epNum}`,
+              rawTitle: found.name,
+              episodeNum: epNum,
+              seasonNum: sNum,
+              seriesTitle: cleanShow,
+              stillUrl: stillUrl || found.image,
+              posterUrl: posterUrl,
+              channel: found,
+            };
 
-          // If stillUrl is missing, try async fetch from TMDB without blocking
-          if (!nextEp.stillUrl && tmdbId && sNum > 0 && epNum > 0) {
-            this.tmdbEnrichment.getEpisodeStill(tmdbId, sNum, epNum).then((asyncStill) => {
-              if (asyncStill && nextEp && nextEp.id === found!.id) {
-                nextEp.stillUrl = asyncStill;
-                emit('embedded-player-episodes-data', {
-                  seriesTitle: sanitizeShowTitle(this.seriesTitle),
-                  seriesPoster: this.seriesChannel?.image || this.currentChannel?.image,
-                  seasons: this.seasons,
-                  currentSeasonNum: this.currentSeasonNum,
-                  currentEpisodeId: this.currentChannel?.id,
-                  episodes: this.episodes.map((e) => ({
-                    ...e,
-                    isCurrent: e.id === this.currentChannel?.id,
-                  })),
-                  nextEpisode: nextEp,
-                }).catch(console.warn);
-              }
-            }).catch(() => {});
+            // If stillUrl is missing, try async fetch from TMDB without blocking
+            if (!nextEp.stillUrl && tmdbId && sNum > 0 && epNum > 0) {
+              this.tmdbEnrichment.getEpisodeStill(tmdbId, sNum, epNum).then((asyncStill) => {
+                if (asyncStill && nextEp && nextEp.id === found!.id) {
+                  nextEp.stillUrl = asyncStill;
+                  emit('embedded-player-episodes-data', {
+                    seriesTitle: sanitizeShowTitle(this.seriesTitle),
+                    seriesPoster: this.seriesChannel?.image || this.currentChannel?.image,
+                    seasons: this.seasons,
+                    currentSeasonNum: this.currentSeasonNum,
+                    currentEpisodeId: this.currentChannel?.id,
+                    episodes: this.episodes.map((e) => ({
+                      ...e,
+                      isCurrent: e.id === this.currentChannel?.id,
+                    })),
+                    nextEpisode: nextEp,
+                  }).catch(console.warn);
+                }
+              }).catch(() => {});
+            }
           }
         }
       } catch (err) {
@@ -2382,6 +2414,7 @@ export class EmbeddedPlayerService implements OnDestroy {
       startTime: startPos,
       seriesTitle: seriesTitle || undefined,
       currentSeasonNum: seasonNum,
+      currentEpisodeNum: epNum,
     });
   }
 
