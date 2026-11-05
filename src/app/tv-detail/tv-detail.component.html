@@ -367,6 +367,11 @@
               </svg>
               <span>Watched</span>
             </div>
+
+            <!-- Red seek/progress bar along preview bottom edge -->
+            <div class="episode-progress-track" *ngIf="getEpisodeProgress(ep) > 0">
+              <div class="episode-progress-fill" [style.width.%]="getEpisodeProgress(ep)"></div>
+            </div>
           </div>
 
           <!-- Episode Info -->

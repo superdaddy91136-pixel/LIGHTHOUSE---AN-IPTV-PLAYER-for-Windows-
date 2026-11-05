@@ -161,6 +161,7 @@ export class TvDetailComponent implements OnInit, AfterViewInit, OnDestroy {
   @ViewChild('seasonSelectorTrack') seasonSelectorTrack?: ElementRef<HTMLDivElement>;
   @ViewChild(EpisodeSwitcherComponent) episodeSwitcher?: EpisodeSwitcherComponent;
   activePlayingEpisode?: Channel;
+  private livePlaybackProgress: Record<number, number> = {};
 
   constructor(
     private tvDetailService: TvDetailService,
@@ -245,6 +246,22 @@ export class TvDetailComponent implements OnInit, AfterViewInit, OnDestroy {
     this.subs.push(
       this.embeddedPlayer.isPlayingEmbedded$.subscribe(() => {
         this.cdr.detectChanges();
+      }),
+      this.embeddedPlayer.playbackProgress$.subscribe((state) => {
+        if (state.channelId) {
+          this.livePlaybackProgress[state.channelId] = state.percent;
+          this.cdr.markForCheck();
+        }
+      }),
+      this.embeddedPlayer.lastWatchedUpdated$.subscribe((chId) => {
+        if (chId) {
+          const ep = this.enrichedEpisodes.find((e) => e.channel.id === chId);
+          if (ep) {
+            ep.isWatched = true;
+            (ep.channel as any).last_watched = Date.now();
+          }
+          this.cdr.markForCheck();
+        }
       }),
     );
   }
@@ -1185,6 +1202,48 @@ export class TvDetailComponent implements OnInit, AfterViewInit, OnDestroy {
   }
 
   // -------------------------------------------------------------
+  getEpisodeProgress(ep: EnrichedEpisode): number {
+    const chId = ep.channel?.id;
+    if (!chId) return 0;
+
+    // 1. If currently playing/seeking in embedded player, use real-time progress
+    if (this.embeddedPlayer.isPlayingEmbedded && this.livePlaybackProgress[chId] !== undefined) {
+      return Math.min(100, Math.max(0, Math.round(this.livePlaybackProgress[chId])));
+    }
+
+    // 2. Check localStorage fred_tv_watch_progress
+    try {
+      const storeRaw = localStorage.getItem('fred_tv_watch_progress');
+      if (storeRaw) {
+        const store = JSON.parse(storeRaw);
+        const entry = store[chId];
+        if (entry) {
+          const pct =
+            typeof entry === 'number'
+              ? entry
+              : entry.percent ||
+                (entry.time && entry.duration > 0
+                  ? (entry.time / entry.duration) * 100
+                  : 0);
+          if (pct > 0) return Math.min(100, Math.max(0, Math.round(pct)));
+        }
+      }
+    } catch {}
+
+    // 3. Fallback to individual watch_progress_${id}
+    try {
+      const pctRaw = localStorage.getItem(`watch_progress_${chId}`);
+      if (pctRaw) {
+        const parsed = parseFloat(pctRaw);
+        if (!isNaN(parsed) && parsed > 0) {
+          return Math.min(100, Math.max(0, Math.round(parsed)));
+        }
+      }
+    } catch {}
+
+    return 0;
+  }
+
   // Playback & Favorites
   // -------------------------------------------------------------
   async playEpisode(enrichedEp: EnrichedEpisode): Promise<void> {

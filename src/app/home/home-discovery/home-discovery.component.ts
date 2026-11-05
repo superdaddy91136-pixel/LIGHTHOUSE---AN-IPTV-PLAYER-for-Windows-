@@ -351,6 +351,7 @@ export class HomeDiscoveryComponent implements OnInit, AfterViewInit, OnDestroy 
   ) {}
 
   ngOnInit(): void {
+    this.repairPersistedNextEpisodes();
     const savedPref = localStorage.getItem("fred_tv_home_content_pref") as ContentPreference | null;
     if (savedPref && ["all", "english", "hindi", "korean"].includes(savedPref)) {
       this.selectedContentPref = savedPref;
@@ -1132,12 +1133,53 @@ export class HomeDiscoveryComponent implements OnInit, AfterViewInit, OnDestroy 
     }
   }
 
+  private repairPersistedNextEpisodes(): void {
+    try {
+      const keysToRepair: string[] = [];
+      for (let i = 0; i < localStorage.length; i++) {
+        const key = localStorage.key(i);
+        if (key && key.startsWith('fred_tv_series_next_ep_')) {
+          keysToRepair.push(key);
+        }
+      }
+
+      for (const key of keysToRepair) {
+        const raw = localStorage.getItem(key);
+        if (!raw) continue;
+        const data = JSON.parse(raw);
+        if (data?.nextEpisode) {
+          const ep = data.nextEpisode as any;
+          const realSeason = this.extractSeasonNumber(ep.name, 0);
+          let modified = false;
+          if (realSeason > 0) {
+            if (ep.seasonNum === ep.season_id || (ep.seasonNum != null && ep.seasonNum !== realSeason)) {
+              ep.seasonNum = realSeason;
+              modified = true;
+            }
+            if (ep.season === ep.season_id) {
+              delete ep.season;
+              modified = true;
+            }
+          }
+          if (modified) {
+            localStorage.setItem(key, JSON.stringify(data));
+          }
+        }
+      }
+    } catch {
+      // Safe fallback
+    }
+  }
+
   public async refreshContinueWatching(): Promise<void> {
     if (this.isDestroyed) return;
     const refreshId = ++this.continueWatchingRefreshId;
     this.cachedWatchProgressStore = null;
     this.cwTitleCache.clear();
     this.cwArtworkCache.clear();
+    this.failedStillFetches.clear();
+    this.episodeStillMap.clear();
+    this.seasonNumCache.clear();
     try {
       const enabledSourceIds = Array.from(this.memory.Sources.keys());
       if (enabledSourceIds.length === 0) return;
@@ -3453,18 +3495,18 @@ export class HomeDiscoveryComponent implements OnInit, AfterViewInit, OnDestroy 
       }
     }
 
-    // Pre-resolve season numbers for TV items asynchronously (non-blocking)
+    // Pre-resolve season numbers for TV items from SQLite seasons table
+    const seasonFetchPromises: Promise<void>[] = [];
     for (const g of groups) {
       if (g.isTv && g.representative?.id) {
         const item = g.representative;
         if (
           item.season_id != null &&
-          item.season_id > 50 &&
           !this.seasonNumCache.has(item.season_id) &&
           item.series_id != null &&
           item.source_id != null
         ) {
-          void invoke("search", {
+          const fetchPromise = invoke("search", {
             filters: {
               source_ids: [item.source_id],
               series_id: item.series_id,
@@ -3485,11 +3527,17 @@ export class HomeDiscoveryComponent implements OnInit, AfterViewInit, OnDestroy 
                   this.seasonNumCache.set(s.id, sNum);
                 }
               }
+              this.cwTitleCache.clear();
               this.cdr.markForCheck();
             }
           }).catch(() => {});
+          seasonFetchPromises.push(fetchPromise);
         }
       }
+    }
+
+    if (seasonFetchPromises.length > 0) {
+      await Promise.all(seasonFetchPromises);
     }
 
     // Only show titles with persisted progress. Completed TV episodes can still
@@ -3662,23 +3710,25 @@ export class HomeDiscoveryComponent implements OnInit, AfterViewInit, OnDestroy 
         .replace(/^\s*[-:|·]\s*/, "")
         .trim();
 
-      // Resolve season number: prefer reliable metadata, fallback to title extraction
+      // Resolve season number: prefer database seasons mapping, fallback to title extraction
       let seasonNum = 0;
       const chAny = channel as any;
-      if (chAny?.seasonNum != null && chAny.seasonNum > 0) {
-        seasonNum = Number(chAny.seasonNum);
-      } else if (chAny?.season_number != null && chAny.season_number > 0) {
-        seasonNum = Number(chAny.season_number);
-      } else if (chAny?.season != null && !isNaN(Number(chAny.season)) && Number(chAny.season) > 0) {
-        seasonNum = Number(chAny.season);
-      } else if (channel.season_id != null && this.seasonNumCache.has(channel.season_id)) {
+      if (channel.season_id != null && this.seasonNumCache.has(channel.season_id)) {
         seasonNum = this.seasonNumCache.get(channel.season_id)!;
-      } else if (channel.season_id != null && channel.season_id > 0 && channel.season_id <= 50) {
-        seasonNum = channel.season_id;
       }
 
       if (!seasonNum) {
         seasonNum = this.extractSeasonNumber(rawName, 0);
+      }
+
+      if (!seasonNum) {
+        if (chAny?.seasonNum != null && chAny.seasonNum > 0 && chAny.seasonNum !== channel.season_id) {
+          seasonNum = Number(chAny.seasonNum);
+        } else if (chAny?.season_number != null && chAny.season_number > 0 && chAny.season_number !== channel.season_id) {
+          seasonNum = Number(chAny.season_number);
+        } else if (chAny?.season != null && !isNaN(Number(chAny.season)) && Number(chAny.season) > 0 && Number(chAny.season) !== channel.season_id) {
+          seasonNum = Number(chAny.season);
+        }
       }
 
       // Resolve episode number: prefer reliable metadata, fallback to title extraction
@@ -4239,24 +4289,27 @@ export class HomeDiscoveryComponent implements OnInit, AfterViewInit, OnDestroy 
 
   getEpisodeCoordinates(channel: Channel): { seasonNum: number; episodeNum: number } {
     let seasonNum: number | undefined;
+    const rawName = channel.name || "";
     const chAny = channel as any;
-    if (chAny?.seasonNum != null && Number(chAny.seasonNum) >= 0) {
-      seasonNum = Number(chAny.seasonNum);
-    } else if (chAny?.season_number != null && Number(chAny.season_number) >= 0) {
-      seasonNum = Number(chAny.season_number);
-    } else if (chAny?.season != null && !isNaN(Number(chAny.season)) && Number(chAny.season) >= 0) {
-      seasonNum = Number(chAny.season);
-    } else if (channel.season_id != null && this.seasonNumCache.has(channel.season_id)) {
-      seasonNum = this.seasonNumCache.get(channel.season_id)!;
-    } else if (channel.season_id != null && channel.season_id > 0 && channel.season_id <= 50) {
-      seasonNum = channel.season_id;
+
+    if (channel.season_id != null && this.seasonNumCache.has(channel.season_id)) {
+      seasonNum = this.seasonNumCache.get(channel.season_id);
     }
 
-    const rawName = channel.name || "";
-    if (seasonNum === undefined) {
-      const extracted = this.extractSeasonNumber(rawName, -1);
-      if (extracted >= 0) {
+    if (seasonNum === undefined || seasonNum <= 0) {
+      const extracted = this.extractSeasonNumber(rawName, 0);
+      if (extracted > 0) {
         seasonNum = extracted;
+      }
+    }
+
+    if (seasonNum === undefined || seasonNum <= 0) {
+      if (chAny?.seasonNum != null && chAny.seasonNum > 0 && chAny.seasonNum !== channel.season_id) {
+        seasonNum = Number(chAny.seasonNum);
+      } else if (chAny?.season_number != null && chAny.season_number > 0 && chAny.season_number !== channel.season_id) {
+        seasonNum = Number(chAny.season_number);
+      } else if (chAny?.season != null && !isNaN(Number(chAny.season)) && Number(chAny.season) > 0 && Number(chAny.season) !== channel.season_id) {
+        seasonNum = Number(chAny.season);
       }
     }
 
@@ -4271,13 +4324,11 @@ export class HomeDiscoveryComponent implements OnInit, AfterViewInit, OnDestroy 
       episodeNum = this.extractEpisodeNumber(rawName, 0);
     }
 
-    if ((seasonNum === undefined || seasonNum === 0) && episodeNum > 0) {
-      if (seasonNum === undefined) {
-        seasonNum = 1;
-      }
+    if ((seasonNum === undefined || seasonNum <= 0) && episodeNum > 0) {
+      seasonNum = 1;
     }
 
-    return { seasonNum: seasonNum !== undefined ? seasonNum : 1, episodeNum };
+    return { seasonNum: seasonNum !== undefined && seasonNum > 0 ? seasonNum : 1, episodeNum };
   }
 
   async resolveEpisodeStill(channel: Channel): Promise<void> {
@@ -4386,8 +4437,9 @@ export class HomeDiscoveryComponent implements OnInit, AfterViewInit, OnDestroy 
   extractSeasonNumber(rawName?: string, fallback: number = 1): number {
     if (!rawName) return fallback;
     const match =
-      rawName.match(/\b(?:s|season\s*)(\d{1,2})[\s._-]*(?:e|ep|episode|\b)/i) ||
-      rawName.match(/\b(\d{1,2})x\d{1,2}\b/i);
+      rawName.match(/\b(?:s|season\s*|series\s*)(\d{1,2})[\s._-]*(?:e|ep|episode|\b)/i) ||
+      rawName.match(/\b(\d{1,2})x\d{1,2}\b/i) ||
+      rawName.match(/\b(?:season|series)\s*(\d{1,2})\b/i);
     if (match) {
       const parsed = parseInt(match[1], 10);
       if (!isNaN(parsed) && parsed >= 0) return parsed;
@@ -4414,18 +4466,13 @@ export class HomeDiscoveryComponent implements OnInit, AfterViewInit, OnDestroy 
 
   getEpisodeLabel(channel: Channel): string | undefined {
     if (!this.isTvShow(channel)) return undefined;
-    const sn =
-      channel.season_id != null && channel.season_id <= 30
-        ? channel.season_id
-        : this.extractSeasonNumber(channel.name);
-    const ep =
-      channel.episode_num != null && channel.episode_num > 0
-        ? channel.episode_num
-        : this.extractEpisodeNumber(channel.name);
-    if (sn != null && ep != null) {
+    const coords = this.getEpisodeCoordinates(channel);
+    const sn = coords.seasonNum;
+    const ep = coords.episodeNum;
+    if (sn != null && ep != null && ep > 0) {
       return `S${sn} • E${ep}`;
     }
-    if (ep != null) {
+    if (ep != null && ep > 0) {
       return `Episode ${ep}`;
     }
     return undefined;

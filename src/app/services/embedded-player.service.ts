@@ -86,6 +86,13 @@ export class EmbeddedPlayerService implements OnDestroy {
   public isFullscreen$: Observable<boolean> = this.isFullscreenSubject.asObservable();
   public lastWatchedUpdated$ = new Subject<number>();
 
+  public playbackProgress$ = new BehaviorSubject<{
+    channelId?: number;
+    time: number;
+    duration: number;
+    percent: number;
+  }>({ time: 0, duration: 0, percent: 0 });
+
   public get isPlayingEmbedded(): boolean {
     return this.isPlayingEmbeddedSubject.value;
   }
@@ -142,6 +149,7 @@ export class EmbeddedPlayerService implements OnDestroy {
   private unlistenRequestRecommendations?: UnlistenFn;
   private unlistenPlayRecommendedMovie?: UnlistenFn;
   private unlistenRequestSegments?: UnlistenFn;
+  private unlistenPocEvent?: UnlistenFn;
 
   private routerSubscription?: Subscription;
 
@@ -206,7 +214,7 @@ export class EmbeddedPlayerService implements OnDestroy {
 
     // Listen for top-crop request from overlay
     this.unlistenRequestCrop = await listen('request-overlay-top-crop', () => {
-      const crop = this.isPlayingEmbedded ? 32 : 0;
+      const crop = 32;
       emit('overlay-top-crop', { crop }).catch(console.warn);
     });
 
@@ -364,6 +372,40 @@ export class EmbeddedPlayerService implements OnDestroy {
       const target = this.currentChannel || this.activeFallbackChannel;
       if (target) {
         this.emitPlaybackSegments(target, this.lastPlayerOptions).catch(console.warn);
+      }
+    });
+
+    // Listen for raw MPV IPC events to track real-time playback progress (updates during play and seek)
+    this.unlistenPocEvent = await listen('embedded-poc-event', (event: any) => {
+      if (typeof event?.payload === 'string') {
+        try {
+          const parsed = JSON.parse(event.payload);
+          if (parsed.event === 'property-change') {
+            if (parsed.name === 'time-pos' && typeof parsed.data === 'number') {
+              const curTime = parsed.data;
+              const curState = this.playbackProgress$.value;
+              const dur = curState.duration;
+              const pct = dur > 0 ? Math.min(100, Math.max(0, (curTime / dur) * 100)) : 0;
+              this.playbackProgress$.next({
+                channelId: this.currentChannel?.id,
+                time: curTime,
+                duration: dur,
+                percent: pct,
+              });
+            } else if (parsed.name === 'duration' && typeof parsed.data === 'number' && parsed.data > 0) {
+              const dur = parsed.data;
+              const curState = this.playbackProgress$.value;
+              const curTime = curState.time;
+              const pct = dur > 0 ? Math.min(100, Math.max(0, (curTime / dur) * 100)) : 0;
+              this.playbackProgress$.next({
+                channelId: this.currentChannel?.id,
+                time: curTime,
+                duration: dur,
+                percent: pct,
+              });
+            }
+          }
+        } catch {}
       }
     });
   }
@@ -665,7 +707,8 @@ export class EmbeddedPlayerService implements OnDestroy {
 
     this.currentMode = 'movie';
     emit('embedded-player-mode', { mode: 'movie' }).catch(console.warn);
-    emit('overlay-top-crop', { crop: 0 }).catch(console.warn);
+    emit('overlay-top-crop', { crop: 32 }).catch(console.warn);
+    this.playbackProgress$.next({ channelId: undefined, time: 0, duration: 0, percent: 0 });
 
     this.currentChannel = undefined;
     this.activeFallbackChannel = undefined;
@@ -695,7 +738,8 @@ export class EmbeddedPlayerService implements OnDestroy {
 
     this.currentMode = 'movie';
     emit('embedded-player-mode', { mode: 'movie' }).catch(console.warn);
-    emit('overlay-top-crop', { crop: 0 }).catch(console.warn);
+    emit('overlay-top-crop', { crop: 32 }).catch(console.warn);
+    this.playbackProgress$.next({ channelId: undefined, time: 0, duration: 0, percent: 0 });
 
     if (this.isFullscreen) {
       this.isFullscreenSubject.next(false);
@@ -1277,17 +1321,38 @@ export class EmbeddedPlayerService implements OnDestroy {
 
   public extractSeasonNumber(channel?: Channel): number {
     if (!channel) return 1;
+    const rawName = channel.name || '';
     const chAny = channel as any;
-    if (chAny.seasonNum != null && chAny.seasonNum > 0) return Number(chAny.seasonNum);
-    if (chAny.season_number != null && chAny.season_number > 0) return Number(chAny.season_number);
-    if (chAny.season != null && typeof chAny.season === 'number' && chAny.season > 0) return chAny.season;
-    const name = channel.name || '';
-    const sMatch = name.match(/\b(?:s|season\s*)(\d{1,2})[\s._-]*(?:e|ep|episode|\b)/i) ||
-                  name.match(/\b(\d{1,2})x\d{1,2}\b/i);
+
+    // Check if seasons list is already loaded in embedded player
+    if (channel.season_id != null && this.seasons && this.seasons.length > 0) {
+      const foundSeason = this.seasons.find((s) => s.id === channel.season_id);
+      if (foundSeason && foundSeason.seasonNum > 0) {
+        return foundSeason.seasonNum;
+      }
+    }
+
+    // Extract from title (e.g. S01E05, Season 1, Series 1, 1x05)
+    const sMatch =
+      rawName.match(/\b(?:s|season\s*|series\s*)(\d{1,2})[\s._-]*(?:e|ep|episode|\b)/i) ||
+      rawName.match(/\b(\d{1,2})x\d{1,2}\b/i) ||
+      rawName.match(/\b(?:season|series)\s*(\d{1,2})\b/i);
     if (sMatch) {
       const parsed = parseInt(sMatch[1], 10);
       if (!isNaN(parsed) && parsed > 0) return parsed;
     }
+
+    // Metadata fallback, validating it isn't an internal SQLite relational season_id
+    if (chAny.seasonNum != null && chAny.seasonNum > 0 && chAny.seasonNum !== channel.season_id) {
+      return Number(chAny.seasonNum);
+    }
+    if (chAny.season_number != null && chAny.season_number > 0 && chAny.season_number !== channel.season_id) {
+      return Number(chAny.season_number);
+    }
+    if (chAny.season != null && typeof chAny.season === 'number' && chAny.season > 0 && chAny.season !== channel.season_id) {
+      return chAny.season;
+    }
+
     return 1;
   }
 
@@ -1631,6 +1696,26 @@ export class EmbeddedPlayerService implements OnDestroy {
       if (fromEpisodeId != null && data.fromEpisodeId != null && data.fromEpisodeId !== fromEpisodeId) {
         return undefined;
       }
+      if (data.nextEpisode) {
+        const ep = data.nextEpisode as any;
+        const realSeason = this.extractSeasonNumber(ep);
+        let modified = false;
+        if (realSeason > 0) {
+          if (ep.seasonNum === ep.season_id || (ep.seasonNum != null && ep.seasonNum !== realSeason)) {
+            ep.seasonNum = realSeason;
+            modified = true;
+          }
+          if (ep.season === ep.season_id) {
+            delete ep.season;
+            modified = true;
+          }
+        }
+        if (modified) {
+          try {
+            localStorage.setItem(`fred_tv_series_next_ep_${seriesKey}`, JSON.stringify(data));
+          } catch {}
+        }
+      }
       return data.nextEpisode;
     } catch {
       return undefined;
@@ -1640,12 +1725,24 @@ export class EmbeddedPlayerService implements OnDestroy {
   public setPersistedNextEpisode(seriesKey: string, fromEpisodeId: number, nextEpisode: Channel | null): void {
     if (!seriesKey) return;
     try {
+      let sanitizedNext = nextEpisode;
+      if (sanitizedNext) {
+        const ep = { ...sanitizedNext } as any;
+        const sNum = this.extractSeasonNumber(sanitizedNext);
+        if (sNum > 0) {
+          ep.seasonNum = sNum;
+        }
+        if (ep.season === ep.season_id) {
+          delete ep.season;
+        }
+        sanitizedNext = ep;
+      }
       localStorage.setItem(
         `fred_tv_series_next_ep_${seriesKey}`,
         JSON.stringify({
-          nextEpisode,
+          nextEpisode: sanitizedNext,
           fromEpisodeId,
-          completed: !nextEpisode,
+          completed: !sanitizedNext,
           updatedAt: Date.now(),
         })
       );
@@ -1883,6 +1980,12 @@ export class EmbeddedPlayerService implements OnDestroy {
         updatedAt: Date.now(),
       };
       localStorage.setItem('fred_tv_watch_progress', JSON.stringify(store));
+      this.playbackProgress$.next({
+        channelId,
+        time: isCompleted ? (duration || time) : time,
+        duration: duration > 0 ? duration : (store[channelId]?.duration || 0),
+        percent: isCompleted ? 100 : (pct > 0 ? pct : (store[channelId]?.percent || 0)),
+      });
 
       if (isCompleted) {
         if (isEpisode) {
@@ -2299,5 +2402,6 @@ export class EmbeddedPlayerService implements OnDestroy {
     if (this.unlistenRequestRecommendations) this.unlistenRequestRecommendations();
     if (this.unlistenPlayRecommendedMovie) this.unlistenPlayRecommendedMovie();
     if (this.unlistenRequestSegments) this.unlistenRequestSegments();
+    if (this.unlistenPocEvent) this.unlistenPocEvent();
   }
 }

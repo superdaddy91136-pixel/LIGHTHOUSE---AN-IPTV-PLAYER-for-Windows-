@@ -732,11 +732,7 @@ pub fn get_overlay_top_crop_px(_overlay_hwnd: usize) -> i32 {
 pub fn get_current_logical_top_crop() -> i32 {
     #[cfg(target_os = "windows")]
     {
-        if ACTIVE_TOP_CROP_PX.load(Ordering::SeqCst) > 0 {
-            OVERLAY_TOP_CROP_LOGICAL_PX
-        } else {
-            0
-        }
+        OVERLAY_TOP_CROP_LOGICAL_PX
     }
     #[cfg(not(target_os = "windows"))]
     {
@@ -1324,7 +1320,7 @@ pub fn stop_embedded_player_sync(state: &EmbeddedPocState) {
             ACTIVE_IS_FULLSCREEN.store(false, Ordering::SeqCst);
             ACTIVE_TOP_CROP_PX.store(0, Ordering::SeqCst);
         }
-        let _ = app.emit("overlay-top-crop", serde_json::json!({ "crop": 0 }));
+        let _ = app.emit("overlay-top-crop", serde_json::json!({ "crop": OVERLAY_TOP_CROP_LOGICAL_PX }));
         let _ = app.emit("embedded-poc-stopped", ());
     }
 }
@@ -2017,7 +2013,7 @@ pub async fn stop_embedded_poc_internal(state: &EmbeddedPocState) {
             ACTIVE_IS_FULLSCREEN.store(false, Ordering::SeqCst);
             ACTIVE_TOP_CROP_PX.store(0, Ordering::SeqCst);
         }
-        let _ = app.emit("overlay-top-crop", serde_json::json!({ "crop": 0 }));
+        let _ = app.emit("overlay-top-crop", serde_json::json!({ "crop": OVERLAY_TOP_CROP_LOGICAL_PX }));
         let _ = app.emit("embedded-poc-stopped", ());
     }
 }

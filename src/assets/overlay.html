@@ -5,7 +5,7 @@
   <title></title>
   <style>
     :root {
-      --top-crop: 0px;
+      --top-crop: 32px;
       --netflix-red: #e50914;
       --netflix-red-hover: #f40612;
       --netflix-red-glow: rgba(229, 9, 20, 0.45);
@@ -2147,28 +2147,29 @@
       position: absolute;
       right: 28px;
       bottom: 28px;
-      height: 42px;
-      padding: 0 18px;
-      display: flex;
+      height: 38px;
+      padding: 0 16px;
+      display: inline-flex;
       align-items: center;
-      gap: 10px;
-      background: rgba(18, 20, 28, 0.88);
-      border: 1px solid rgba(255, 255, 255, 0.24);
+      justify-content: center;
+      gap: 8px;
+      box-sizing: border-box;
+      background: #ffffff;
+      border: 1px solid rgba(255, 255, 255, 0.9);
       border-radius: 8px;
-      box-shadow: 0 10px 30px rgba(0, 0, 0, 0.7), inset 0 1px 0 rgba(255, 255, 255, 0.15);
-      backdrop-filter: blur(20px);
-      -webkit-backdrop-filter: blur(20px);
-      color: #ffffff;
+      box-shadow: 0 8px 24px rgba(0, 0, 0, 0.6);
+      color: #000000;
       font-family: inherit;
-      font-size: 14px;
+      font-size: 13px;
       font-weight: 600;
-      letter-spacing: 0.3px;
+      letter-spacing: 0.2px;
+      line-height: 1;
       cursor: pointer;
       z-index: 96;
       pointer-events: auto !important;
       user-select: none;
       transition: bottom 0.26s cubic-bezier(0.16, 1, 0.3, 1), transform 0.16s ease, background 0.16s ease, border-color 0.16s ease, opacity 0.2s ease, right 0.26s ease;
-      opacity: 0.95;
+      opacity: 0.98;
     }
 
     .overlay-container.active .skip-segment-btn {
@@ -2176,9 +2177,9 @@
     }
 
     .skip-segment-btn:hover {
-      background: rgba(35, 39, 52, 0.96);
-      border-color: rgba(255, 255, 255, 0.55);
-      transform: scale(1.04);
+      background: #e6e6e6;
+      border-color: #ffffff;
+      transform: scale(1.03);
       opacity: 1;
     }
 
@@ -2355,44 +2356,69 @@
     }
 
     .up-next-btn-play {
-      background: #e50914;
-      border: 1px solid #ff3340;
-      color: #ffffff;
-      padding: 7px 16px;
-      border-radius: 6px;
+      background: #ffffff;
+      border: 1px solid rgba(255, 255, 255, 0.9);
+      color: #000000;
+      height: 38px;
+      padding: 0 16px;
+      border-radius: 8px;
+      font-family: inherit;
       font-size: 13px;
       font-weight: 600;
+      letter-spacing: 0.2px;
+      line-height: 1;
+      box-sizing: border-box;
       cursor: pointer;
-      display: flex;
+      display: inline-flex;
       align-items: center;
-      gap: 6px;
-      transition: background 0.15s, transform 0.1s;
+      justify-content: center;
+      gap: 8px;
+      box-shadow: 0 4px 14px rgba(0, 0, 0, 0.35);
+      transition: background 0.15s ease, transform 0.15s ease, border-color 0.15s ease;
+      user-select: none;
     }
 
     .up-next-btn-play:hover {
-      background: #f40612;
-      transform: scale(1.02);
+      background: #e6e6e6;
+      border-color: #ffffff;
+      transform: scale(1.03);
     }
 
     .up-next-btn-play:active {
-      transform: scale(0.98);
+      transform: scale(0.97);
     }
 
     .up-next-btn-cancel {
-      background: rgba(255, 255, 255, 0.08);
-      border: 1px solid rgba(255, 255, 255, 0.14);
-      color: #e5e5e5;
-      padding: 7px 14px;
-      border-radius: 6px;
+      background: rgba(255, 255, 255, 0.2);
+      border: 1px solid rgba(255, 255, 255, 0.22);
+      color: #ffffff;
+      height: 38px;
+      padding: 0 16px;
+      border-radius: 8px;
+      font-family: inherit;
       font-size: 13px;
-      font-weight: 500;
+      font-weight: 600;
+      letter-spacing: 0.2px;
+      line-height: 1;
+      box-sizing: border-box;
       cursor: pointer;
-      transition: background 0.15s, color 0.15s;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      gap: 8px;
+      transition: background 0.15s ease, transform 0.15s ease, color 0.15s ease, border-color 0.15s ease;
+      user-select: none;
     }
 
     .up-next-btn-cancel:hover {
-      background: rgba(255, 255, 255, 0.15);
+      background: rgba(255, 255, 255, 0.32);
+      border-color: rgba(255, 255, 255, 0.4);
       color: #ffffff;
+      transform: scale(1.03);
+    }
+
+    .up-next-btn-cancel:active {
+      transform: scale(0.97);
     }
 
     /* Movie Recommendations Card */
@@ -2925,8 +2951,8 @@
       </div>
       <div class="up-next-actions">
         <button type="button" class="up-next-btn-play" id="btnPlayNextEp">
-          <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor"><path d="M8 5v14l11-7z"/></svg>
-          <span>Play Next</span>
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor"><path d="M8 5v14l11-7z"/></svg>
+          <span>Next Episode</span>
         </button>
         <button type="button" class="up-next-btn-cancel" id="btnDismissUpNext">Watch Credits</button>
       </div>
@@ -7094,7 +7120,7 @@
       }
 
       function setTopCrop(payload) {
-        let cropVal = 0;
+        let cropVal = 32;
         if (typeof payload === 'number') {
           cropVal = payload;
         } else if (payload && typeof payload === 'object') {
@@ -7104,6 +7130,11 @@
             cropVal = payload.top_crop;
           }
         }
+        // The native Windows overlay HWND is always positioned 32px above the video
+        // and clipped by win32::SetWindowRgn(0, crop_px, client_w, client_h).
+        // Therefore, logical top-crop must never fall below 32px, or the top bar/exit button
+        // shifts up into the hardware-clipped region and becomes cut off.
+        cropVal = Math.max(32, cropVal);
         document.documentElement.style.setProperty('--top-crop', `${cropVal}px`);
       }
 
@@ -7336,7 +7367,7 @@
         currentPlaybackSessionId = 0;
         isMediaLoaded = false;
         currentMediaSessionId = null;
-        setTopCrop(0);
+        setTopCrop(32);
         setContentMode('movie');
         closeAllPanels();
         tracks = [];

@@ -2498,6 +2498,24 @@ body::-webkit-scrollbar-thumb:active {
 }
 
 /* ── Episode Cards List ── */
+/* Progress Bar on Episode Thumbnail Preview */
+.episode-thumb-wrap .episode-progress-track {
+  position: absolute;
+  bottom: 0;
+  left: 0;
+  right: 0;
+  width: 100%;
+  height: 3px;
+  background: rgba(0, 0, 0, 0.45);
+  overflow: hidden;
+  z-index: 4;
+}
+.episode-thumb-wrap .episode-progress-fill {
+  height: 100%;
+  background: #e50914;
+  box-shadow: 0 0 6px rgba(229, 9, 20, 0.7);
+  transition: width 0.1s linear;
+}
 .episodes-list {
   display: flex;
   flex-direction: column;
@@ -2508,27 +2526,29 @@ body::-webkit-scrollbar-thumb:active {
   display: flex;
   align-items: center;
   gap: 1.25rem;
-  background: rgba(255, 255, 255, 0.025);
-  border: 1px solid rgba(255, 255, 255, 0.06);
+  background: linear-gradient(180deg, rgba(255, 255, 255, 0.045) 0%, rgba(255, 255, 255, 0.015) 100%);
+  border: 1px solid rgba(255, 255, 255, 0.07);
+  box-shadow: 0 2px 4px rgba(0, 0, 0, 0.25), 0 8px 24px rgba(0, 0, 0, 0.35), inset 0 1px 0 rgba(255, 255, 255, 0.12), inset 0 -1px 0 rgba(0, 0, 0, 0.2);
   border-radius: 14px;
   padding: 0.85rem 1.15rem;
   cursor: pointer;
   transition: all 0.2s ease;
 }
 .episode-card:hover {
-  background: rgba(255, 255, 255, 0.06);
+  background: linear-gradient(180deg, rgba(255, 255, 255, 0.08) 0%, rgba(255, 255, 255, 0.035) 100%);
   border-color: rgba(255, 255, 255, 0.14);
+  box-shadow: 0 4px 8px rgba(0, 0, 0, 0.3), 0 12px 30px rgba(0, 0, 0, 0.45), inset 0 1px 0 rgba(255, 255, 255, 0.18), inset 0 -1px 0 rgba(0, 0, 0, 0.25);
   transform: translateX(4px);
 }
 .episode-card.highlighted {
-  background: linear-gradient(90deg, rgba(56, 189, 248, 0.12) 0%, rgba(255, 255, 255, 0.04) 100%);
+  background: linear-gradient(180deg, rgba(56, 189, 248, 0.14) 0%, rgba(255, 255, 255, 0.03) 100%);
   border-color: rgba(56, 189, 248, 0.45);
-  box-shadow: 0 4px 20px rgba(0, 0, 0, 0.35), 0 0 16px rgba(56, 189, 248, 0.15), inset 0 0 0 1px rgba(56, 189, 248, 0.25);
+  box-shadow: 0 2px 6px rgba(0, 0, 0, 0.3), 0 8px 24px rgba(0, 0, 0, 0.4), 0 0 16px rgba(56, 189, 248, 0.15), inset 0 1px 0 rgba(255, 255, 255, 0.25), inset 0 0 0 1px rgba(56, 189, 248, 0.25);
 }
 .episode-card.highlighted:hover {
-  background: linear-gradient(90deg, rgba(56, 189, 248, 0.18) 0%, rgba(255, 255, 255, 0.07) 100%);
+  background: linear-gradient(180deg, rgba(56, 189, 248, 0.2) 0%, rgba(255, 255, 255, 0.05) 100%);
   border-color: rgba(56, 189, 248, 0.7);
-  box-shadow: 0 6px 24px rgba(0, 0, 0, 0.4), 0 0 20px rgba(56, 189, 248, 0.25), inset 0 0 0 1px rgba(56, 189, 248, 0.35);
+  box-shadow: 0 4px 10px rgba(0, 0, 0, 0.35), 0 12px 32px rgba(0, 0, 0, 0.45), 0 0 20px rgba(56, 189, 248, 0.25), inset 0 1px 0 rgba(255, 255, 255, 0.35), inset 0 0 0 1px rgba(56, 189, 248, 0.35);
 }
 .episode-card.highlighted .episode-title {
   color: #38bdf8;
@@ -2551,6 +2571,7 @@ body::-webkit-scrollbar-thumb:active {
   overflow: hidden;
   background: #141721;
   border: 1px solid rgba(255, 255, 255, 0.08);
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.4), inset 0 1px 0 rgba(255, 255, 255, 0.08);
 }
 .episode-thumb-img {
   width: 100%;
@@ -2635,8 +2656,28 @@ body::-webkit-scrollbar-thumb:active {
   height: 0.75rem;
 }
 .episode-watched-badge.episode-highlighted-badge {
-  background: rgba(14, 165, 233, 0.9);
-  box-shadow: 0 0 10px rgba(56, 189, 248, 0.4);
+  top: 6px;
+  left: 6px;
+  bottom: auto;
+  right: auto;
+  background: rgba(14, 16, 22, 0.52);
+  backdrop-filter: blur(10px);
+  -webkit-backdrop-filter: blur(10px);
+  border: 1px solid rgba(255, 255, 255, 0.18);
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.35), inset 0 1px 0 rgba(255, 255, 255, 0.12);
+  color: rgba(255, 255, 255, 0.92);
+  font-size: 0.62rem;
+  font-weight: 600;
+  letter-spacing: 0.03em;
+  padding: 2.5px 7px;
+  border-radius: 5px;
+  gap: 3.5px;
+  z-index: 3;
+}
+.episode-watched-badge.episode-highlighted-badge svg {
+  width: 0.65rem;
+  height: 0.65rem;
+  opacity: 0.85;
 }
 
 /* Episode Info */
