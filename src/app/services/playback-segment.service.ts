@@ -15,6 +15,7 @@ export interface ResolveSegmentOptions {
   episodeNum?: number;
   seriesChannel?: Channel;
   seriesTitle?: string;
+  duration?: number; // Stream duration in seconds for offset-aware matching
 }
 
 export interface MediaIdentifierResolution {
@@ -33,6 +34,7 @@ export interface FetchSegmentsQuery {
 }
 
 const THEINTRODB_BASE_URL = 'https://api.theintrodb.org/v4/media';
+const SKIPDB_BASE_URL = 'https://api.skipdb.tv/api/segments';
 const CINEMETA_BASE_URL = 'https://v3-cinemeta.strem.io/catalog';
 const FETCH_TIMEOUT_MS = 6000;
 const NEGATIVE_CACHE_TTL_MS = 2 * 60 * 60 * 1000; // 2 hours (allows newly submitted timestamps to become visible)
@@ -41,11 +43,36 @@ const NEGATIVE_CACHE_TTL_MS = 2 * 60 * 60 * 1000; // 2 hours (allows newly submi
   providedIn: 'root',
 })
 export class PlaybackSegmentService {
+  private skipDbEnabled = true;
+
   constructor(
     private tmdbEnrichment: TmdbEnrichmentService,
     private tmdbService: TmdbService,
     private cacheService: TmdbCacheService
   ) {}
+
+  /**
+   * Checks whether SkipDB secondary skip source is enabled.
+   */
+  public isSkipDbEnabled(): boolean {
+    try {
+      const stored = localStorage.getItem('fred_tv_skipdb_enabled');
+      if (stored !== null) {
+        return stored !== 'false';
+      }
+    } catch {}
+    return this.skipDbEnabled;
+  }
+
+  /**
+   * Enables or disables SkipDB secondary skip source without affecting TheIntroDB.
+   */
+  public setSkipDbEnabled(enabled: boolean): void {
+    this.skipDbEnabled = enabled;
+    try {
+      localStorage.setItem('fred_tv_skipdb_enabled', enabled ? 'true' : 'false');
+    } catch {}
+  }
 
   /**
    * Generates a stable caching key for media playback segments.
@@ -157,9 +184,17 @@ export class PlaybackSegmentService {
       return [];
     }
 
-    // 3. Fetch timestamps from TheIntroDB v4 API
+    // 3. Fetch timestamps from TheIntroDB v4 API (primary source)
+    let theIntroDbResult: {
+      segments: PlaybackSegment[];
+      noIntro?: boolean;
+      noRecap?: boolean;
+      noOutro?: boolean;
+      isConfirmedEmpty?: boolean;
+    } | null = null;
+
     try {
-      const fetchResult = await this.fetchSegmentsFromApi({
+      theIntroDbResult = await this.fetchSegmentsFromApi({
         tvdbId: ids.tvdbId,
         tmdbId: ids.tmdbId,
         imdbId: ids.imdbId,
@@ -167,46 +202,99 @@ export class PlaybackSegmentService {
         seasonNum,
         episodeNum,
       });
-
-      if (!fetchResult) {
-        return cachedRecord ? cachedRecord.segments : [];
-      }
-
-      const { segments, noIntro, noRecap, noOutro, isConfirmedEmpty } = fetchResult;
-      const hasPreview = segments.some((s) => s.type === 'preview');
-
-      const record: MediaSegmentsRecord = {
-        mediaKey,
-        channelId: channel.id,
-        tvdbId: ids.tvdbId,
-        tmdbId: ids.tmdbId,
-        imdbId: ids.imdbId,
-        season: isMovie ? undefined : seasonNum,
-        episode: isMovie ? undefined : episodeNum,
-        segments,
-        hasIntro: segments.some((s) => s.type === 'intro'),
-        hasRecap: segments.some((s) => s.type === 'recap'),
-        hasCredits: segments.some((s) => s.type === 'credits'),
-        hasPostCredits: segments.some((s) => s.type === 'post_credits'),
-        hasPreview,
-        noIntro,
-        noRecap,
-        noOutro,
-        noPreview: !hasPreview,
-        isConfirmedEmpty,
-        lastUpdated: Date.now(),
-      };
-
-      // Only persist to IndexedDB if segments exist OR TheIntroDB confirmed absence
-      if (segments.length > 0 || isConfirmedEmpty) {
-        await this.cacheService.setPlaybackSegments(record);
-      }
-
-      return segments;
     } catch (err) {
-      console.warn('[PlaybackSegmentService] Failed to retrieve timestamps:', err);
+      console.warn('[PlaybackSegmentService] TheIntroDB fetch failed:', err);
+    }
+
+    const primarySegments = theIntroDbResult ? theIntroDbResult.segments : [];
+    const hasIntro = primarySegments.some((s) => s.type === 'intro');
+    const hasCredits = primarySegments.some((s) => s.type === 'credits');
+
+    // 4. Check if useful timestamp data is missing
+    // For movies: credits/outro is the core timestamp
+    // For TV episodes: missing intro or missing credits means useful data is missing
+    const isUsefulDataMissing = isMovie
+      ? !hasCredits
+      : (!hasIntro || !hasCredits);
+
+    let secondarySegments: PlaybackSegment[] = [];
+    let skipDbResult: {
+      segments: PlaybackSegment[];
+      noIntro?: boolean;
+      noRecap?: boolean;
+      noOutro?: boolean;
+      noPreview?: boolean;
+      isConfirmedEmpty?: boolean;
+    } | null = null;
+
+    // 5. Query SkipDB only when enabled, IMDb ID is available, and useful data is missing
+    if (this.isSkipDbEnabled() && ids.imdbId && isUsefulDataMissing) {
+      try {
+        skipDbResult = await this.fetchSegmentsFromSkipDb(
+          ids.imdbId,
+          isMovie,
+          seasonNum,
+          episodeNum,
+          options?.duration
+        );
+        if (skipDbResult?.segments) {
+          secondarySegments = skipDbResult.segments;
+        }
+      } catch (err) {
+        console.warn('[PlaybackSegmentService] SkipDB fetch failed:', err);
+      }
+    }
+
+    // If neither source succeeded with any response (e.g. network failure on both)
+    if (!theIntroDbResult && !skipDbResult) {
       return cachedRecord ? cachedRecord.segments : [];
     }
+
+    // 6. Merge primary and secondary segments individually by type
+    const mergedSegments = this.mergeSegments(primarySegments, secondarySegments, options?.duration);
+
+    const mergedHasIntro = mergedSegments.some((s) => s.type === 'intro');
+    const mergedHasRecap = mergedSegments.some((s) => s.type === 'recap');
+    const mergedHasCredits = mergedSegments.some((s) => s.type === 'credits');
+    const mergedHasPostCredits = mergedSegments.some((s) => s.type === 'post_credits');
+    const mergedHasPreview = mergedSegments.some((s) => s.type === 'preview');
+
+    // Distinguish confirmed absence vs network error:
+    const isConfirmedEmpty =
+      mergedSegments.length === 0 &&
+      ((theIntroDbResult?.isConfirmedEmpty && (!ids.imdbId || !this.isSkipDbEnabled() || !isUsefulDataMissing || skipDbResult?.isConfirmedEmpty)) ||
+       (skipDbResult?.isConfirmedEmpty && (!theIntroDbResult || theIntroDbResult.isConfirmedEmpty)));
+
+    const record: MediaSegmentsRecord = {
+      mediaKey,
+      channelId: channel.id,
+      tvdbId: ids.tvdbId,
+      tmdbId: ids.tmdbId,
+      imdbId: ids.imdbId,
+      season: isMovie ? undefined : seasonNum,
+      episode: isMovie ? undefined : episodeNum,
+      segments: mergedSegments,
+      hasIntro: mergedHasIntro,
+      hasRecap: mergedHasRecap,
+      hasCredits: mergedHasCredits,
+      hasPostCredits: mergedHasPostCredits,
+      hasPreview: mergedHasPreview,
+      noIntro: !mergedHasIntro,
+      noRecap: !mergedHasRecap,
+      noOutro: !mergedHasCredits,
+      noPreview: !mergedHasPreview,
+      isConfirmedEmpty,
+      primarySource: 'theintrodb',
+      secondarySource: secondarySegments.length > 0 ? 'skipdb' : undefined,
+      lastUpdated: Date.now(),
+    };
+
+    // Only persist to IndexedDB if segments exist OR confirmed absence
+    if (mergedSegments.length > 0 || isConfirmedEmpty) {
+      await this.cacheService.setPlaybackSegments(record);
+    }
+
+    return mergedSegments;
   }
 
   /**
@@ -462,11 +550,17 @@ export class PlaybackSegmentService {
       if (Array.isArray(data)) {
         for (const item of data) {
           const seg = this.validateSegment(type, item, fallbackDurationSec);
-          if (seg) segments.push(seg);
+          if (seg) {
+            seg.source = 'theintrodb';
+            segments.push(seg);
+          }
         }
       } else if (typeof data === 'object') {
         const seg = this.validateSegment(type, data, fallbackDurationSec);
-        if (seg) segments.push(seg);
+        if (seg) {
+          seg.source = 'theintrodb';
+          segments.push(seg);
+        }
       }
     };
 
@@ -489,6 +583,233 @@ export class PlaybackSegmentService {
     // Sort by startTime ascending
     segments.sort((a, b) => a.startTime - b.startTime);
     return segments;
+  }
+
+  /**
+   * Fetches skip segment timestamps from SkipDB (secondary source).
+   * SkipDB requires an IMDb ID and supports optional season, episode, and stream duration (seconds).
+   */
+  public async fetchSegmentsFromSkipDb(
+    imdbId: string,
+    isMovie: boolean,
+    seasonNum?: number,
+    episodeNum?: number,
+    durationSec?: number
+  ): Promise<{
+    segments: PlaybackSegment[];
+    noIntro?: boolean;
+    noRecap?: boolean;
+    noOutro?: boolean;
+    noPreview?: boolean;
+    isConfirmedEmpty?: boolean;
+  } | null> {
+    if (!imdbId || !imdbId.startsWith('tt')) return null;
+
+    const params = new URLSearchParams();
+    params.set('imdb_id', imdbId);
+
+    if (!isMovie) {
+      const s = seasonNum != null && seasonNum >= 0 ? seasonNum : 1;
+      const e = episodeNum != null && episodeNum >= 0 ? episodeNum : 1;
+      params.set('season', String(s));
+      params.set('episode', String(e));
+    }
+
+    if (durationSec != null && durationSec > 60) {
+      params.set('duration', String(Math.round(durationSec)));
+    }
+
+    const url = `${SKIPDB_BASE_URL}?${params.toString()}`;
+
+    try {
+      let raw: any = null;
+
+      // 1. Try native Tauri command to avoid browser CORS restrictions
+      try {
+        const text = await invoke<string>('fetch_playback_segments', { url });
+        if (text) {
+          raw = JSON.parse(text);
+        }
+      } catch (ipcErr) {
+        // Fall back to direct fetch if native IPC is unavailable
+      }
+
+      // 2. Direct browser fetch fallback
+      if (!raw) {
+        const controller = new AbortController();
+        const timer = setTimeout(() => controller.abort(), FETCH_TIMEOUT_MS);
+        const response = await fetch(url, {
+          method: 'GET',
+          headers: { Accept: 'application/json' },
+          signal: controller.signal,
+        });
+        clearTimeout(timer);
+
+        if (response.status === 404) {
+          return {
+            segments: [],
+            noIntro: true,
+            noRecap: true,
+            noOutro: true,
+            noPreview: true,
+            isConfirmedEmpty: true,
+          };
+        }
+
+        if (!response.ok) {
+          console.warn(`[PlaybackSegmentService] SkipDB HTTP status: ${response.status}`);
+          return null;
+        }
+
+        raw = await response.json();
+      }
+
+      // SkipDB error handling
+      if (raw?.error) {
+        return null;
+      }
+
+      // Check if segments object exists
+      if (!raw?.segments || typeof raw.segments !== 'object') {
+        return null;
+      }
+
+      // Detect confirmed absence (all segment slots null)
+      const segs = raw.segments;
+      const allNull =
+        segs.intro == null &&
+        segs.recap == null &&
+        segs.outro == null &&
+        segs.credits == null &&
+        segs.preview == null;
+
+      if (allNull) {
+        return {
+          segments: [],
+          noIntro: true,
+          noRecap: true,
+          noOutro: true,
+          noPreview: true,
+          isConfirmedEmpty: true,
+        };
+      }
+
+      const segments = this.normalizeSkipDbSegments(segs, durationSec);
+
+      const hasIntro = segments.some((s) => s.type === 'intro');
+      const hasRecap = segments.some((s) => s.type === 'recap');
+      const hasCredits = segments.some((s) => s.type === 'credits');
+      const hasPreview = segments.some((s) => s.type === 'preview');
+
+      return {
+        segments,
+        noIntro: !hasIntro,
+        noRecap: !hasRecap,
+        noOutro: !hasCredits,
+        noPreview: !hasPreview,
+        isConfirmedEmpty: segments.length === 0,
+      };
+    } catch (err) {
+      console.warn('[PlaybackSegmentService] SkipDB request failed:', err);
+      return null;
+    }
+  }
+
+  /**
+   * Normalizes segment records returned by SkipDB API into internal PlaybackSegment format.
+   * Maps 'outro' -> 'credits', handles millisecond conversion, duration matching, and confidence.
+   */
+  public normalizeSkipDbSegments(
+    rawSegments: any,
+    fallbackDurationSec?: number
+  ): PlaybackSegment[] {
+    if (!rawSegments || typeof rawSegments !== 'object') return [];
+
+    const segments: PlaybackSegment[] = [];
+
+    const processItem = (type: PlaybackSegmentType, item: any) => {
+      if (!item || typeof item !== 'object') return;
+      const seg = this.validateSegment(type, item, fallbackDurationSec);
+      if (seg) {
+        seg.source = 'skipdb';
+        if (seg.confidence == null) {
+          seg.confidence = item.match === 'exact' ? 0.9 : 0.75;
+        }
+        segments.push(seg);
+      }
+    };
+
+    const processEntries = (type: PlaybackSegmentType, data: any) => {
+      if (!data) return;
+      if (Array.isArray(data)) {
+        for (const it of data) processItem(type, it);
+      } else if (typeof data === 'object') {
+        processItem(type, data);
+      }
+    };
+
+    // SkipDB segment types: intro, recap, outro (credits), preview, post_credits
+    processEntries('intro', rawSegments.intro);
+    processEntries('recap', rawSegments.recap);
+    processEntries('credits', rawSegments.outro);
+    processEntries('credits', rawSegments.credits);
+    processEntries('preview', rawSegments.preview);
+    processEntries('post_credits', rawSegments.post_credits);
+
+    segments.sort((a, b) => a.startTime - b.startTime);
+    return segments;
+  }
+
+  /**
+   * Merges primary (TheIntroDB) and secondary (SkipDB) segments individually by type.
+   * TheIntroDB is preferred unless SkipDB provides a significantly higher confidence / exact duration match.
+   * Never blindly overwrites a valid primary timestamp with a weaker secondary match.
+   */
+  public mergeSegments(
+    primarySegments: PlaybackSegment[],
+    secondarySegments: PlaybackSegment[],
+    durationSec?: number
+  ): PlaybackSegment[] {
+    if (!secondarySegments || secondarySegments.length === 0) {
+      return [...primarySegments];
+    }
+    if (!primarySegments || primarySegments.length === 0) {
+      return [...secondarySegments];
+    }
+
+    const merged: PlaybackSegment[] = [];
+    const allTypes: PlaybackSegmentType[] = ['intro', 'recap', 'credits', 'post_credits', 'preview'];
+
+    for (const type of allTypes) {
+      const pList = primarySegments.filter((s) => s.type === type);
+      const sList = secondarySegments.filter((s) => s.type === type);
+
+      if (pList.length > 0 && sList.length === 0) {
+        merged.push(...pList);
+      } else if (pList.length === 0 && sList.length > 0) {
+        merged.push(...sList);
+      } else if (pList.length > 0 && sList.length > 0) {
+        // Both sources provide this segment type.
+        // Compare reliability: confidence and duration compatibility.
+        const pSeg = pList[0];
+        const sSeg = sList[0];
+
+        const pConf = typeof pSeg.confidence === 'number' ? pSeg.confidence : 0.7;
+        const sConf = typeof sSeg.confidence === 'number' ? sSeg.confidence : 0.7;
+
+        // Never blindly overwrite an existing valid timestamp with a weaker match.
+        // Only prefer secondary if secondary confidence is significantly higher (>= 0.2 higher)
+        // and has valid duration.
+        if (sConf >= pConf + 0.2 && sSeg.endTime > sSeg.startTime + 4) {
+          merged.push(...sList);
+        } else {
+          merged.push(...pList);
+        }
+      }
+    }
+
+    merged.sort((a, b) => a.startTime - b.startTime);
+    return merged;
   }
 
   /**

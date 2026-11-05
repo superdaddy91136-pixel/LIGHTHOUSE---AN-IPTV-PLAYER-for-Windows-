@@ -1100,6 +1100,7 @@ export class EmbeddedPlayerService implements OnDestroy {
     const episodeNum = opts?.currentEpisodeNum || this.currentEpisodeNum || this.extractEpisodeNumber(target.name);
     const seriesRef = opts?.seriesChannel || this.seriesChannel;
     const seriesTitle = opts?.seriesTitle || this.seriesTitle;
+    const duration = opts?.duration || (target.id ? this.getSavedDuration(target.id, target) : undefined);
 
     const resolveOpts: ResolveSegmentOptions = {
       isMovie,
@@ -1107,6 +1108,7 @@ export class EmbeddedPlayerService implements OnDestroy {
       episodeNum,
       seriesChannel: seriesRef,
       seriesTitle,
+      duration: duration && duration > 60 ? Math.round(duration) : undefined,
     };
 
     // 1. Immediately emit memory-cached segments if available

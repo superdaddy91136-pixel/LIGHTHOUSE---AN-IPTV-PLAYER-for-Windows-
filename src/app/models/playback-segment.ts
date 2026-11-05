@@ -5,6 +5,7 @@ export interface PlaybackSegment {
   startTime: number; // in seconds
   endTime: number;   // in seconds
   confidence?: number;
+  source?: 'theintrodb' | 'skipdb';
 }
 
 export interface MediaSegmentsRecord {
@@ -26,5 +27,7 @@ export interface MediaSegmentsRecord {
   noOutro?: boolean;
   noPreview?: boolean;
   isConfirmedEmpty?: boolean;
+  primarySource?: 'theintrodb';
+  secondarySource?: 'skipdb';
   lastUpdated: number;
 }

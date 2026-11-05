@@ -173,4 +173,148 @@ describe('PlaybackSegmentService', () => {
       expect(key).toBe('mv_tt0133093');
     });
   });
+
+  describe('normalizeSkipDbSegments', () => {
+    it('should correctly parse SkipDB format and map outro to credits', () => {
+      const skipDbPayload = {
+        intro: { start_ms: 229500, end_ms: 246500, confidence: 0.9, match: 'exact' },
+        recap: null,
+        outro: { start_ms: 3434000, end_ms: 3500000, confidence: 0.85, match: 'exact' },
+        preview: { start_ms: 3501000, end_ms: 3530000, confidence: 0.75 },
+      };
+
+      const segments = service.normalizeSkipDbSegments(skipDbPayload);
+
+      expect(segments.length).toBe(3);
+
+      expect(segments[0].type).toBe('intro');
+      expect(segments[0].startTime).toBe(229.5);
+      expect(segments[0].endTime).toBe(246.5);
+      expect(segments[0].confidence).toBe(0.9);
+      expect(segments[0].source).toBe('skipdb');
+
+      expect(segments[1].type).toBe('credits');
+      expect(segments[1].startTime).toBe(3434);
+      expect(segments[1].endTime).toBe(3500);
+      expect(segments[1].confidence).toBe(0.85);
+      expect(segments[1].source).toBe('skipdb');
+
+      expect(segments[2].type).toBe('preview');
+      expect(segments[2].startTime).toBe(3501);
+      expect(segments[2].endTime).toBe(3530);
+      expect(segments[2].source).toBe('skipdb');
+    });
+
+    it('should handle movie outro from SkipDB', () => {
+      const moviePayload = {
+        intro: null,
+        recap: null,
+        outro: { start_ms: 8455400, end_ms: 8888300, confidence: 0.77 },
+        preview: null,
+      };
+
+      const segments = service.normalizeSkipDbSegments(moviePayload);
+
+      expect(segments.length).toBe(1);
+      expect(segments[0].type).toBe('credits');
+      expect(segments[0].startTime).toBe(8455.4);
+      expect(segments[0].endTime).toBe(8888.3);
+      expect(segments[0].source).toBe('skipdb');
+    });
+
+    it('should return empty array for all-null SkipDB segments', () => {
+      const emptyPayload = {
+        intro: null,
+        recap: null,
+        outro: null,
+        preview: null,
+      };
+
+      const segments = service.normalizeSkipDbSegments(emptyPayload);
+      expect(segments.length).toBe(0);
+    });
+  });
+
+  describe('mergeSegments', () => {
+    it('should preserve primary segments when secondary is empty', () => {
+      const primary: any[] = [{ type: 'intro', startTime: 10, endTime: 30, confidence: 0.8, source: 'theintrodb' }];
+      const secondary: any[] = [];
+
+      const result = service.mergeSegments(primary, secondary);
+      expect(result.length).toBe(1);
+      expect(result[0].type).toBe('intro');
+      expect(result[0].startTime).toBe(10);
+      expect(result[0].source).toBe('theintrodb');
+    });
+
+    it('should use secondary segments when primary is empty', () => {
+      const primary: any[] = [];
+      const secondary: any[] = [
+        { type: 'intro', startTime: 15, endTime: 35, confidence: 0.85, source: 'skipdb' },
+        { type: 'credits', startTime: 1200, endTime: 1250, confidence: 0.85, source: 'skipdb' },
+      ];
+
+      const result = service.mergeSegments(primary, secondary);
+      expect(result.length).toBe(2);
+      expect(result[0].type).toBe('intro');
+      expect(result[1].type).toBe('credits');
+      expect(result[0].source).toBe('skipdb');
+    });
+
+    it('should merge missing segment types from secondary without overwriting primary', () => {
+      // Primary has intro, but no credits
+      const primary: any[] = [{ type: 'intro', startTime: 100, endTime: 130, confidence: 0.9, source: 'theintrodb' }];
+      // Secondary has intro and credits
+      const secondary: any[] = [
+        { type: 'intro', startTime: 102, endTime: 132, confidence: 0.8, source: 'skipdb' },
+        { type: 'credits', startTime: 2500, endTime: 2560, confidence: 0.85, source: 'skipdb' },
+      ];
+
+      const result = service.mergeSegments(primary, secondary);
+
+      expect(result.length).toBe(2);
+      // Intro: preserved from primary (0.9 vs 0.8)
+      expect(result[0].type).toBe('intro');
+      expect(result[0].startTime).toBe(100);
+      expect(result[0].source).toBe('theintrodb');
+
+      // Credits: filled from secondary
+      expect(result[1].type).toBe('credits');
+      expect(result[1].startTime).toBe(2500);
+      expect(result[1].source).toBe('skipdb');
+    });
+
+    it('should prefer secondary only when secondary confidence is significantly higher', () => {
+      // Primary has weak match (0.4), secondary has strong verified match (0.95)
+      const primary: any[] = [{ type: 'intro', startTime: 10, endTime: 40, confidence: 0.4, source: 'theintrodb' }];
+      const secondary: any[] = [{ type: 'intro', startTime: 12, endTime: 42, confidence: 0.95, source: 'skipdb' }];
+
+      const result = service.mergeSegments(primary, secondary);
+      expect(result.length).toBe(1);
+      expect(result[0].startTime).toBe(12);
+      expect(result[0].source).toBe('skipdb');
+    });
+
+    it('should not overwrite primary when confidences are comparable', () => {
+      const primary: any[] = [{ type: 'intro', startTime: 50, endTime: 80, confidence: 0.85, source: 'theintrodb' }];
+      const secondary: any[] = [{ type: 'intro', startTime: 52, endTime: 82, confidence: 0.88, source: 'skipdb' }];
+
+      const result = service.mergeSegments(primary, secondary);
+      expect(result.length).toBe(1);
+      expect(result[0].startTime).toBe(50);
+      expect(result[0].source).toBe('theintrodb');
+    });
+  });
+
+  describe('SkipDB Configuration', () => {
+    it('should default to enabled and allow toggling', () => {
+      expect(service.isSkipDbEnabled()).toBe(true);
+
+      service.setSkipDbEnabled(false);
+      expect(service.isSkipDbEnabled()).toBe(false);
+
+      service.setSkipDbEnabled(true);
+      expect(service.isSkipDbEnabled()).toBe(true);
+    });
+  });
 });
