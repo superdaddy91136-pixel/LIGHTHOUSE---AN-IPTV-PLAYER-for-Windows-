@@ -2146,14 +2146,14 @@ export class EmbeddedPlayerService implements OnDestroy {
     versions: MediaVersion[],
   ): MediaVersion | undefined {
     const savedPreferred = this.versionMatching.getPreferredVersion(channel, versions);
-    if (savedPreferred && this.versionMatching.isEnglishVersion(savedPreferred)) {
+    const isManual = this.versionMatching.isUserSelectedVersion(channel);
+    if (savedPreferred && (isManual || this.versionMatching.isEnglishVersion(savedPreferred))) {
       return savedPreferred;
     }
 
     return (
-      versions.find((version) => this.versionMatching.isEnglishVersion(version)) ||
-      savedPreferred ||
-      this.versionMatching.getDefaultVersion(versions, channel)
+      this.versionMatching.getDefaultVersion(versions, channel) ||
+      savedPreferred
     );
   }
 

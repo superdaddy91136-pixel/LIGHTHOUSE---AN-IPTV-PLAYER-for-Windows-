@@ -512,8 +512,19 @@ export class MovieDetailComponent implements OnInit, AfterViewInit, OnDestroy {
         this.enrichment?.releaseYear,
       );
 
-      // Default to English version for titles opened for the first time
-      const targetVersion = preferred || this.versionMatching.getDefaultVersion(this.versions, movie);
+      const isManual = this.versionMatching.isUserSelectedVersion(movie, this.enrichment?.releaseYear);
+      let targetVersion: MediaVersion | undefined;
+
+      if (preferred && isManual) {
+        // User explicitly picked this version in the UI - never override it
+        targetVersion = preferred;
+      } else if (preferred && this.versionMatching.isEnglishVersion(preferred)) {
+        // Preferred version is already an English version
+        targetVersion = preferred;
+      } else {
+        // Automatically prefer English whenever available, otherwise fall back to preferred/default
+        targetVersion = this.versionMatching.getDefaultVersion(this.versions, movie) || preferred;
+      }
 
       if (targetVersion) {
         this.selectedVersion = targetVersion;
@@ -576,11 +587,12 @@ export class MovieDetailComponent implements OnInit, AfterViewInit, OnDestroy {
     }
     this.showVersionsMenu = false;
 
-    // Persist this selection for this grouped title
+    // Persist this selection for this grouped title as an explicit user choice
     this.versionMatching.savePreferredVersion(
       this.movie || ver.channel,
       ver,
       this.enrichment?.releaseYear,
+      true,
     );
 
     if (this.movie?.id === ver.channel.id) {

@@ -145,35 +145,73 @@ export class VersionMatchingService {
   extractLanguageOrCountry(rawTitle?: string): string | undefined {
     if (!rawTitle) return undefined;
 
-    // 1. Pipe format: |EN|, |US|, |FR|, |UK|, etc.
-    const pipeMatch = rawTitle.match(/\|([A-Za-z]{2,4})\|/);
+    // 1. Pipe format: |EN|, |US|, |FR|, |UK|, | USA |, | ENGLISH |, etc.
+    const pipeMatch = rawTitle.match(/\|\s*([A-Za-z]{2,8})\s*\|/);
     if (pipeMatch) {
-      return pipeMatch[1].toUpperCase();
+      const p = pipeMatch[1].toUpperCase();
+      if (p === 'ENG' || p === 'ENGLISH') return 'EN';
+      if (p === 'USA') return 'US';
+      if (p === 'GBR') return 'UK';
+      return p;
     }
 
-    // 2. Bracket or parenthesis format: [EN], [US], [FR], (US), (UK), (FR), (VF), (VOSTFR), (Multi), etc.
+    // 2. Bracket, parenthesis, braces, or slashes format
     const bracketMatch = rawTitle.match(
-      /[\(\[]\s*(US|USA|UK|GB|CA|AU|FR|ES|DE|IT|NL|PT|BR|IN|JP|KR|MX|TW|HK|LATAM|Multi(?:-Sub)?|Sub(?:bed)?|Dub(?:bed)?|VF|VOSTFR|VO|Vost|Eng|French|Span?(?:ish)?|German|Ita(?:lian)?)\s*[\)\]]/i,
+      /[\(\[\{/]\s*(US|USA|UK|GB|GBR|CA|CAN|AU|AUS|NZ|IE|EN|ENG|English|FR|FRE|French|ES|ESP|Span?(?:ish)?|DE|GER|German|IT|ITA|Italian|NL|DUT|Dutch|PT|POR|Portuguese|BR|RU|RUS|Russian|IN|HI|HIN|Hindi|TAM|Tamil|TEL|Telugu|MAL|Malayalam|KAN|Kannada|AR|ARA|Arabic|TR|TUR|Turkish|PL|POL|Polish|JP|JPN|Japanese|KR|KOR|Korean|CN|CHI|Chinese|Multi(?:-Sub|-Audio)?|Dual(?:-Audio)?|Sub(?:bed)?|Dub(?:bed)?|VF|VFF|VOSTFR|VOST|VO)\s*[\)\]\}/]/i,
     );
     if (bracketMatch) {
       const code = bracketMatch[1].trim();
       if (/^multi/i.test(code)) return 'Multi';
+      if (/^dual/i.test(code)) return 'Multi';
       if (/^vost/i.test(code)) return 'VOSTFR';
       if (/^vf/i.test(code)) return 'VF';
+      if (/^vo$/i.test(code)) return 'VO';
       if (/^sub/i.test(code)) return 'Subbed';
       if (/^dub/i.test(code)) return 'Dubbed';
-      if (/^eng/i.test(code)) return 'EN';
-      if (/^french/i.test(code)) return 'FR';
-      if (/^span/i.test(code)) return 'ES';
-      if (/^german/i.test(code)) return 'DE';
-      if (/^ita/i.test(code)) return 'IT';
+      if (/^(?:eng|english)$/i.test(code)) return 'EN';
+      if (/^usa?$/i.test(code)) return 'US';
+      if (/^(?:uk|gb|gbr)$/i.test(code)) return 'UK';
+      if (/^(?:ca|can)$/i.test(code)) return 'CA';
+      if (/^(?:au|aus)$/i.test(code)) return 'AU';
+      if (/^french|fre$/i.test(code)) return 'FR';
+      if (/^span?(?:ish)?|esp$/i.test(code)) return 'ES';
+      if (/^german|ger$/i.test(code)) return 'DE';
+      if (/^ita(?:lian)?$/i.test(code)) return 'IT';
+      if (/^portuguese|por$/i.test(code)) return 'PT';
+      if (/^russian|rus$/i.test(code)) return 'RU';
+      if (/^hindi|hin$/i.test(code)) return 'HI';
+      if (/^tamil|tam$/i.test(code)) return 'TAM';
+      if (/^telugu|tel$/i.test(code)) return 'TEL';
+      if (/^arabic|ara$/i.test(code)) return 'AR';
+      if (/^turkish|tur$/i.test(code)) return 'TR';
+      if (/^polish|pol$/i.test(code)) return 'PL';
+      if (/^dutch|dut$/i.test(code)) return 'NL';
+      if (/^japanese|jpn$/i.test(code)) return 'JP';
+      if (/^korean|kor$/i.test(code)) return 'KR';
+      if (/^chinese|chi$/i.test(code)) return 'CN';
       return code.toUpperCase();
     }
 
-    // 3. Leading country/lang code: "EN |", "US -", "FR:"
-    const prefixMatch = rawTitle.match(/^([A-Za-z]{2,3})\s*[-:|]/);
+    // 3. Leading country/lang code with diverse separators: "EN |", "EN -", "EN –", "EN —", "EN:", "EN ·", "EN •", "EN_"
+    const prefixMatch = rawTitle.match(/^([A-Za-z]{2,7})\s*[-:|–—·•_~/]/);
     if (prefixMatch) {
-      return prefixMatch[1].toUpperCase();
+      const p = prefixMatch[1].toUpperCase();
+      if (p === 'ENG' || p === 'ENGLISH') return 'EN';
+      if (p === 'USA') return 'US';
+      if (p === 'GBR') return 'UK';
+      if (p === 'CAN') return 'CA';
+      if (p === 'AUS') return 'AU';
+      if (p === 'FRE' || p === 'FRENCH') return 'FR';
+      if (p === 'GER' || p === 'GERMAN') return 'DE';
+      if (p === 'SPA' || p === 'SPANISH') return 'ES';
+      if (p === 'ITA' || p === 'ITALIAN') return 'IT';
+      if (p === 'HIN' || p === 'HINDI') return 'HI';
+      if (p === 'ARA' || p === 'ARABIC') return 'AR';
+      if (p === 'TUR' || p === 'TURKISH') return 'TR';
+      if (p === 'POL' || p === 'POLISH') return 'PL';
+      if (p === 'DUT' || p === 'DUTCH') return 'NL';
+      if (p === 'RUS' || p === 'RUSSIAN') return 'RU';
+      return p;
     }
 
     return undefined;
@@ -445,10 +483,93 @@ export class VersionMatchingService {
   }
 
   /**
+   * Determines if a version has explicit English audio/source markers (e.g. EN, ENG, English, US, USA, UK, GB, Multi, VOSTFR).
+   */
+  isExplicitEnglishVersion(version: MediaVersion | Channel): boolean {
+    if (!version) return false;
+    const rawName = 'channel' in version ? version.rawName || version.channel?.name || '' : version.name || '';
+    const clean = 'cleanTitle' in version ? version.cleanTitle : cleanMediaTitle(rawName);
+    const lang = 'countryOrLanguage' in version ? version.countryOrLanguage : this.extractLanguageOrCountry(rawName);
+
+    // 1. Direct language code check from extractLanguageOrCountry
+    if (lang) {
+      const l = lang.toUpperCase();
+      if (
+        l === 'EN' || l === 'ENG' || l === 'ENGLISH' ||
+        l === 'US' || l === 'USA' || l === 'UK' || l === 'GB' || l === 'GBR' ||
+        l === 'CA' || l === 'CAN' || l === 'AU' || l === 'AUS' || l === 'NZ' || l === 'IE' ||
+        l === 'MULTI' || l === 'VO' || l === 'VOST' || l === 'VOSTFR'
+      ) {
+        return true;
+      }
+    }
+
+    // 2. Bracket, parenthesis, pipe, braces, or delimiter tags
+    if (/[\(\[\|\/\{]\s*(?:EN|ENG|English|US|USA|UK|GB|GBR|CA|CAN|AU|AUS|NZ|Multi|Dual(?:\s*Audio)?|VO|VOST|VOSTFR)(?:[-_\s]*(?:Sub|Dub|Audio))?\s*[\)\]\|\/\}]/i.test(rawName)) {
+      return true;
+    }
+
+    // 3. Leading prefixes: "EN -", "EN:", "EN |", "ENG -", "ENG:", "ENG |", "English -", "US -", "UK -", "USA -"
+    if (/^(?:EN|ENG|English|US|USA|UK|GB|GBR|CA|CAN|AU|AUS|NZ)\s*[-:|–—·•_~/]/i.test(rawName.trim())) {
+      return true;
+    }
+
+    // 4. Word boundary check in parts outside clean title
+    const cleanEscaped = clean.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    const remaining = clean ? rawName.replace(new RegExp(cleanEscaped, 'i'), '') : rawName;
+    if (/\b(?:EN|ENG|English|USA?|UK|GB|Multi(?:\s*Audio)?|Dual\s*Audio|VOSTFR?)\b/i.test(remaining)) {
+      return true;
+    }
+
+    // 5. Explicit audio / dub phrases anywhere in rawName
+    if (/\b(?:English|ENG)\s*(?:Audio|Dub(?:bed)?|Sub(?:bed)?|Version)\b/i.test(rawName)) {
+      return true;
+    }
+
+    // 6. Source name tag check (e.g. source named "US VOD", "UK Movies", "EN Cinema")
+    const sourceName = 'sourceName' in version
+      ? version.sourceName
+      : ('source_id' in version && version.source_id ? this.memory.Sources.get(version.source_id)?.name : undefined);
+    if (sourceName && /\b(?:EN|ENG|ENGLISH|UK|US|USA|GB)\b/i.test(sourceName)) {
+      return true;
+    }
+
+    return false;
+  }
+
+  /**
+   * Determines if a version has explicit non-English (foreign) markers (e.g. FR, ES, DE, IT, Hindi, Arabic, etc.).
+   */
+  isExplicitNonEnglish(rawTitle?: string, sourceName?: string): boolean {
+    if (!rawTitle) return false;
+
+    // 1. Bracket, delimiter, or parenthesis tags for foreign languages
+    if (/[\(\[\|\/\{]\s*(?:FR|FRE|French|VF|VFF|TrueFrench|ES|ESP|Span?(?:ish)?|Español|Latino|Castellano|DE|GER|German|Deutsch|IT|ITA|Italian|Italiano|PT|POR|Portuguese|Português|BR|Brazil|RU|RUS|Russian|HI|HIN|Hindi|TAM|Tamil|TEL|Telugu|MAL|Malayalam|KAN|Kannada|MAR|Marathi|PUN|Punjabi|BEN|Bengali|URDU|AR|ARA|Arabic|TR|TUR|Turkish|Türkçe|PL|POL|Polish|Polski|NL|DUT|Dutch|Flemish|JP|JPN|Japanese|KR|KOR|Korean|CN|CHI|Chinese|Mandarin|Cantonese|TH|THA|Thai|VN|VIE|Vietnamese|ID|IND|Indonesian|GR|GREEK|IL|HEBREW|RO|ROMANIAN|HU|HUNGARIAN|CZ|CZECH|SE|SWEDISH|NO|NORWEGIAN|DK|DANISH|FI|FINNISH)(?:[-_\s]*(?:Sub|Dub|Audio))?\s*[\)\]\|\/\}]/i.test(rawTitle)) {
+      return true;
+    }
+
+    // 2. Leading prefixes for foreign languages
+    if (/^(?:FR|FRE|French|VF|VFF|ES|ESP|Spanish|Español|Latino|Castellano|DE|GER|German|Deutsch|IT|ITA|Italian|PT|POR|Portuguese|RU|RUS|Russian|HI|HIN|Hindi|TAM|Tamil|TEL|Telugu|MAL|Malayalam|KAN|Kannada|AR|ARA|Arabic|TR|TUR|Turkish|PL|POL|Polish|NL|DUT|Dutch|JP|JPN|Japanese|KR|KOR|Korean|CN|CHI|Chinese)\s*[-:|–—·•_~/]/i.test(rawTitle.trim())) {
+      return true;
+    }
+
+    // 3. Explicit foreign language full words anywhere in rawTitle
+    if (/\b(?:FRENCH|TRUEFRENCH|VF|VFF|ESPAÑOL|CASTELLANO|LATINO|DEUTSCH|ITALIANO|PORTUGUÊS|RUSSIAN|HINDI|TAMIL|TELUGU|MALAYALAM|KANNADA|MARATHI|PUNJABI|BENGALI|ARABIC|TÜRKÇE|POLSKI|FLEMISH)\b/i.test(rawTitle)) {
+      return true;
+    }
+
+    // 4. Source name indicating non-English content
+    if (sourceName && /\b(?:FR|FRENCH|VF|ES|SPANISH|LATINO|DE|GERMAN|DEUTSCH|IT|ITALIAN|PT|PORTUGUESE|RU|RUSSIAN|HI|HINDI|TAMIL|TELUGU|AR|ARABIC|TR|TURKISH|PL|POLISH|NL|DUTCH)\b/i.test(sourceName)) {
+      return true;
+    }
+
+    return false;
+  }
+
+  /**
    * Determines if a version represents an English audio/source version.
-   * Handles labels such as EN, ENG, English, US, UK, GB via language tags,
-   * bracket/parenthesis delimiters, prefixes, and word-boundary metadata
-   * without relying on overly broad substring matching.
+   * Handles explicit English labels (EN, ENG, English, US, UK, GB, Multi, etc.)
+   * as well as standard untagged original releases that contain no foreign language indicators.
    */
   isEnglishVersion(version: MediaVersion | Channel): boolean {
     if (!version) return false;
@@ -457,42 +578,22 @@ export class VersionMatchingService {
     const cacheKey = `${sourceId ?? ''}:${rawName}`;
     const cached = this.englishVersionCache.get(cacheKey);
     if (cached != null) return cached;
-    const clean = 'cleanTitle' in version ? version.cleanTitle : cleanMediaTitle(rawName);
-    const lang = 'countryOrLanguage' in version ? version.countryOrLanguage : this.extractLanguageOrCountry(rawName);
 
-    // 1. Direct language code check from extractLanguageOrCountry
-    if (lang) {
-      const l = lang.toUpperCase();
-      if (l === 'EN' || l === 'ENG' || l === 'ENGLISH' || l === 'US' || l === 'UK' || l === 'GB' || l === 'CA' || l === 'AU') {
-        return this.cacheValue(this.englishVersionCache, cacheKey, true);
-      }
-    }
-
-    // 2. Bracket, parenthesis, pipe, or delimiter tags: [EN], (EN), |EN|, [ENG], (ENG), |ENG|, [English], (English), |English|
-    if (/[\(\[\|\/]\s*(?:EN|ENG|English|US|UK|GB)\s*[\)\]\|\/]/i.test(rawName)) {
+    // 1. Explicit English indicators (tags, prefixes, regions, audio markers)
+    if (this.isExplicitEnglishVersion(version)) {
       return this.cacheValue(this.englishVersionCache, cacheKey, true);
     }
 
-    // 3. Leading prefixes: "EN -", "EN:", "EN |", "ENG -", "ENG:", "ENG |", "English -", "English:"
-    if (/^(?:EN|ENG|English|US|UK|GB)\s*[-:|]/i.test(rawName.trim())) {
-      return this.cacheValue(this.englishVersionCache, cacheKey, true);
-    }
-
-    // 4. Word boundary check in parts of the title outside the clean title
-    const remaining = rawName.replace(clean, '');
-    if (/\b(?:EN|ENG|English)\b/i.test(remaining)) {
-      return this.cacheValue(this.englishVersionCache, cacheKey, true);
-    }
-
-    // 5. Source name tag check (e.g. source named "US VOD", "UK Movies", "EN Cinema")
+    // 2. Explicit foreign language indicators -> definitely not English
     const sourceName = 'sourceName' in version
       ? version.sourceName
       : ('source_id' in version && version.source_id ? this.memory.Sources.get(version.source_id)?.name : undefined);
-    if (sourceName && /\b(?:EN|ENG|ENGLISH|UK|US|GB)\b/i.test(sourceName)) {
-      return this.cacheValue(this.englishVersionCache, cacheKey, true);
+    if (this.isExplicitNonEnglish(rawName, sourceName)) {
+      return this.cacheValue(this.englishVersionCache, cacheKey, false);
     }
 
-    return this.cacheValue(this.englishVersionCache, cacheKey, false);
+    // 3. Untagged release with no foreign markers represents standard original/English catalog release
+    return this.cacheValue(this.englishVersionCache, cacheKey, true);
   }
 
   /**
@@ -509,25 +610,34 @@ export class VersionMatchingService {
 
   /**
    * Scores version for ordering in the dropdown:
-   * 1. Preferred English non-4K versions at top (1000+)
-   * 2. Non-4K other versions in middle (500+)
-   * 3. 4K English versions near bottom (100+)
-   * 4. 4K other versions at very bottom (0+)
+   * 1. Preferred explicit English non-4K versions at top (1000+)
+   * 2. Untagged original English non-4K versions in upper tier (800+)
+   * 3. Non-4K foreign versions in middle tier (500+)
+   * 4. 4K explicit English versions near bottom (300+)
+   * 5. 4K untagged English versions near bottom (200+)
+   * 6. 4K foreign versions at very bottom (100+)
    * Within each tier, 1080p > 720p > others.
    */
   scoreVersionOrder(version: MediaVersion): number {
+    const isExplicitEn = this.isExplicitEnglishVersion(version);
     const isEn = this.isEnglishVersion(version);
     const is4K = this.is4KVersion(version);
 
     let score = 0;
-    if (!is4K && isEn) {
+    if (!is4K && isExplicitEn) {
       score = 1000;
+    } else if (!is4K && isEn) {
+      // Untagged original English release
+      score = 800;
     } else if (!is4K && !isEn) {
+      // Foreign language release
       score = 500;
+    } else if (is4K && isExplicitEn) {
+      score = 300;
     } else if (is4K && isEn) {
-      score = 100;
+      score = 200;
     } else {
-      score = 0;
+      score = 100;
     }
 
     const q = (version.qualityBadge || '').toUpperCase();
@@ -559,20 +669,30 @@ export class VersionMatchingService {
   ): MediaVersion | undefined {
     if (!versions || versions.length === 0) return undefined;
 
-    // 1. Look for English version (sorted versions already place the preferred non-4K English source first)
-    const enVersion = versions.find((v) => this.isEnglishVersion(v));
-    if (enVersion) {
-      return enVersion;
+    // 1. Look for explicit English non-4K version first, then explicit English 4K
+    const explicitEnNon4K = versions.find((v) => this.isExplicitEnglishVersion(v) && !this.is4KVersion(v));
+    if (explicitEnNon4K) return explicitEnNon4K;
+
+    const explicitEn = versions.find((v) => this.isExplicitEnglishVersion(v));
+    if (explicitEn) return explicitEn;
+
+    // 2. Look for any English / untagged version (prioritizing non-4K) if foreign versions exist alongside it
+    const enNon4K = versions.find((v) => this.isEnglishVersion(v) && !this.is4KVersion(v));
+    if (enNon4K && versions.some((v) => !this.isEnglishVersion(v))) {
+      return enNon4K;
+    }
+    const enAny = versions.find((v) => this.isEnglishVersion(v));
+    if (enAny && versions.some((v) => !this.isEnglishVersion(v))) {
+      return enAny;
     }
 
-    // 2. If no English version exists, fall back to existing behavior:
-    // Match the initially passed channel if present in versions
+    // 3. If all versions are the same language or no English exists, match fallbackChannel if present
     if (fallbackChannel?.id) {
       const match = versions.find((v) => v.channel.id === fallbackChannel.id);
       if (match) return match;
     }
 
-    // 3. Otherwise return top compatible non-4K version, or versions[0]
+    // 4. Otherwise return top compatible non-4K version, or versions[0]
     const non4K = versions.find((v) => !this.is4KVersion(v));
     return non4K || versions[0];
   }
@@ -641,11 +761,13 @@ export class VersionMatchingService {
 
   /**
    * Persists the user's selected version preference for a grouped title.
+   * isManual indicates whether the user explicitly picked this version in the UI.
    */
   savePreferredVersion(
     channel: Channel,
     selected: MediaVersion,
     knownYear?: string,
+    isManual: boolean = false,
   ): void {
     if (!channel || !selected?.channel) return;
     try {
@@ -657,12 +779,29 @@ export class VersionMatchingService {
         url: selected.channel.url,
         badgeLabel: selected.badgeLabel,
         cleanTitle: selected.cleanTitle,
+        userSelected: isManual,
         timestamp: Date.now(),
       };
       localStorage.setItem(key, JSON.stringify(data));
     } catch (err) {
       console.warn('Failed to save preferred version to localStorage:', err);
     }
+  }
+
+  /**
+   * Checks whether the user explicitly made a manual selection for this title.
+   */
+  isUserSelectedVersion(channel: Channel, knownYear?: string): boolean {
+    if (!channel) return false;
+    try {
+      const key = this.getGroupedTitleKey(channel, knownYear);
+      const raw = localStorage.getItem(key);
+      if (raw) {
+        const stored = JSON.parse(raw);
+        return stored?.userSelected === true;
+      }
+    } catch {}
+    return false;
   }
 
   /**
