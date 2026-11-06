@@ -22,6 +22,7 @@
   .reserve-settings-space { margin-top: 1.5rem; }
   .home-search-control-wrap { top: 14px; right: 14px; }
   .home-search-control-wrap.expanded .search-glass-pill { width: calc(100vw - 84px); }
+  .search-results-container { padding-top: 72px; }
 }
 
 /* View Mode Pill Bar */
@@ -32,7 +33,8 @@
 .view-pill-icon { width: 16px; height: 16px; flex-shrink: 0; }
 
 /* Universal Search Header Groupings */
-.search-results-container { padding-top: 48px; }
+.search-results-container { padding-top: 84px; }
+.search-results-container .search-toolbar { margin-bottom: 1.25rem; }
 .search-group-section { border-bottom: 1px solid rgba(255,255,255,.08); padding-bottom: 1.5rem; }
 .search-group-section:last-child { border-bottom: none; }
 .search-group-header { display: flex; align-items: center; gap: 10px; }

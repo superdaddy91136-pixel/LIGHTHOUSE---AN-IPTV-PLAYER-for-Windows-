@@ -16,12 +16,49 @@ use anyhow::{Context, Result, anyhow};
 use directories::ProjectDirs;
 use r2d2::{Pool, PooledConnection};
 use r2d2_sqlite::SqliteConnectionManager;
-use rusqlite::{OptionalExtension, Row, Transaction, params, params_from_iter};
+use rusqlite::{InterruptHandle, OptionalExtension, Row, Transaction, params, params_from_iter};
 use rusqlite_migration::{M, Migrations};
+use std::sync::atomic::{AtomicU64, Ordering};
 
 const PAGE_SIZE: u8 = 36;
 pub const DB_NAME: &str = "db.sqlite";
 static CONN: LazyLock<Pool<SqliteConnectionManager>> = LazyLock::new(|| create_connection_pool());
+static ACTIVE_SEARCH_HANDLES: LazyLock<std::sync::Mutex<Vec<(u64, InterruptHandle)>>> =
+    LazyLock::new(|| std::sync::Mutex::new(Vec::new()));
+static SEARCH_HANDLE_COUNTER: AtomicU64 = AtomicU64::new(1);
+
+struct SearchHandleGuard(u64);
+impl Drop for SearchHandleGuard {
+    fn drop(&mut self) {
+        if let Ok(mut handles) = ACTIVE_SEARCH_HANDLES.lock() {
+            handles.retain(|(id, _)| *id != self.0);
+        }
+    }
+}
+
+fn register_search_handle(
+    sql: &PooledConnection<SqliteConnectionManager>,
+    query: Option<&str>,
+) -> Option<SearchHandleGuard> {
+    if let Some(q) = query {
+        if !q.trim().is_empty() {
+            let query_id = SEARCH_HANDLE_COUNTER.fetch_add(1, Ordering::Relaxed);
+            if let Ok(mut handles) = ACTIVE_SEARCH_HANDLES.lock() {
+                handles.push((query_id, sql.get_interrupt_handle()));
+            }
+            return Some(SearchHandleGuard(query_id));
+        }
+    }
+    None
+}
+
+pub fn cancel_active_searches() {
+    if let Ok(mut handles) = ACTIVE_SEARCH_HANDLES.lock() {
+        for (_, handle) in handles.drain(..) {
+            handle.interrupt();
+        }
+    }
+}
 
 pub fn get_conn() -> Result<PooledConnection<SqliteConnectionManager>> {
     CONN.try_get().context("No sqlite conns available")
@@ -511,6 +548,7 @@ pub fn search(filters: Filters) -> Result<Vec<Channel>> {
         return search_series(filters);
     }
     let sql = get_conn()?;
+    let _guard = register_search_handle(&sql, filters.query.as_deref());
     let offset: u16 = filters.page as u16 * PAGE_SIZE as u16 - PAGE_SIZE as u16;
     let media_types = match filters.series_id.is_some() {
         true => vec![1],
@@ -589,16 +627,22 @@ pub fn search(filters: Filters) -> Result<Vec<Channel>> {
     }
     params.push(&offset);
     params.push(&PAGE_SIZE);
-    let channels: Vec<Channel> = sql
-        .prepare(&sql_query)?
-        .query_map(params_from_iter(params), row_to_channel)?
-        .filter_map(Result::ok)
-        .collect();
+    let channels: Vec<Channel> = {
+        let mut stmt = sql.prepare(&sql_query)?;
+        match stmt.query_map(params_from_iter(params), row_to_channel) {
+            Ok(mapped) => mapped.filter_map(Result::ok).collect(),
+            Err(rusqlite::Error::SqliteFailure(ffi_err, _)) if ffi_err.extended_code == 9 => {
+                Vec::new()
+            }
+            Err(e) => return Err(e.into()),
+        }
+    };
     Ok(channels)
 }
 
 fn search_series(filters: Filters) -> Result<Vec<Channel>> {
     let sql = get_conn()?;
+    let _guard = register_search_handle(&sql, filters.query.as_deref());
     let offset: u16 = filters.page as u16 * PAGE_SIZE as u16 - PAGE_SIZE as u16;
     let query = filters.query.unwrap_or("".to_string());
     let keywords: Vec<String> = match filters.use_keywords {
@@ -888,6 +932,7 @@ fn apply_bulk_channels(
 
 fn search_hidden(filters: Filters) -> Result<Vec<Channel>> {
     let sql = get_conn()?;
+    let _guard = register_search_handle(&sql, filters.query.as_deref());
     let offset: u16 = filters.page as u16 * PAGE_SIZE as u16 - PAGE_SIZE as u16;
 
     let media_types = match filters.series_id.is_some() {
@@ -1002,6 +1047,7 @@ fn to_sql_like(query: Option<String>) -> String {
 
 pub fn search_group(filters: Filters) -> Result<Vec<Channel>> {
     let sql = get_conn()?;
+    let _guard = register_search_handle(&sql, filters.query.as_deref());
     let offset: u16 = filters.page as u16 * PAGE_SIZE as u16 - PAGE_SIZE as u16;
     let query = filters.query.unwrap_or("".to_string());
     let media_types = filters.media_types.context("no media types")?;
@@ -1047,11 +1093,16 @@ pub fn search_group(filters: Filters) -> Result<Vec<Channel>> {
     params.extend(to_to_sql(&media_types));
     params.push(&offset);
     params.push(&PAGE_SIZE);
-    let channels: Vec<Channel> = sql
-        .prepare(&sql_query)?
-        .query_map(params_from_iter(params), row_to_group)?
-        .filter_map(Result::ok)
-        .collect();
+    let channels: Vec<Channel> = {
+        let mut stmt = sql.prepare(&sql_query)?;
+        match stmt.query_map(params_from_iter(params), row_to_group) {
+            Ok(mapped) => mapped.filter_map(Result::ok).collect(),
+            Err(rusqlite::Error::SqliteFailure(ffi_err, _)) if ffi_err.extended_code == 9 => {
+                Vec::new()
+            }
+            Err(e) => return Err(e.into()),
+        }
+    };
     Ok(channels)
 }
 

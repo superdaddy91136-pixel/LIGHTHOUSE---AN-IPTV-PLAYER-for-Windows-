@@ -168,6 +168,9 @@ export class HomeComponent implements AfterViewInit, OnDestroy {
   allSearchResultsList: Channel[] = [];
   displayedSearchResults: Channel[] = [];
   private searchRequestId = 0;
+  private searchRelevanceCache: Map<string, number> = new Map();
+  private activeScorerQuery: string = '';
+  private activeScoreFn?: (name: string, cleanTitle?: string) => number;
   private pendingTabClick?: NavTab;
   private currentScrollPosition: number = 0;
   @ViewChild('searchRowMovies') searchRowMovies?: ElementRef<HTMLElement>;
@@ -380,56 +383,72 @@ export class HomeComponent implements AfterViewInit, OnDestroy {
     }
   }
 
-  computeRelevanceScore(name: string, query: string): number {
-    if (!name || !query) return 0;
+  private getRelevanceScorer(query: string): (name: string, cleanTitle?: string) => number {
     const qLower = query.trim().toLowerCase();
-    const nLower = name.trim().toLowerCase();
-    const cLower = cleanMediaTitle(name).trim().toLowerCase();
-
-    // 1. Exact title match
-    if (cLower === qLower || nLower === qLower) {
-      return 10000 - Math.min(Math.abs(nLower.length - qLower.length), 500);
+    if (this.activeScoreFn && this.activeScorerQuery === qLower) {
+      return this.activeScoreFn;
     }
-
-    // 2. Title prefix match on clean title
-    if (cLower.startsWith(qLower)) {
-      return 8000 - Math.min(Math.abs(cLower.length - qLower.length), 500);
-    }
-
-    // 3. Exact word match on word boundary
     const escaped = qLower.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
     const wordRegex = new RegExp(`\\b${escaped}\\b`, 'i');
-    if (wordRegex.test(cLower) || wordRegex.test(nLower)) {
-      const idx = cLower.indexOf(qLower);
-      const posPenalty = idx >= 0 ? Math.min(idx * 10, 500) : 500;
-      return 6000 - posPenalty - Math.min(cLower.length, 200);
-    }
-
-    // 4. Prefix match on raw name
-    if (nLower.startsWith(qLower)) {
-      return 4000 - Math.min(nLower.length, 200);
-    }
-
-    // 5. Word-by-word match
     const words = qLower.split(' ').filter(Boolean);
-    if (words.length > 1) {
-      const allWordsPresent = words.every((w) => {
-        const wEsc = w.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-        return new RegExp(`\\b${wEsc}`, 'i').test(cLower) || new RegExp(`\\b${wEsc}`, 'i').test(nLower);
-      });
-      if (allWordsPresent) {
+    const multiWordRegexes = words.length > 1
+      ? words.map((w) => new RegExp(`\\b${w.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}`, 'i'))
+      : null;
+
+    this.activeScorerQuery = qLower;
+    this.searchRelevanceCache.clear();
+
+    this.activeScoreFn = (name: string, cleanTitle?: string): number => {
+      if (!name || !qLower) return 0;
+      const nLower = name.trim().toLowerCase();
+      const cLower = (cleanTitle || cleanMediaTitle(name)).trim().toLowerCase();
+
+      // 1. Exact title match
+      if (cLower === qLower || nLower === qLower) {
+        return 10000 - Math.min(Math.abs(nLower.length - qLower.length), 500);
+      }
+
+      // 2. Title prefix match on clean or raw title
+      if (cLower.startsWith(qLower) || nLower.startsWith(qLower)) {
+        const prefLen = cLower.startsWith(qLower) ? cLower.length : nLower.length;
+        return 8000 - Math.min(Math.abs(prefLen - qLower.length), 500);
+      }
+
+      // 3. Exact word match on word boundary
+      if (wordRegex.test(cLower) || wordRegex.test(nLower)) {
+        const idx = cLower.indexOf(qLower);
+        const posPenalty = idx >= 0 ? Math.min(idx * 10, 500) : 500;
+        return 6000 - posPenalty - Math.min(cLower.length, 200);
+      }
+
+      // 4. Multi-word / word-by-word match
+      if (multiWordRegexes && multiWordRegexes.every((re) => re.test(cLower) || re.test(nLower))) {
         return 3000 - Math.min(cLower.length, 200);
       }
-    }
 
-    // 6. Partial / substring match
-    if (cLower.includes(qLower) || nLower.includes(qLower)) {
-      const idx = cLower.indexOf(qLower);
-      const pos = idx >= 0 ? idx : nLower.indexOf(qLower);
-      return 1000 - Math.min(pos * 10, 500);
-    }
+      // 5. Partial / substring match
+      if (cLower.includes(qLower) || nLower.includes(qLower)) {
+        const idx = cLower.indexOf(qLower);
+        const pos = idx >= 0 ? idx : nLower.indexOf(qLower);
+        return 1000 - Math.min(pos * 10, 500);
+      }
 
-    return 100;
+      return 100;
+    };
+
+    return this.activeScoreFn;
+  }
+
+  computeRelevanceScore(name: string, query: string, cleanTitle?: string): number {
+    if (!name || !query) return 0;
+    const scorer = this.getRelevanceScorer(query);
+    const cacheKey = `${name}_${cleanTitle || ''}`;
+    let score = this.searchRelevanceCache.get(cacheKey);
+    if (score === undefined) {
+      score = scorer(name, cleanTitle);
+      this.searchRelevanceCache.set(cacheKey, score);
+    }
+    return score;
   }
 
   applySearchSortAndFilter(): void {
@@ -453,10 +472,13 @@ export class HomeComponent implements AfterViewInit, OnDestroy {
 
     // Sorting
     if (this.searchSortBy === 'relevance') {
-      const scored = list.map((item) => ({
-        item,
-        score: this.computeRelevanceScore(item.name || '', query),
-      }));
+      const scored = list.map((item) => {
+        const clean = cleanMediaTitle(item.name || '');
+        return {
+          item,
+          score: this.computeRelevanceScore(item.name || '', query, clean),
+        };
+      });
       scored.sort((a, b) => {
         const diff = b.score - a.score;
         if (diff !== 0) return diff;
@@ -467,11 +489,12 @@ export class HomeComponent implements AfterViewInit, OnDestroy {
         list.reverse();
       }
     } else if (this.searchSortBy === 'alphabetical') {
-      list.sort((a, b) => {
-        const nameA = cleanMediaTitle(a.name || '').toLowerCase();
-        const nameB = cleanMediaTitle(b.name || '').toLowerCase();
-        return nameA.localeCompare(nameB, undefined, { numeric: true });
-      });
+      const mapped = list.map((item) => ({
+        item,
+        cleanName: cleanMediaTitle(item.name || '').toLowerCase(),
+      }));
+      mapped.sort((a, b) => a.cleanName.localeCompare(b.cleanName, undefined, { numeric: true }));
+      list = mapped.map((m) => m.item);
       if (this.searchSortOrder === 'desc') {
         list.reverse();
       }
@@ -1717,6 +1740,7 @@ export class HomeComponent implements AfterViewInit, OnDestroy {
 
   clearSearch() {
     this.searchRequestId++;
+    invoke("cancel_search").catch(() => {});
     if (this.search?.nativeElement) {
       this.search.nativeElement.value = "";
     }
@@ -1732,6 +1756,8 @@ export class HomeComponent implements AfterViewInit, OnDestroy {
     this.allSearchResultsList = [];
     this.displayedSearchResults = [];
     this.searchKeyword = "";
+    this.searchRelevanceCache.clear();
+    this.activeScorerQuery = "";
     this.searchStateService.clearSearchState(this.memory.activeNavTab.value);
     this.memory.searchScrollPositions.delete(this.memory.activeNavTab.value);
     this.memory.searchHorizontalScrollPositions.delete(this.memory.activeNavTab.value);
@@ -1757,15 +1783,30 @@ export class HomeComponent implements AfterViewInit, OnDestroy {
     return result;
   }
 
+  private updateCombinedSearchResults(): void {
+    this.allSearchResultsList = [
+      ...this.rawSearchResults.movies,
+      ...this.rawSearchResults.tvShows,
+      ...this.rawSearchResults.channels,
+      ...this.rawSearchResults.categories,
+    ];
+    this.applySearchSortAndFilter();
+    this.channelsVisible = true;
+    this.cdr.markForCheck();
+  }
+
   async performUniversalSearch(rawQuery: string): Promise<void> {
     const query = rawQuery.trim();
     this.searchKeyword = query;
     if (!query || query.length < 2) {
+      invoke("cancel_search").catch(() => {});
       this.rawSearchResults = { channels: [], movies: [], tvShows: [], categories: [] };
       this.searchResults = { channels: [], movies: [], tvShows: [], categories: [] };
       this.allSearchResultsList = [];
       this.displayedSearchResults = [];
       this.searchHorizontalScrollPositions = {};
+      this.searchRelevanceCache.clear();
+      this.activeScorerQuery = "";
       this.memory.searchHorizontalScrollPositions.delete(this.memory.activeNavTab.value);
       this.searchStateService.clearSearchState(this.memory.activeNavTab.value);
       return;
@@ -1773,7 +1814,10 @@ export class HomeComponent implements AfterViewInit, OnDestroy {
 
     const currentTab = this.memory.activeNavTab.value;
     const searchId = ++this.searchRequestId;
+    invoke("cancel_search").catch(() => {});
     this.searchHorizontalScrollPositions = {};
+    this.searchRelevanceCache.clear();
+    this.activeScorerQuery = "";
 
     const sourceIds = this.filters?.source_ids?.length
       ? this.filters.source_ids
@@ -1788,94 +1832,118 @@ export class HomeComponent implements AfterViewInit, OnDestroy {
       return;
     }
 
-    // Determine media types to query
-    let mediaTypes: MediaType[];
-    if (currentTab === NavTab.Movies) {
-      mediaTypes = [MediaType.movie];
-    } else if (currentTab === NavTab.TVShows) {
-      mediaTypes = [MediaType.serie];
-    } else if (currentTab === NavTab.LiveTV) {
-      mediaTypes = [MediaType.livestream];
-    } else {
-      // Home tab: search movies, series, and livestreams
-      mediaTypes = [MediaType.movie, MediaType.serie, MediaType.livestream];
-    }
+    if (currentTab === NavTab.Home) {
+      // Balanced candidate retrieval: query Movies, Series, Live TV, and Categories in parallel
+      // so no media type starves the others in global search
+      const movieFilters: Filters = {
+        source_ids: sourceIds,
+        view_type: ViewMode.All,
+        media_types: [MediaType.movie],
+        query: query,
+        use_keywords: true,
+        page: 1,
+        sort: SortType.provider,
+      };
+      const seriesFilters: Filters = {
+        ...movieFilters,
+        media_types: [MediaType.serie],
+      };
+      const liveFilters: Filters = {
+        ...movieFilters,
+        media_types: [MediaType.livestream],
+      };
+      const categoryFilters: Filters = {
+        ...movieFilters,
+        view_type: ViewMode.Categories,
+        media_types: [MediaType.movie, MediaType.serie, MediaType.livestream],
+      };
 
-    // Single unified channel search (pages 1 & 2 in parallel for fast candidates)
-    const channelFiltersPage1: Filters = {
-      source_ids: sourceIds,
-      view_type: ViewMode.All,
-      media_types: mediaTypes,
-      query: query,
-      use_keywords: true,
-      page: 1,
-      sort: SortType.provider,
-    };
-    const channelFiltersPage2: Filters = {
-      ...channelFiltersPage1,
-      page: 2,
-    };
+      const fetchMovies = (invoke("search", { filters: movieFilters }) as Promise<Channel[]>).catch(() => [] as Channel[]);
+      const fetchSeries = (invoke("search", { filters: seriesFilters }) as Promise<Channel[]>).catch(() => [] as Channel[]);
+      const fetchLive = (invoke("search", { filters: liveFilters }) as Promise<Channel[]>).catch(() => [] as Channel[]);
+      const fetchCategories = (invoke("search", { filters: categoryFilters }) as Promise<Channel[]>).catch(() => [] as Channel[]);
 
-    const fetchChannelsPromise = Promise.all([
-      invoke("search", { filters: channelFiltersPage1 }) as Promise<Channel[]>,
-      invoke("search", { filters: channelFiltersPage2 }) as Promise<Channel[]>,
-    ]).then(([p1, p2]) => [...(p1 || []), ...(p2 || [])])
-      .catch((e) => {
-        console.error("Channel search error:", e);
-        return [] as Channel[];
+      // Progressive streaming: update results as each content type resolves
+      fetchMovies.then((movies) => {
+        if (searchId !== this.searchRequestId || currentTab !== this.memory.activeNavTab.value) return;
+        const clean = (movies || []).filter((m) => !isEpisodicOrTvContent(m));
+        this.rawSearchResults.movies = this.dedupeSearchResults(clean);
+        this.updateCombinedSearchResults();
       });
 
-    // If Home tab or Live TV tab, fetch matching categories/folders
-    const fetchCategoriesPromise: Promise<Channel[]> =
-      (currentTab === NavTab.Home || currentTab === NavTab.LiveTV)
-        ? (invoke("search", {
-            filters: {
-              source_ids: sourceIds,
-              view_type: ViewMode.Categories,
-              media_types: mediaTypes,
-              query: query,
-              use_keywords: true,
-              page: 1,
-              sort: SortType.provider,
-            },
-          }) as Promise<Channel[]>)
-            .catch((e) => {
-              console.error("Category search error:", e);
-              return [] as Channel[];
-            })
-        : Promise.resolve([] as Channel[]);
+      fetchSeries.then((series) => {
+        if (searchId !== this.searchRequestId || currentTab !== this.memory.activeNavTab.value) return;
+        this.rawSearchResults.tvShows = this.dedupeSearchResults(series || []);
+        this.updateCombinedSearchResults();
+      });
 
-    const [channelResults, categoryResults] = await Promise.all([
-      fetchChannelsPromise,
-      fetchCategoriesPromise,
-    ]);
+      fetchLive.then((channels) => {
+        if (searchId !== this.searchRequestId || currentTab !== this.memory.activeNavTab.value) return;
+        this.rawSearchResults.channels = this.dedupeSearchResults(channels || []);
+        this.updateCombinedSearchResults();
+      });
 
-    if (searchId !== this.searchRequestId || currentTab !== this.memory.activeNavTab.value) {
-      return;
-    }
+      fetchCategories.then((categories) => {
+        if (searchId !== this.searchRequestId || currentTab !== this.memory.activeNavTab.value) return;
+        this.rawSearchResults.categories = this.dedupeSearchResults(categories || []);
+        this.updateCombinedSearchResults();
+      });
 
-    // Exclude episodic items incorrectly tagged as movies
-    const cleanChannels = (channelResults || []).filter((m) => {
-      if (m.media_type === MediaType.movie && isEpisodicOrTvContent(m)) {
-        return false;
+      await Promise.allSettled([fetchMovies, fetchSeries, fetchLive, fetchCategories]);
+      if (searchId === this.searchRequestId && currentTab === this.memory.activeNavTab.value) {
+        this.loading = false;
+        this.channelsVisible = true;
+        this.saveCurrentTabSearchState();
+        this.cdr.markForCheck();
       }
-      return true;
-    });
+    } else {
+      // Scoped search for specific tab (Movies, TV Shows, or Live TV)
+      let mediaTypes: MediaType[];
+      if (currentTab === NavTab.Movies) {
+        mediaTypes = [MediaType.movie];
+      } else if (currentTab === NavTab.TVShows) {
+        mediaTypes = [MediaType.serie];
+      } else {
+        mediaTypes = [MediaType.livestream];
+      }
 
-    const dedupedChannels = this.dedupeSearchResults(cleanChannels);
-    const dedupedCategories = this.dedupeSearchResults(categoryResults || []);
+      const p1: Filters = {
+        source_ids: sourceIds,
+        view_type: ViewMode.All,
+        media_types: mediaTypes,
+        query: query,
+        use_keywords: true,
+        page: 1,
+        sort: SortType.provider,
+      };
+      const p2: Filters = { ...p1, page: 2 };
 
-    this.rawSearchResults = {
-      movies: dedupedChannels.filter((c) => c.media_type === MediaType.movie),
-      tvShows: dedupedChannels.filter((c) => c.media_type === MediaType.serie),
-      channels: dedupedChannels.filter((c) => c.media_type === MediaType.livestream),
-      categories: dedupedCategories,
-    };
+      const channelResults = await Promise.all([
+        invoke("search", { filters: p1 }) as Promise<Channel[]>,
+        invoke("search", { filters: p2 }) as Promise<Channel[]>,
+      ]).then(([r1, r2]) => [...(r1 || []), ...(r2 || [])])
+        .catch(() => [] as Channel[]);
 
-    this.allSearchResultsList = [...dedupedChannels, ...dedupedCategories];
-    this.applySearchSortAndFilter();
-    this.channelsVisible = true;
-    this.saveCurrentTabSearchState();
+      if (searchId !== this.searchRequestId || currentTab !== this.memory.activeNavTab.value) return;
+
+      const cleanChannels = (channelResults || []).filter((m) => {
+        if (m.media_type === MediaType.movie && isEpisodicOrTvContent(m)) return false;
+        return true;
+      });
+      const deduped = this.dedupeSearchResults(cleanChannels);
+
+      this.rawSearchResults = {
+        movies: deduped.filter((c) => c.media_type === MediaType.movie),
+        tvShows: deduped.filter((c) => c.media_type === MediaType.serie),
+        channels: deduped.filter((c) => c.media_type === MediaType.livestream),
+        categories: [],
+      };
+      this.updateCombinedSearchResults();
+      this.loading = false;
+      this.channelsVisible = true;
+      this.saveCurrentTabSearchState();
+      this.cdr.markForCheck();
+    }
   }
 
   async load(more = false) {

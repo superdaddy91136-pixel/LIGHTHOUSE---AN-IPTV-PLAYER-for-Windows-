@@ -34,10 +34,13 @@ pub mod xtream;
 pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_single_instance::init(|app, _, _| {
-            let window = app.get_webview_window("main").expect("no main window");
-            let _ = window.unminimize();
-            let _ = window.show();
-            let _ = window.set_focus();
+            if let Some(window) = app.get_webview_window("main") {
+                let _ = window.unminimize();
+                let _ = window.show();
+                let _ = window.set_focus();
+            } else {
+                eprintln!("Single-instance callback could not find the main window");
+            }
         }))
         .plugin(tauri_plugin_notification::init())
         .plugin(tauri_plugin_shell::init())
@@ -50,6 +53,7 @@ pub fn run() {
             get_settings,
             update_settings,
             search,
+            cancel_search,
             bulk_update,
             get_xtream,
             refresh_source,
@@ -300,6 +304,12 @@ fn update_settings(settings: Settings) -> Result<(), String> {
 #[tauri::command(async)]
 fn search(filters: Filters) -> Result<Vec<Channel>, String> {
     sql::search(filters).map_err(map_err_frontend)
+}
+
+#[tauri::command]
+fn cancel_search() -> Result<(), String> {
+    sql::cancel_active_searches();
+    Ok(())
 }
 
 #[tauri::command(async)]
