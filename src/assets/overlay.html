@@ -4930,15 +4930,21 @@
           hideNextEpisodePreview(true);
           return;
         }
-        const currentIndex = episodesData.episodes.findIndex(
-          (ep) => ep.id === episodesData.currentEpisodeId || ep.isCurrent
-        );
+        const curId = episodesData.currentEpisodeId != null ? episodesData.currentEpisodeId : currentActiveChannelId;
+        const currentIndex = curId != null
+          ? episodesData.episodes.findIndex(
+              (ep) => (ep.id != null && String(ep.id) === String(curId)) ||
+                      (ep.channel && String(ep.channel.id) === String(curId))
+            )
+          : -1;
         const hasNextEp = currentIndex !== -1 && currentIndex + 1 < episodesData.episodes.length;
-        const hasNextSeason = episodesData.seasons && episodesData.seasons.findIndex(
-          (s) => s.seasonNum === episodesData.currentSeasonNum
-        ) + 1 < episodesData.seasons.length;
+        const curSeasonNum = episodesData.currentSeasonNum != null ? Number(episodesData.currentSeasonNum) : 1;
+        const hasNextSeason = Array.isArray(episodesData.seasons) && episodesData.seasons.some(
+          (s) => Number(s.seasonNum) > curSeasonNum
+        );
+        const hasNextResolved = !!(upNextState.nextEpisode && upNextState.nextEpisode.id);
 
-        if (hasNextEp || hasNextSeason || (upNextState.nextEpisode && upNextState.nextEpisode.id)) {
+        if (hasNextEp || hasNextResolved || hasNextSeason) {
           btnNextEpisode.disabled = false;
           btnNextEpisode.style.opacity = '1';
           btnNextEpisode.style.cursor = 'pointer';
@@ -4956,6 +4962,37 @@
 
         const nextEp = resolveNextEpisodeData();
         if (!nextEp || !nextEp.id) {
+          const curSeasonNum = episodesData.currentSeasonNum != null ? Number(episodesData.currentSeasonNum) : 1;
+          const sortedSeasons = Array.isArray(episodesData.seasons)
+            ? [...episodesData.seasons].sort((a, b) => Number(a.seasonNum) - Number(b.seasonNum))
+            : [];
+          const nextSeason = sortedSeasons.find((s) => Number(s.seasonNum) > curSeasonNum);
+          if (nextSeason) {
+            const previewCard = document.getElementById('nextEpPreviewCard');
+            const previewThumb = document.getElementById('nextEpPreviewThumb');
+            const previewFallback = document.getElementById('nextEpPreviewFallback');
+            const previewMeta = document.getElementById('nextEpPreviewMeta');
+            const previewTitle = document.getElementById('nextEpPreviewTitle');
+            if (!previewCard) return;
+            if (previewMeta) previewMeta.textContent = `NEXT SEASON`;
+            if (previewTitle) previewTitle.textContent = nextSeason.name || `Season ${nextSeason.seasonNum}`;
+            const posterUrl = episodesData.seriesPoster;
+            if (previewThumb && previewFallback) {
+              if (posterUrl) {
+                previewThumb.src = posterUrl;
+                previewThumb.style.display = 'block';
+                previewFallback.style.display = 'none';
+              } else {
+                previewThumb.style.display = 'none';
+                previewFallback.style.display = 'flex';
+              }
+            }
+            previewCard.style.display = 'flex';
+            void previewCard.offsetWidth;
+            previewCard.classList.add('visible');
+            previewCard.setAttribute('aria-hidden', 'false');
+            return;
+          }
           hideNextEpisodePreview(true);
           return;
         }
@@ -5051,9 +5088,13 @@
       function playNextEpisode() {
         hideNextEpisodePreview(true);
         if (!episodesData.episodes || episodesData.episodes.length === 0) return;
-        const currentIndex = episodesData.episodes.findIndex(
-          (ep) => ep.id === episodesData.currentEpisodeId || ep.isCurrent
-        );
+        const curId = episodesData.currentEpisodeId != null ? episodesData.currentEpisodeId : currentActiveChannelId;
+        const currentIndex = curId != null
+          ? episodesData.episodes.findIndex(
+              (ep) => (ep.id != null && String(ep.id) === String(curId)) ||
+                      (ep.channel && String(ep.channel.id) === String(curId))
+            )
+          : -1;
         if (currentIndex !== -1 && currentIndex + 1 < episodesData.episodes.length) {
           flushSaveProgress();
           const nextEp = episodesData.episodes[currentIndex + 1];
@@ -5073,12 +5114,30 @@
           });
           closeAllPanels();
           showControls();
+        } else if (upNextState.nextEpisode && upNextState.nextEpisode.id) {
+          // Cross-season next episode already resolved!
+          flushSaveProgress();
+          const nextEp = upNextState.nextEpisode;
+          currentActiveChannelId = nextEp.id;
+          episodesData.currentEpisodeId = nextEp.id;
+          currentPlaybackSessionId++;
+          isMediaLoaded = false;
+          const savedState = getSavedPlaybackStateForChannel(nextEp.id);
+          currentTime = savedState.time;
+          duration = savedState.duration;
+          cachedDuration = duration;
+          setProgressUI(currentTime, duration, savedState.percent);
+          tauriEmit('select-player-episode', {
+            episodeId: nextEp.id,
+            channel: nextEp.channel,
+          });
+          closeAllPanels();
+          showControls();
         } else if (episodesData.seasons && episodesData.seasons.length > 0) {
-          const currentSeasonIdx = episodesData.seasons.findIndex(
-            (s) => s.seasonNum === episodesData.currentSeasonNum
-          );
-          if (currentSeasonIdx !== -1 && currentSeasonIdx + 1 < episodesData.seasons.length) {
-            const nextSeason = episodesData.seasons[currentSeasonIdx + 1];
+          const curSeasonNum = episodesData.currentSeasonNum != null ? Number(episodesData.currentSeasonNum) : 1;
+          const sortedSeasons = [...episodesData.seasons].sort((a, b) => Number(a.seasonNum) - Number(b.seasonNum));
+          const nextSeason = sortedSeasons.find((s) => Number(s.seasonNum) > curSeasonNum);
+          if (nextSeason) {
             tauriEmit('request-change-season', {
               seasonId: nextSeason.id,
               seasonNum: nextSeason.seasonNum,
@@ -5171,15 +5230,12 @@
 
       function getFallbackNextEpisode() {
         if (!episodesData.episodes || episodesData.episodes.length === 0) return null;
-        let curIdx = episodesData.episodes.findIndex(
-          (ep) => (ep.id != null && (String(ep.id) === String(episodesData.currentEpisodeId) || String(ep.id) === String(currentActiveChannelId))) ||
-                  (ep.channel && (String(ep.channel.id) === String(episodesData.currentEpisodeId) || String(ep.channel.id) === String(currentActiveChannelId))) ||
-                  ep.isCurrent
-        );
-        if (curIdx === -1 && (episodesData.currentEpisodeId != null || currentActiveChannelId != null)) {
-          const targetId = episodesData.currentEpisodeId != null ? episodesData.currentEpisodeId : currentActiveChannelId;
+        const curId = episodesData.currentEpisodeId != null ? episodesData.currentEpisodeId : currentActiveChannelId;
+        let curIdx = -1;
+        if (curId != null) {
           curIdx = episodesData.episodes.findIndex(
-            (ep) => ep.episodeNum != null && String(ep.episodeNum) === String(targetId)
+            (ep) => (ep.id != null && String(ep.id) === String(curId)) ||
+                    (ep.channel && String(ep.channel.id) === String(curId))
           );
         }
         if (curIdx !== -1 && curIdx + 1 < episodesData.episodes.length) {
@@ -5305,6 +5361,58 @@
               executePlayNextEpisode();
             }
           }, 1000);
+        }
+      }
+
+      function refreshUpNextCardIfShowing(nextEp) {
+        if (!upNextCard || !upNextState.isShowing || upNextState.watchCreditsSelected) return;
+        if (nextEp && nextEp.id) {
+          upNextState.nextEpisode = nextEp;
+          const btnPlayNextEp = document.getElementById('btnPlayNextEp');
+          if (btnPlayNextEp) {
+            btnPlayNextEp.style.display = 'inline-flex';
+          }
+          const sNum = nextEp.seasonNum != null && nextEp.seasonNum > 0 ? String(nextEp.seasonNum).padStart(2, '0') : '';
+          const eNum = nextEp.episodeNum != null && nextEp.episodeNum > 0 ? String(nextEp.episodeNum).padStart(2, '0') : '';
+          if (upNextEpMeta) {
+            upNextEpMeta.textContent = (sNum && eNum) ? `S${sNum}E${eNum}` : 'Next Episode';
+          }
+          const cleanShow = sanitizeShowTitle(nextEp.seriesTitle || episodesData.seriesTitle || '');
+          const cleanTitle = sanitizeEpisodeTitle(
+            nextEp.title || nextEp.channel?.name || '',
+            cleanShow,
+            nextEp.episodeNum,
+            nextEp.seasonNum
+          );
+          if (upNextEpTitle) {
+            upNextEpTitle.textContent = cleanTitle || (nextEp.episodeNum ? `Episode ${nextEp.episodeNum}` : 'Next Episode');
+          }
+          if (upNextTimer) {
+            upNextTimer.textContent = `Playing in ${Math.max(0, upNextState.countdown)}s`;
+            upNextTimer.style.display = 'inline';
+          }
+          const thumbUrl = nextEp.stillUrl || (nextEp.channel && nextEp.channel.image);
+          const posterUrl = nextEp.posterUrl || episodesData.seriesPoster;
+          const artUrl = thumbUrl || posterUrl;
+          if (upNextThumb && upNextThumbFallback) {
+            if (artUrl) {
+              upNextThumb.src = artUrl;
+              upNextThumb.style.display = 'block';
+              upNextThumbFallback.style.display = 'none';
+            }
+          }
+          if (!upNextState.timerId) {
+            upNextState.timerId = setInterval(() => {
+              upNextState.countdown -= 1;
+              if (upNextTimer) {
+                upNextTimer.textContent = `Playing in ${Math.max(0, upNextState.countdown)}s`;
+              }
+              if (upNextState.countdown <= 0) {
+                clearUpNextTimer();
+                executePlayNextEpisode();
+              }
+            }, 1000);
+          }
         }
       }
 
@@ -7262,7 +7370,11 @@
           };
           if (event.payload.nextEpisode !== undefined) {
             upNextState.nextEpisode = event.payload.nextEpisode;
+            if (upNextState.isShowing && !upNextState.watchCreditsSelected) {
+              refreshUpNextCardIfShowing(event.payload.nextEpisode);
+            }
           }
+          updateNextEpisodeBtnState();
           currentActiveMediaKey = computeStableMediaKeyForCurrent();
           attachSavedExternalSubtitles();
           renderEpisodes();
@@ -7323,6 +7435,7 @@
       tauriListen('embedded-player-started', (event) => {
         hideUpNextCard(false);
         hideMovieRecsCard(false);
+        upNextState.nextEpisode = null;
         upNextState.cancelledForMediaId = null;
         movieRecsState.cancelledForMediaId = null;
         upNextState.hasTriggeredForSession = false;
@@ -7430,6 +7543,7 @@
       tauriListen('embedded-poc-stopped', () => {
         hideUpNextCard(false);
         hideMovieRecsCard(false);
+        upNextState.nextEpisode = null;
         upNextState.cancelledForMediaId = null;
         movieRecsState.cancelledForMediaId = null;
         upNextState.hasTriggeredForSession = false;

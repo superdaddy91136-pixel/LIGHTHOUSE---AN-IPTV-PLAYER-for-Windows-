@@ -253,7 +253,7 @@ export class EmbeddedPlayerService implements OnDestroy {
     });
 
     // Listen for episode selection from overlay
-    this.unlistenSelectEpisode = await listen('select-player-episode', (event: any) => {
+    this.unlistenSelectEpisode = await listen('select-player-episode', async (event: any) => {
       const episodeId = event?.payload?.episodeId ?? event?.payload?.id;
       let targetEp = this.episodes.find((e) => e.id === episodeId);
       const targetChannel: Channel | undefined = targetEp?.channel || event?.payload?.channel;
@@ -265,7 +265,7 @@ export class EmbeddedPlayerService implements OnDestroy {
 
       if (!targetEp && targetChannel) {
         const epNum = targetChannel.episode_num || this.extractEpisodeNumber(targetChannel.name);
-        const sNum = this.extractSeasonNumber(targetChannel);
+        const sNum = (targetChannel as any).seasonNum || this.extractSeasonNumber(targetChannel);
         targetEp = {
           id: targetChannel.id!,
           channel: targetChannel,
@@ -281,8 +281,15 @@ export class EmbeddedPlayerService implements OnDestroy {
       if (targetEp) {
         targetEp.isWatched = true;
         (targetEp.channel as any).last_watched = Date.now();
+        const prevSeasonNum = this.currentSeasonNum;
         this.currentSeasonNum = targetEp.seasonNum;
-        this.emitEpisodesData();
+
+        // If target episode is from a different season and we don't have onSwitchEpisodeCallback, load that season's episodes
+        if (!this.onSwitchEpisodeCallback && targetChannel?.season_id && targetEp.seasonNum !== prevSeasonNum) {
+          await this.loadEpisodesForSeason(targetChannel.season_id, targetEp.seasonNum);
+        } else {
+          this.emitEpisodesData();
+        }
 
         this.ngZone.run(() => {
           if (this.onSwitchEpisodeCallback) {
@@ -818,7 +825,7 @@ export class EmbeddedPlayerService implements OnDestroy {
     if (options?.currentEpisodeNum) {
       this.currentEpisodeNum = options.currentEpisodeNum;
     } else if (this.currentMode === 'episode') {
-      this.currentEpisodeNum = channel.episode_num || this.extractEpisodeNumber(channel.name);
+      this.currentEpisodeNum = channel.episode_num || this.extractEpisodeNumber(channel.name, 0);
     }
     if (options?.episodes && options.episodes.length > 0) {
       this.episodes = options.episodes;
@@ -971,6 +978,48 @@ export class EmbeddedPlayerService implements OnDestroy {
     }
   }
 
+  public findEpisodeIndexInList(
+    episodes: SwitcherEpisodeData[],
+    targetChannel?: Channel,
+    targetEpNum?: number,
+    targetSeasonNum?: number
+  ): number {
+    if (!episodes || episodes.length === 0) return -1;
+    const targetId = targetChannel?.id;
+
+    // 1. Exact ID match (loose and strict string/number comparison)
+    if (targetId != null) {
+      const idx = episodes.findIndex(
+        (e) => (e.id != null && (e.id === targetId || String(e.id) === String(targetId))) ||
+               (e.channel?.id != null && (e.channel.id === targetId || String(e.channel.id) === String(targetId)))
+      );
+      if (idx !== -1) return idx;
+    }
+
+    // 2. Explicit episode number match ONLY if targetEpNum is a known valid positive number
+    const epNum = (targetEpNum != null && targetEpNum > 0)
+      ? targetEpNum
+      : (targetChannel?.episode_num != null && targetChannel.episode_num > 0)
+        ? targetChannel.episode_num
+        : this.extractEpisodeNumber(targetChannel?.name, 0);
+
+    if (epNum > 0) {
+      const sNum = (targetSeasonNum != null && targetSeasonNum > 0)
+        ? targetSeasonNum
+        : this.extractSeasonNumber(targetChannel);
+
+      const idx = episodes.findIndex((e) => {
+        const itemEpNum = e.episodeNum ?? e.channel?.episode_num ?? this.extractEpisodeNumber(e.channel?.name, 0);
+        if (itemEpNum !== epNum) return false;
+        if (sNum > 0 && e.seasonNum != null && e.seasonNum > 0 && e.seasonNum !== sNum) return false;
+        return true;
+      });
+      if (idx !== -1) return idx;
+    }
+
+    return -1;
+  }
+
   public async emitEpisodesData(): Promise<void> {
     let nextEp: any = null;
     if (this.currentChannel && this.currentChannel.id != null) {
@@ -980,13 +1029,21 @@ export class EmbeddedPlayerService implements OnDestroy {
 
         // 1. Check if next episode is immediately available in active season episodes list
         if (this.episodes && this.episodes.length > 0) {
-          const curIdx = this.episodes.findIndex(
-            (e) => e.id === channelId || e.isCurrent || (e.channel && e.channel.id === channelId)
+          const curEpNum = (this.currentEpisodeNum != null && this.currentEpisodeNum > 0)
+            ? this.currentEpisodeNum
+            : (this.currentChannel.episode_num != null && this.currentChannel.episode_num > 0)
+              ? this.currentChannel.episode_num
+              : this.extractEpisodeNumber(this.currentChannel.name, 0);
+          const curIdx = this.findEpisodeIndexInList(
+            this.episodes,
+            this.currentChannel,
+            curEpNum,
+            this.currentSeasonNum
           );
           if (curIdx !== -1 && curIdx + 1 < this.episodes.length) {
             const nextItem = this.episodes[curIdx + 1];
             if (nextItem && nextItem.channel) {
-              const epNum = nextItem.episodeNum ?? this.extractEpisodeNumber(nextItem.channel.name);
+              const epNum = nextItem.episodeNum ?? this.extractEpisodeNumber(nextItem.channel.name, curIdx + 2);
               const sNum = nextItem.seasonNum ?? this.extractSeasonNumber(nextItem.channel);
               const cleanShow = sanitizeShowTitle(this.seriesTitle || this.extractSeriesTitle(nextItem.channel));
               const cleanEpTitle = nextItem.title || sanitizeEpisodeTitle(nextItem.channel.name, cleanShow, epNum, sNum);
@@ -1009,17 +1066,19 @@ export class EmbeddedPlayerService implements OnDestroy {
         // 2. If not found in current season list (e.g. season finale or cross-season), resolve via database/cache
         if (!nextEp) {
           let found = this.getPersistedNextEpisode(seriesKey, channelId);
-          if (found === undefined) {
+          if (found === undefined || (found === null && this.seasons.length > 1)) {
             found = await this.findNextEpisode(this.currentChannel);
             if (seriesKey) {
               this.setPersistedNextEpisode(seriesKey, channelId, found);
             }
           }
           if (found) {
-            const epNum = found.episode_num ?? this.extractEpisodeNumber(found.name);
-            const sNum = found.season_id != null
+            const epNum = found.episode_num ?? this.extractEpisodeNumber(found.name, 0) ?? 1;
+            const sNum = (found as any).seasonNum || (found.season_id != null
               ? (this.seasons.find((s) => s.id === found.season_id)?.seasonNum || this.extractSeasonNumber(found))
-              : this.extractSeasonNumber(found);
+              : this.extractSeasonNumber(found));
+            (found as any).seasonNum = sNum;
+            if (found.episode_num == null) (found as any).episode_num = epNum;
             const cleanShow = sanitizeShowTitle(this.seriesTitle || this.extractSeriesTitle(found));
             const cleanEpTitle = sanitizeEpisodeTitle(found.name, cleanShow, epNum, sNum);
             const refSeries = this.seriesChannel || this.currentChannel;
@@ -1727,7 +1786,7 @@ export class EmbeddedPlayerService implements OnDestroy {
       if (!raw) return undefined;
       const data = JSON.parse(raw);
       if (!data) return undefined;
-      if (fromEpisodeId != null && data.fromEpisodeId != null && data.fromEpisodeId !== fromEpisodeId) {
+      if (fromEpisodeId == null || data.fromEpisodeId == null || String(data.fromEpisodeId) !== String(fromEpisodeId)) {
         return undefined;
       }
       if (data.nextEpisode) {
@@ -1748,6 +1807,12 @@ export class EmbeddedPlayerService implements OnDestroy {
           try {
             localStorage.setItem(`fred_tv_series_next_ep_${seriesKey}`, JSON.stringify(data));
           } catch {}
+        }
+        // Safety check: if cached nextEpisode is in the same season but has episode_num <= current episode, it's stale poisoned cache!
+        const nextEpNum = ep.episode_num ?? this.extractEpisodeNumber(ep.name, 0);
+        const nextSNum = ep.seasonNum ?? this.extractSeasonNumber(ep);
+        if (this.currentSeasonNum != null && nextSNum === this.currentSeasonNum && this.currentEpisodeNum != null && nextEpNum > 0 && nextEpNum <= this.currentEpisodeNum) {
+          return undefined;
         }
       }
       return data.nextEpisode;
@@ -1793,17 +1858,16 @@ export class EmbeddedPlayerService implements OnDestroy {
   public async findNextEpisode(channel: Channel): Promise<Channel | null> {
     if (!channel) return null;
     try {
-      const sourceId = channel.source_id;
+      const sourceId = channel.source_id ?? this.seriesChannel?.source_id;
       const sourceIds = sourceId != null ? [sourceId] : Array.from(this.memory.Sources.keys());
       if (sourceIds.length === 0) return null;
 
-      let seriesId = channel.series_id;
-      if (!seriesId && channel.url && /^\d+$/.test(channel.url.trim())) {
-        seriesId = parseInt(channel.url.trim(), 10);
-      }
-      if (!seriesId && this.seriesChannel?.id) {
-        seriesId = this.seriesChannel.series_id || this.seriesChannel.id;
-      }
+      const refSeries = this.seriesChannel;
+      let seriesId =
+        channel.series_id ||
+        refSeries?.series_id ||
+        (refSeries?.url && /^\d+$/.test(refSeries.url.trim()) ? parseInt(refSeries.url.trim(), 10) : undefined) ||
+        refSeries?.id;
 
       if (!seriesId) {
         const sTitle = this.extractSeriesTitle(channel);
@@ -1828,105 +1892,159 @@ export class EmbeddedPlayerService implements OnDestroy {
         }
       }
 
-      if (!seriesId) return null;
-
-      // 1. Fetch seasons for this series ordered by season_number ASC
-      const seasonFilters = {
-        source_ids: sourceIds,
-        series_id: seriesId,
-        media_types: [MediaType.serie],
-        view_type: ViewMode.All,
-        use_keywords: false,
-        page: 1,
-        sort: SortType.alphabeticalAscending,
-      };
-      const seasonChannels = (await invoke('search', { filters: seasonFilters })) as Channel[];
-      if (!seasonChannels || seasonChannels.length === 0) return null;
-
-      const seasons = seasonChannels.map((s, idx) => {
-        const sMatch = s.name?.match(/(\d+)/);
-        return {
-          id: s.id!,
-          seasonNum: sMatch ? parseInt(sMatch[1], 10) : idx + 1,
-          name: s.name || `Season ${idx + 1}`,
-          channel: s,
+      // 1. Resolve seasons: reuse in-memory seasons if available, or fetch from DB
+      let seasons: Array<{ id: number; seasonNum: number; name: string }> = [];
+      if (this.seasons && this.seasons.length > 0) {
+        seasons = this.seasons.map((s, idx) => {
+          const sMatch = s.name?.match(/(\d+)/);
+          return {
+            id: s.id,
+            seasonNum: s.seasonNum ?? (sMatch ? parseInt(sMatch[1], 10) : idx + 1),
+            name: s.name || `Season ${idx + 1}`,
+          };
+        });
+      } else if (seriesId) {
+        const seasonFilters = {
+          source_ids: sourceIds,
+          series_id: seriesId,
+          media_types: [MediaType.serie],
+          view_type: ViewMode.All,
+          use_keywords: false,
+          page: 1,
+          sort: SortType.alphabeticalAscending,
         };
-      });
+        const seasonChannels = (await invoke('search', { filters: seasonFilters })) as Channel[];
+        if (seasonChannels && seasonChannels.length > 0) {
+          seasons = seasonChannels.map((s, idx) => {
+            const sMatch = s.name?.match(/(\d+)/);
+            return {
+              id: s.id!,
+              seasonNum: sMatch ? parseInt(sMatch[1], 10) : idx + 1,
+              name: s.name || `Season ${idx + 1}`,
+            };
+          });
+        }
+      }
+
+      if (seasons.length === 0) return null;
       seasons.sort((a, b) => a.seasonNum - b.seasonNum);
 
       // Determine current season
-      let currentSeasonId = channel.season_id;
       let currentSeasonIdx = -1;
-      if (currentSeasonId != null) {
-        currentSeasonIdx = seasons.findIndex((s) => s.id === currentSeasonId);
+      if (channel.season_id != null) {
+        currentSeasonIdx = seasons.findIndex((s) => s.id === channel.season_id);
+      }
+      if (currentSeasonIdx === -1 && this.currentSeasonNum != null) {
+        currentSeasonIdx = seasons.findIndex((s) => s.seasonNum === this.currentSeasonNum);
       }
       if (currentSeasonIdx === -1) {
         const sNum = this.extractSeasonNumber(channel);
         currentSeasonIdx = seasons.findIndex((s) => s.seasonNum === sNum);
-        if (currentSeasonIdx === -1) currentSeasonIdx = 0;
+      }
+      if (currentSeasonIdx === -1) {
+        currentSeasonIdx = 0;
       }
 
       const currentSeason = seasons[currentSeasonIdx];
-      const currentEpNum = channel.episode_num ?? this.extractEpisodeNumber(channel.name);
+      const isCurrentTarget = this.currentChannel?.id != null && (channel.id === this.currentChannel.id || String(channel.id) === String(this.currentChannel.id));
+      const currentEpNum =
+        (isCurrentTarget && this.currentEpisodeNum != null && this.currentEpisodeNum > 0)
+          ? this.currentEpisodeNum
+          : (channel.episode_num != null && channel.episode_num > 0)
+            ? channel.episode_num
+            : this.extractEpisodeNumber(channel.name, 0);
 
       // 2. Fetch episodes for current season ordered by episode_num ASC
-      const epFilters = {
-        source_ids: sourceIds,
-        series_id: seriesId,
-        season: currentSeason.id,
-        media_types: [MediaType.movie],
-        view_type: ViewMode.All,
-        use_keywords: false,
-        page: 1,
-        sort: SortType.alphabeticalAscending,
-      };
-      const curEpisodes = (await invoke('search', { filters: epFilters })) as Channel[];
-
-      if (curEpisodes && curEpisodes.length > 0) {
-        curEpisodes.sort((a, b) => {
-          const aNum = a.episode_num ?? this.extractEpisodeNumber(a.name, 0);
-          const bNum = b.episode_num ?? this.extractEpisodeNumber(b.name, 0);
-          return aNum - bNum;
-        });
-
-        // Find index of current episode
-        let curIdx = curEpisodes.findIndex((e) => e.id === channel.id);
-        if (curIdx === -1 && currentEpNum != null) {
-          curIdx = curEpisodes.findIndex((e) => (e.episode_num ?? this.extractEpisodeNumber(e.name, 0)) === currentEpNum);
-        }
-
-        if (curIdx !== -1 && curIdx + 1 < curEpisodes.length) {
-          return curEpisodes[curIdx + 1];
-        } else if (curIdx === -1) {
-          const nextInSeason = curEpisodes.find(
-            (e) => (e.episode_num ?? this.extractEpisodeNumber(e.name, 0)) > currentEpNum
-          );
-          if (nextInSeason) return nextInSeason;
+      // Check in-memory this.episodes first if active
+      if (this.episodes && this.episodes.length > 0 &&
+          (this.currentSeasonNum === currentSeason.seasonNum || channel.season_id == null || this.episodes.some((e) => e.channel?.season_id === currentSeason.id))) {
+        const curIdx = this.findEpisodeIndexInList(this.episodes, channel, currentEpNum, currentSeason.seasonNum);
+        if (curIdx !== -1 && curIdx + 1 < this.episodes.length) {
+          const nextEpItem = this.episodes[curIdx + 1];
+          if (nextEpItem && nextEpItem.channel) {
+            const ep = { ...nextEpItem.channel } as any;
+            ep.seasonNum = currentSeason.seasonNum;
+            ep.episode_num = nextEpItem.episodeNum ?? ep.episode_num;
+            if (!ep.season_id) ep.season_id = currentSeason.id;
+            return ep as Channel;
+          }
         }
       }
 
-      // 3. Current episode is the last episode of the season: transition to next season!
-      let nextSeasonIdx = currentSeasonIdx + 1;
-      while (nextSeasonIdx < seasons.length) {
-        const nextSeason = seasons[nextSeasonIdx];
-        const nextSeasonEpFilters = {
+      if (seriesId) {
+        const epFilters = {
           source_ids: sourceIds,
           series_id: seriesId,
-          season: nextSeason.id,
+          season: currentSeason.id,
           media_types: [MediaType.movie],
           view_type: ViewMode.All,
           use_keywords: false,
           page: 1,
           sort: SortType.alphabeticalAscending,
         };
-        const nextSeasonEpisodes = (await invoke('search', { filters: nextSeasonEpFilters })) as Channel[];
-        if (nextSeasonEpisodes && nextSeasonEpisodes.length > 0) {
-          nextSeasonEpisodes.sort((a, b) => {
+        const curEpisodes = (await invoke('search', { filters: epFilters })) as Channel[];
+
+        if (curEpisodes && curEpisodes.length > 0) {
+          curEpisodes.sort((a, b) => {
             const aNum = a.episode_num ?? this.extractEpisodeNumber(a.name, 0);
             const bNum = b.episode_num ?? this.extractEpisodeNumber(b.name, 0);
             return aNum - bNum;
           });
-          return nextSeasonEpisodes[0];
+
+          // Find index of current episode
+          let curIdx = curEpisodes.findIndex((e) => (e.id != null && (e.id === channel.id || String(e.id) === String(channel.id))));
+          if (curIdx === -1 && currentEpNum > 0) {
+            curIdx = curEpisodes.findIndex((e) => (e.episode_num != null && e.episode_num === currentEpNum) || (this.extractEpisodeNumber(e.name, 0) === currentEpNum));
+          }
+
+          if (curIdx !== -1 && curIdx + 1 < curEpisodes.length) {
+            const foundEp = { ...curEpisodes[curIdx + 1] } as any;
+            foundEp.seasonNum = currentSeason.seasonNum;
+            if (!foundEp.season_id) foundEp.season_id = currentSeason.id;
+            return foundEp as Channel;
+          } else if (curIdx === -1 && currentEpNum > 0) {
+            const nextInSeason = curEpisodes.find(
+              (e) => (e.episode_num != null && e.episode_num > currentEpNum) || (this.extractEpisodeNumber(e.name, 0) > currentEpNum)
+            );
+            if (nextInSeason) {
+              const foundEp = { ...nextInSeason } as any;
+              foundEp.seasonNum = currentSeason.seasonNum;
+              if (!foundEp.season_id) foundEp.season_id = currentSeason.id;
+              return foundEp as Channel;
+            }
+          }
+        }
+      }
+
+      // 3. Current episode is the last episode of the season: transition to next available season!
+      let nextSeasonIdx = currentSeasonIdx + 1;
+      while (nextSeasonIdx < seasons.length) {
+        const nextSeason = seasons[nextSeasonIdx];
+        if (seriesId) {
+          const nextSeasonEpFilters = {
+            source_ids: sourceIds,
+            series_id: seriesId,
+            season: nextSeason.id,
+            media_types: [MediaType.movie],
+            view_type: ViewMode.All,
+            use_keywords: false,
+            page: 1,
+            sort: SortType.alphabeticalAscending,
+          };
+          const nextSeasonEpisodes = (await invoke('search', { filters: nextSeasonEpFilters })) as Channel[];
+          if (nextSeasonEpisodes && nextSeasonEpisodes.length > 0) {
+            nextSeasonEpisodes.sort((a, b) => {
+              const aNum = a.episode_num ?? this.extractEpisodeNumber(a.name, 0);
+              const bNum = b.episode_num ?? this.extractEpisodeNumber(b.name, 0);
+              return aNum - bNum;
+            });
+            const firstEpOfNextSeason = { ...nextSeasonEpisodes[0] } as any;
+            firstEpOfNextSeason.seasonNum = nextSeason.seasonNum;
+            if (!firstEpOfNextSeason.season_id) {
+              firstEpOfNextSeason.season_id = nextSeason.id;
+            }
+            return firstEpOfNextSeason as Channel;
+          }
         }
         nextSeasonIdx++;
       }

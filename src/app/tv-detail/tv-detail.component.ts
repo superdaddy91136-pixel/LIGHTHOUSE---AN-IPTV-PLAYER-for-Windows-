@@ -1359,6 +1359,7 @@ export class TvDetailComponent implements OnInit, AfterViewInit, OnDestroy {
       // Ensure the season containing this episode is loaded so this.enrichedEpisodes matches enrichedEp.seasonNum
       if (this.selectedSeasonNumber !== enrichedEp.seasonNum && this.seasons.length > 0) {
         const targetSeason = this.seasons.find((s, idx) => {
+          if (enrichedEp.channel.season_id != null && s.id === enrichedEp.channel.season_id) return true;
           const sMatch = s.name?.match(/(\d+)/);
           const sNum = sMatch ? parseInt(sMatch[1], 10) : idx + 1;
           return sNum === enrichedEp.seasonNum;
@@ -1425,7 +1426,7 @@ export class TvDetailComponent implements OnInit, AfterViewInit, OnDestroy {
     );
     if (!targetEnriched) {
       const epNum = channel.episode_num || this.embeddedPlayer.extractEpisodeNumber(channel.name) || 1;
-      const epSeason = this.embeddedPlayer.extractSeasonNumber(channel) || this.selectedSeasonNumber;
+      const epSeason = (channel as any).seasonNum || this.embeddedPlayer.extractSeasonNumber(channel) || this.selectedSeasonNumber;
       targetEnriched = {
         channel,
         episodeNum: epNum,
