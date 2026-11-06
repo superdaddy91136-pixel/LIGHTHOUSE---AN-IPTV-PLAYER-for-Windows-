@@ -1032,8 +1032,10 @@ export class HomeDiscoveryComponent implements OnInit, AfterViewInit, OnDestroy 
         const sId = s.url || (s.id ? String(s.id) : undefined);
         if (sId && s.name) {
           this.seriesNameMap.set(`${s.source_id}_${sId}`, s.name);
+          this.seriesNameMap.set(`${sId}`, s.name);
           if (s.id) {
             this.seriesNameMap.set(`${s.source_id}_${s.id}`, s.name);
+            this.seriesNameMap.set(`${s.id}`, s.name);
           }
         }
         if (sId) {
@@ -2919,6 +2921,27 @@ export class HomeDiscoveryComponent implements OnInit, AfterViewInit, OnDestroy 
       snapshot.allLoadedMovies.length > 0 ? snapshot.allLoadedMovies : this.allLoadedMovies;
     this.allLoadedSeries =
       snapshot.allLoadedSeries.length > 0 ? snapshot.allLoadedSeries : this.allLoadedSeries;
+    if (this.allLoadedSeries.length > 0 && this.seriesNameMap.size === 0) {
+      for (const s of this.allLoadedSeries) {
+        const sId = s.url || (s.id ? String(s.id) : undefined);
+        if (sId && s.name) {
+          this.seriesNameMap.set(`${s.source_id}_${sId}`, s.name);
+          this.seriesNameMap.set(`${sId}`, s.name);
+          if (s.id) {
+            this.seriesNameMap.set(`${s.source_id}_${s.id}`, s.name);
+            this.seriesNameMap.set(`${s.id}`, s.name);
+          }
+        }
+        if (sId) {
+          this.seriesLookupMap.set(`${s.source_id}_${sId}`, s);
+          this.seriesLookupMap.set(`${sId}`, s);
+        }
+        if (s.id) {
+          this.seriesLookupMap.set(`${s.source_id}_${s.id}`, s);
+          this.seriesLookupMap.set(`${s.id}`, s);
+        }
+      }
+    }
     this.masterHeroItems = snapshot.masterHeroItems.filter((hero) =>
       this.isEligibleHeroChannel(hero.channel)
     );
@@ -3728,6 +3751,10 @@ export class HomeDiscoveryComponent implements OnInit, AfterViewInit, OnDestroy 
       if (this.seriesNameMap.has(key)) {
         return cleanMediaTitle(this.seriesNameMap.get(key));
       }
+      const sIdStr = String(channel.series_id);
+      if (this.seriesNameMap.has(sIdStr)) {
+        return cleanMediaTitle(this.seriesNameMap.get(sIdStr));
+      }
       for (const [mapKey, name] of this.seriesNameMap.entries()) {
         if (mapKey.endsWith(`_${channel.series_id}`)) {
           return cleanMediaTitle(name);
@@ -3735,15 +3762,19 @@ export class HomeDiscoveryComponent implements OnInit, AfterViewInit, OnDestroy 
       }
       const sMatch =
         this.seriesLookupMap.get(key) ||
-        this.seriesLookupMap.get(String(channel.series_id));
+        this.seriesLookupMap.get(sIdStr);
       if (sMatch?.name) {
         return cleanMediaTitle(sMatch.name);
       }
-      if (this.loadedSeries && this.loadedSeries.length > 0) {
-        const sMatchLinear = this.loadedSeries.find(
+      const seriesList =
+        this.loadedSeries && this.loadedSeries.length > 0
+          ? this.loadedSeries
+          : this.allLoadedSeries;
+      if (seriesList && seriesList.length > 0) {
+        const sMatchLinear = seriesList.find(
           (s) =>
             (channel.source_id == null || s.source_id === channel.source_id) &&
-            (s.url === String(channel.series_id) || s.id === channel.series_id)
+            (s.url === sIdStr || s.id === channel.series_id)
         );
         if (sMatchLinear?.name) {
           return cleanMediaTitle(sMatchLinear.name);
@@ -3789,7 +3820,7 @@ export class HomeDiscoveryComponent implements OnInit, AfterViewInit, OnDestroy 
       const seriesTitle = this.getSeriesTitle(channel);
       let episodeTitle = cleanMediaTitle(rawName);
 
-      if (episodeTitle.toLowerCase().startsWith(seriesTitle.toLowerCase())) {
+      if (seriesTitle && episodeTitle.toLowerCase().startsWith(seriesTitle.toLowerCase())) {
         episodeTitle = episodeTitle.slice(seriesTitle.length);
       }
 
@@ -3842,10 +3873,33 @@ export class HomeDiscoveryComponent implements OnInit, AfterViewInit, OnDestroy 
         episodeCode = `E${episodeNum}`;
       }
 
-      if (episodeTitle && episodeTitle.toLowerCase() !== seriesTitle.toLowerCase()) {
-        res = episodeCode ? `${episodeCode} · ${episodeTitle}` : episodeTitle;
+      // Filter out redundant or generic episode titles (e.g., "Episode 5", "S1 E5", or repeating series title)
+      const isGenericEp =
+        !episodeTitle ||
+        (Boolean(seriesTitle) && episodeTitle.toLowerCase() === seriesTitle.toLowerCase()) ||
+        /^(?:season\s*\d+|s\d+|episode\s*\d+|ep\s*\d+|e\d+)$/i.test(episodeTitle);
+
+      const validEpTitle = isGenericEp ? "" : episodeTitle;
+
+      let epPart = "";
+      if (episodeCode && validEpTitle) {
+        epPart = `${episodeCode} · ${validEpTitle}`;
+      } else if (episodeCode) {
+        epPart = episodeCode;
+      } else if (validEpTitle) {
+        epPart = validEpTitle;
+      }
+
+      const showName = seriesTitle && seriesTitle !== "Untitled" ? seriesTitle : "";
+
+      if (showName && epPart) {
+        res = `${showName} · ${epPart}`;
+      } else if (showName) {
+        res = showName;
+      } else if (epPart) {
+        res = epPart;
       } else {
-        res = episodeCode || seriesTitle;
+        res = cleanMediaTitle(rawName) || "Untitled";
       }
     }
 
