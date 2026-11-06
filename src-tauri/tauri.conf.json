@@ -14,8 +14,11 @@
       {
         "label": "main",
         "title": "Lighthouse",
-        "width": 800,
-        "height": 600,
+        "width": 1280,
+        "height": 720,
+        "minWidth": 800,
+        "minHeight": 500,
+        "center": true,
         "resizable": true,
         "visible": false,
         "fullscreen": false,

@@ -513,13 +513,15 @@ export class HomeDiscoveryComponent implements OnInit, AfterViewInit, OnDestroy 
 
   ngAfterViewInit(): void {
     if (typeof ResizeObserver !== 'undefined') {
-      this.resizeObserver = new ResizeObserver(() => {
-        this.checkAllRowsScrollState();
+      this.ngZone.runOutsideAngular(() => {
+        this.resizeObserver = new ResizeObserver(() => {
+          this.checkAllRowsScrollState();
+        });
+        const container = document.querySelector('.discovery-rows-container');
+        if (container) {
+          this.resizeObserver.observe(container);
+        }
       });
-      const container = document.querySelector('.discovery-rows-container');
-      if (container) {
-        this.resizeObserver.observe(container);
-      }
     }
 
     // Attach passive capture scroll listener outside Angular Zone to track arrow visibility without running change detection during scrolling
@@ -838,11 +840,6 @@ export class HomeDiscoveryComponent implements OnInit, AfterViewInit, OnDestroy 
         this.cdr.markForCheck();
       }, 50);
     }, 280);
-  }
-
-  @HostListener('window:resize')
-  onWindowResize(): void {
-    this.checkAllRowsScrollState();
   }
 
   canScrollRight(rowId: string): boolean {
