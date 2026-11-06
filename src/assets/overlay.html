@@ -5266,6 +5266,11 @@
 
       function showUpNextCard(nextEp) {
         if (!upNextCard) return;
+        // When there is no subsequent playable episode anywhere in the series, hide the card completely
+        if (!nextEp || !nextEp.id) {
+          upNextCard.style.display = 'none';
+          return;
+        }
         if (upNextState.watchCreditsSelected || upNextState.cancelledForMediaId === currentActiveChannelId) return;
         if (upNextState.isShowing || upNextState.hasTriggeredForSession) return;
 
@@ -5274,94 +5279,69 @@
         upNextState.countdown = 20;
         upNextState.nextEpisode = nextEp;
 
-        const hasNext = !!(nextEp && nextEp.id);
         const btnPlayNextEp = document.getElementById('btnPlayNextEp');
         if (btnPlayNextEp) {
-          btnPlayNextEp.style.display = hasNext ? 'inline-flex' : 'none';
+          btnPlayNextEp.style.display = 'inline-flex';
         }
 
-        if (hasNext) {
-          const sNum = nextEp.seasonNum != null && nextEp.seasonNum > 0 ? String(nextEp.seasonNum).padStart(2, '0') : '';
-          const eNum = nextEp.episodeNum != null && nextEp.episodeNum > 0 ? String(nextEp.episodeNum).padStart(2, '0') : '';
-          if (upNextEpMeta) {
-            upNextEpMeta.textContent = (sNum && eNum) ? `S${sNum}E${eNum}` : 'Next Episode';
-          }
+        const sNum = nextEp.seasonNum != null && nextEp.seasonNum > 0 ? String(nextEp.seasonNum).padStart(2, '0') : '';
+        const eNum = nextEp.episodeNum != null && nextEp.episodeNum > 0 ? String(nextEp.episodeNum).padStart(2, '0') : '';
+        if (upNextEpMeta) {
+          upNextEpMeta.textContent = (sNum && eNum) ? `S${sNum}E${eNum}` : 'Next Episode';
+        }
 
-          const cleanShow = sanitizeShowTitle(nextEp.seriesTitle || episodesData.seriesTitle || '');
-          const cleanTitle = sanitizeEpisodeTitle(
-            nextEp.title || nextEp.channel?.name || '',
-            cleanShow,
-            nextEp.episodeNum,
-            nextEp.seasonNum
-          );
-          if (upNextEpTitle) {
-            upNextEpTitle.textContent = cleanTitle || (nextEp.episodeNum ? `Episode ${nextEp.episodeNum}` : 'Next Episode');
-          }
-          if (upNextTimer) {
-            upNextTimer.textContent = `Playing in 20s`;
-            upNextTimer.style.display = 'inline';
-          }
+        const cleanShow = sanitizeShowTitle(nextEp.seriesTitle || episodesData.seriesTitle || '');
+        const cleanTitle = sanitizeEpisodeTitle(
+          nextEp.title || nextEp.channel?.name || '',
+          cleanShow,
+          nextEp.episodeNum,
+          nextEp.seasonNum
+        );
+        if (upNextEpTitle) {
+          upNextEpTitle.textContent = cleanTitle || (nextEp.episodeNum ? `Episode ${nextEp.episodeNum}` : 'Next Episode');
+        }
+        if (upNextTimer) {
+          upNextTimer.textContent = `Playing in 20s`;
+          upNextTimer.style.display = 'inline';
+        }
 
-          const thumbUrl = nextEp.stillUrl || (nextEp.channel && nextEp.channel.image);
-          const posterUrl = nextEp.posterUrl || episodesData.seriesPoster;
-          const artUrl = thumbUrl || posterUrl;
+        const thumbUrl = nextEp.stillUrl || (nextEp.channel && nextEp.channel.image);
+        const posterUrl = nextEp.posterUrl || episodesData.seriesPoster;
+        const artUrl = thumbUrl || posterUrl;
 
-          if (upNextThumb && upNextThumbFallback) {
-            if (artUrl) {
-              upNextThumb.src = artUrl;
-              upNextThumb.style.display = 'block';
-              upNextThumbFallback.style.display = 'none';
+        if (upNextThumb && upNextThumbFallback) {
+          if (artUrl) {
+            upNextThumb.src = artUrl;
+            upNextThumb.style.display = 'block';
+            upNextThumbFallback.style.display = 'none';
 
-              upNextThumb.onerror = () => {
-                if (thumbUrl && posterUrl && upNextThumb.src !== posterUrl) {
-                  upNextThumb.src = posterUrl;
-                } else {
-                  upNextThumb.style.display = 'none';
-                  upNextThumbFallback.style.display = 'flex';
-                }
-              };
-            } else {
-              upNextThumb.style.display = 'none';
-              upNextThumbFallback.style.display = 'flex';
-            }
-          }
-        } else {
-          if (upNextEpMeta) {
-            upNextEpMeta.textContent = 'CREDITS';
-          }
-          if (upNextEpTitle) {
-            upNextEpTitle.textContent = episodesData.seriesTitle || 'End of Episode';
-          }
-          if (upNextTimer) {
-            upNextTimer.style.display = 'none';
-          }
-          if (upNextThumb && upNextThumbFallback) {
-            if (episodesData.seriesPoster) {
-              upNextThumb.src = episodesData.seriesPoster;
-              upNextThumb.style.display = 'block';
-              upNextThumbFallback.style.display = 'none';
-            } else {
-              upNextThumb.style.display = 'none';
-              upNextThumbFallback.style.display = 'flex';
-            }
+            upNextThumb.onerror = () => {
+              if (thumbUrl && posterUrl && upNextThumb.src !== posterUrl) {
+                upNextThumb.src = posterUrl;
+              } else {
+                upNextThumb.style.display = 'none';
+                upNextThumbFallback.style.display = 'flex';
+              }
+            };
+          } else {
+            upNextThumb.style.display = 'none';
+            upNextThumbFallback.style.display = 'flex';
           }
         }
 
         upNextCard.style.display = 'flex';
         clearUpNextTimer();
 
-        if (hasNext) {
-          upNextState.timerId = setInterval(() => {
-            upNextState.countdown -= 1;
-            if (upNextTimer) {
-              upNextTimer.textContent = `Playing in ${Math.max(0, upNextState.countdown)}s`;
-            }
-            if (upNextState.countdown <= 0) {
-              clearUpNextTimer();
-              executePlayNextEpisode();
-            }
-          }, 1000);
-        }
+        upNextState.timerId = setInterval(() => {
+          upNextState.countdown -= 1;
+          if (upNextTimer) {
+            upNextTimer.textContent = `Playing in ${Math.max(0, upNextState.countdown)}s`;
+          }
+          if (upNextState.countdown <= 0) {
+            clearUpNextTimer();
+            executePlayNextEpisode();
+          }
+        }, 1000);
       }
 
       function refreshUpNextCardIfShowing(nextEp) {
@@ -5413,6 +5393,8 @@
               }
             }, 1000);
           }
+        } else {
+          hideUpNextCard(false);
         }
       }
 
@@ -5572,6 +5554,9 @@
           if (upNextState.hasTriggeredForSession) return;
 
           let nextEp = getNextEpisodeData();
+          if (!nextEp || !nextEp.id) {
+            return;
+          }
 
           if (currentTime >= creditStart) {
             if (!upNextState.isShowing) {
