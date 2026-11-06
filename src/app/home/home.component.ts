@@ -61,6 +61,7 @@ import { MovieDetailService } from '../services/movie-detail.service';
 import { AmbientBackgroundService } from '../services/ambient-background.service';
 import { SearchStateService, UniversalSearchResults, TabSearchState } from '../services/search-state.service';
 import { VersionMatchingService } from '../services/version-matching.service';
+import { FavoritesService } from '../services/favorites.service';
 
 export interface CategoryOption {
   id: number;
@@ -1396,6 +1397,7 @@ export class HomeComponent implements AfterViewInit, OnDestroy {
     private searchStateService: SearchStateService,
     private versionMatching: VersionMatchingService,
     private ambientBackground: AmbientBackgroundService,
+    private favoritesService: FavoritesService,
     private cdr: ChangeDetectorRef,
     private ngZone: NgZone,
   ) {
@@ -1736,6 +1738,59 @@ export class HomeComponent implements AfterViewInit, OnDestroy {
         }
       }),
     );
+    this.subscriptions.push(
+      this.favoritesService.favoriteChanged$.subscribe((event) => {
+        const channelId = event.channelId;
+        const isFav = event.isFavorite;
+
+        let changed = false;
+        if (this.channels) {
+          for (const ch of this.channels) {
+            if (Number(ch.id) === Number(channelId)) {
+              ch.favorite = isFav;
+              changed = true;
+            }
+          }
+        }
+        if (this.regularChannels) {
+          for (const ch of this.regularChannels) {
+            if (Number(ch.id) === Number(channelId)) {
+              ch.favorite = isFav;
+              changed = true;
+            }
+          }
+        }
+
+        if (this.filters?.view_type === ViewMode.Favorites) {
+          if (!isFav) {
+            this.channels = (this.channels || []).filter((c) => Number(c.id) !== Number(channelId));
+            this.regularChannels = (this.regularChannels || []).filter((c) => Number(c.id) !== Number(channelId));
+            this.updatePinnedItems();
+            changed = true;
+          } else if (event.channel && this.matchesCurrentTabFilters(event.channel)) {
+            if (!this.channels?.some((c) => Number(c.id) === Number(channelId))) {
+              this.channels = [event.channel, ...(this.channels || [])];
+              this.updatePinnedItems();
+              this.updateRegularChannels(false);
+              changed = true;
+            }
+          }
+        }
+
+        if (changed) {
+          this.cdr.markForCheck();
+        }
+      }),
+    );
+  }
+
+  private matchesCurrentTabFilters(channel: Channel): boolean {
+    if (!channel || channel.media_type == null) return false;
+    const tab = this.memory.activeNavTab.value;
+    if (tab === NavTab.LiveTV && channel.media_type === MediaType.livestream) return true;
+    if (tab === NavTab.Movies && channel.media_type === MediaType.movie) return true;
+    if (tab === NavTab.TVShows && channel.media_type === MediaType.serie) return true;
+    return false;
   }
 
   clearSearch() {

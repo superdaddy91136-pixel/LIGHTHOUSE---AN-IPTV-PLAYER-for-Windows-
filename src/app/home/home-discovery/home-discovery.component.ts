@@ -48,6 +48,7 @@ import {
 } from "../../services/home-discovery-state.service";
 import { EmbeddedPlayerService } from "../../services/embedded-player.service";
 import { AmbientBackgroundService } from "../../services/ambient-background.service";
+import { FavoritesService } from "../../services/favorites.service";
 import { SplashScreenService } from "../../services/splash-screen.service";
 
 const BANNER_ROTATE_MS = 30000;
@@ -348,6 +349,7 @@ export class HomeDiscoveryComponent implements OnInit, AfterViewInit, OnDestroy 
     private cdr: ChangeDetectorRef,
     private ngZone: NgZone,
     private splashScreen: SplashScreenService,
+    private favoritesService: FavoritesService,
   ) {}
 
   ngOnInit(): void {
@@ -411,6 +413,90 @@ export class HomeDiscoveryComponent implements OnInit, AfterViewInit, OnDestroy 
     this.subs.push(
       this.memory.Refresh.subscribe(() => {
         this.loadDiscovery(true);
+      }),
+    );
+
+    // Subscribe to immediate cross-component favorites synchronization
+    this.subs.push(
+      this.favoritesService.favoriteChanged$.subscribe((event) => {
+        if (this.isDestroyed) return;
+        const channelId = event.channelId;
+        const isFav = event.isFavorite;
+
+        // 1. Update hero item instances
+        if (this.currentHero?.channel && Number(this.currentHero.channel.id) === Number(channelId)) {
+          this.currentHero.channel.favorite = isFav;
+        }
+        for (const hero of this.heroItems) {
+          if (hero.channel && Number(hero.channel.id) === Number(channelId)) {
+            hero.channel.favorite = isFav;
+          }
+        }
+        for (const hero of this.masterHeroItems) {
+          if (hero.channel && Number(hero.channel.id) === Number(channelId)) {
+            hero.channel.favorite = isFav;
+          }
+        }
+
+        // 2. Update all items in non-favorites discovery rows
+        for (const row of this.masterDiscoveryRows) {
+          if (row.id !== "row-favorites") {
+            for (const item of row.items) {
+              if (Number(item.id) === Number(channelId)) {
+                item.favorite = isFav;
+              }
+            }
+          }
+        }
+
+        // 3. Immediately synchronize the Home Favorites row ("row-favorites")
+        const favRowIndex = this.masterDiscoveryRows.findIndex((r) => r.id === "row-favorites");
+        if (isFav) {
+          const targetChannel =
+            event.channel ||
+            this.catalogPoolById.get(channelId) ||
+            this.findChannelInAllRows(channelId);
+
+          if (targetChannel) {
+            targetChannel.favorite = true;
+            if (favRowIndex !== -1) {
+              const favRow = this.masterDiscoveryRows[favRowIndex];
+              const existingIdx = favRow.items.findIndex((i) => Number(i.id) === Number(channelId));
+              if (existingIdx !== -1) {
+                favRow.items[existingIdx].favorite = true;
+              } else {
+                favRow.items.unshift(targetChannel);
+              }
+              favRow.badge = `${favRow.items.length}`;
+            } else {
+              const newFavRow: DiscoveryRow = {
+                id: "row-favorites",
+                title: "Your Favorites",
+                icon: "star",
+                badge: "1",
+                items: [targetChannel],
+              };
+              this.masterDiscoveryRows.push(newFavRow);
+              this.masterDiscoveryRows.sort(
+                (a, b) => this.getRowPriority(a.id) - this.getRowPriority(b.id)
+              );
+            }
+          }
+        } else {
+          if (favRowIndex !== -1) {
+            const favRow = this.masterDiscoveryRows[favRowIndex];
+            favRow.items = favRow.items.filter((i) => Number(i.id) !== Number(channelId));
+            favRow.badge = `${favRow.items.length}`;
+            if (favRow.items.length === 0) {
+              this.masterDiscoveryRows.splice(favRowIndex, 1);
+            }
+          }
+        }
+
+        this.applyContentPreferences();
+        this.hasAnyContent = this.heroItems.length > 0 || this.discoveryRows.length > 0;
+        this.cacheLocalRows();
+        this.cdr.markForCheck();
       }),
     );
 
@@ -912,7 +998,10 @@ export class HomeDiscoveryComponent implements OnInit, AfterViewInit, OnDestroy 
       if (moviesRes) this.indexChannelsInPool(moviesRes);
       if (seriesRes) this.indexChannelsInPool(seriesRes);
       if (historyRes) this.indexChannelsInPool(historyRes);
-      if (favoritesRes) this.indexChannelsInPool(favoritesRes);
+      if (favoritesRes) {
+        this.indexChannelsInPool(favoritesRes);
+        this.favoritesService.setInitialFavorites(favoritesRes);
+      }
 
       // Preload persistent TMDB cache for candidate channels so initial synchronous build can reuse cached artwork
       const initialCandidateIds = [
@@ -4843,18 +4932,19 @@ export class HomeDiscoveryComponent implements OnInit, AfterViewInit, OnDestroy 
     }
   }
 
-  async toggleFavorite(channel: Channel, event: Event) {
-    event.stopPropagation();
-    const wasFavorite = channel.favorite;
-    const call = wasFavorite ? "unfavorite_channel" : "favorite_channel";
-    try {
-      await invoke(call, { channelId: channel.id });
-      channel.favorite = !wasFavorite;
-      this.cdr.markForCheck();
-    } catch (err) {
-      console.error("Failed to update favorite status:", err);
-      this.toastr.error("Failed to update favorite status");
+  private findChannelInAllRows(channelId: number): Channel | undefined {
+    for (const row of this.masterDiscoveryRows) {
+      for (const item of row.items) {
+        if (Number(item.id) === Number(channelId)) return item;
+      }
     }
+    return undefined;
+  }
+
+  toggleFavorite(channel: Channel, event: Event): void {
+    event.stopPropagation();
+    if (!channel) return;
+    this.favoritesService.toggleFavorite(channel);
   }
 
   getRecommendationLabel(hero?: HeroItem): string | undefined {

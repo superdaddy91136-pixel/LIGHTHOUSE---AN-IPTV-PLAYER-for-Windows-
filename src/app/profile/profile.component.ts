@@ -12,6 +12,7 @@ import { SortType } from "../models/sortType";
 import { SourceType } from "../models/sourceType";
 import { ViewMode } from "../models/viewMode";
 import { EmbeddedPlayerService } from "../services/embedded-player.service";
+import { FavoritesService } from "../services/favorites.service";
 
 @Component({
   selector: "app-profile",
@@ -21,6 +22,7 @@ import { EmbeddedPlayerService } from "../services/embedded-player.service";
 export class ProfileComponent implements OnInit, OnDestroy {
   activeSection: "favorites" | "history" | "hidden" = "favorites";
   private playerSub?: Subscription;
+  private favSub?: Subscription;
 
   // Favorites state
   favoriteChannels: Channel[] = [];
@@ -87,6 +89,7 @@ export class ProfileComponent implements OnInit, OnDestroy {
     public memory: MemoryService,
     private toastr: ToastrService,
     public embeddedPlayer: EmbeddedPlayerService,
+    private favoritesService: FavoritesService,
     private cdr: ChangeDetectorRef,
   ) {}
 
@@ -124,6 +127,28 @@ export class ProfileComponent implements OnInit, OnDestroy {
     this.playerSub = this.embeddedPlayer.isPlayingEmbedded$.subscribe(() => {
       this.cdr.detectChanges();
     });
+
+    // Subscribe to real-time favorites synchronization across screens
+    this.favSub = this.favoritesService.favoriteChanged$.subscribe((event) => {
+      const channelId = event.channelId;
+      if (event.isFavorite) {
+        const targetChannel =
+          event.channel || this.favoriteChannels.find((c) => Number(c.id) === Number(channelId));
+        if (targetChannel) {
+          targetChannel.favorite = true;
+          if (!this.favoriteChannels.some((c) => Number(c.id) === Number(channelId))) {
+            this.favoriteChannels.unshift(targetChannel);
+          }
+        }
+      } else {
+        this.favoriteChannels = this.favoriteChannels.filter(
+          (c) => Number(c.id) !== Number(channelId)
+        );
+      }
+      this.filterFavorites();
+      this.cdr.markForCheck();
+    });
+
     this.loadFavorites();
     this.loadHistory();
     this.loadHidden();
@@ -131,6 +156,7 @@ export class ProfileComponent implements OnInit, OnDestroy {
 
   ngOnDestroy(): void {
     this.playerSub?.unsubscribe();
+    this.favSub?.unsubscribe();
     if (this.embeddedPlayer.isPlayingEmbedded) {
       this.embeddedPlayer.stopPlayer().catch(console.warn);
     }
@@ -139,7 +165,11 @@ export class ProfileComponent implements OnInit, OnDestroy {
   setSection(section: "favorites" | "history" | "hidden") {
     this.activeSection = section;
     if (section === "favorites") {
-      this.loadFavorites();
+      if (this.favoriteChannels.length === 0) {
+        this.loadFavorites();
+      } else {
+        this.filterFavorites();
+      }
     } else if (section === "history") {
       this.loadHistory();
     } else {
@@ -175,47 +205,24 @@ export class ProfileComponent implements OnInit, OnDestroy {
     }
   }
 
-  async loadFavorites() {
+  async loadFavorites(forceRefresh: boolean = false) {
+    const cached = this.favoritesService.getCachedFavorites();
+    if (cached && !forceRefresh) {
+      this.favoriteChannels = cached;
+      this.filterFavorites();
+      return;
+    }
+
     this.loadingFavorites = true;
     try {
-      const sources = (await invoke("get_sources")) as any[];
-      this.populateSourceMaps(sources);
-      const enabledSources = sources.filter((s) => s.enabled);
-      if (enabledSources.length === 0) {
-        this.favoriteChannels = [];
-        this.filteredFavorites = [];
-        this.loadingFavorites = false;
-        return;
-      }
-      const sourceIds = enabledSources.map((s) => s.id);
-      const filters: Filters = {
-        source_ids: sourceIds,
-        view_type: ViewMode.Favorites,
-        media_types: [MediaType.livestream, MediaType.movie, MediaType.serie],
-        page: 1,
-        use_keywords: false,
-        sort: SortType.alphabeticalAscending,
-      };
-      let allFavs: Channel[] = [];
-      let page = 1;
-      let hasMore = true;
-      while (hasMore && page <= 25) {
-        filters.page = page;
-        const res = (await invoke("search", { filters })) as Channel[];
-        if (res && res.length > 0) {
-          allFavs = allFavs.concat(res);
-          hasMore = res.length === 36;
-          page++;
-        } else {
-          hasMore = false;
-        }
-      }
-      this.favoriteChannels = allFavs;
+      this.favoriteChannels = await this.favoritesService.loadFavorites(forceRefresh);
       this.filterFavorites();
     } catch (e) {
       console.error("Failed to load favorites", e);
+    } finally {
+      this.loadingFavorites = false;
+      this.cdr.markForCheck();
     }
-    this.loadingFavorites = false;
   }
 
   setHistoryMediaType(type: number) {

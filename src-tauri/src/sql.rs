@@ -1309,7 +1309,9 @@ pub fn favorite_channel(channel_id: i64, favorite: bool) -> Result<()> {
         UPDATE channels
         SET favorite = ?1,
             favorite_added = CASE
-                WHEN ?1 = 1 THEN CAST((julianday('now') - 2440587.5) * 86400000 AS INTEGER)
+                WHEN ?1 = 1 AND (favorite = 0 OR favorite IS NULL OR favorite_added IS NULL)
+                    THEN CAST((julianday('now') - 2440587.5) * 86400000 AS INTEGER)
+                WHEN ?1 = 1 THEN favorite_added
                 ELSE NULL
             END
         WHERE id = ?2

@@ -35,6 +35,7 @@ import { TmdbConfigService } from '../services/tmdb-config.service';
 import { TmdbEnrichmentService } from '../services/tmdb-enrichment.service';
 import { TvDetailService } from '../services/tv-detail.service';
 import { VersionMatchingService } from '../services/version-matching.service';
+import { FavoritesService } from '../services/favorites.service';
 import { EpisodeSwitcherComponent } from '../episode-switcher/episode-switcher.component';
 import { EmbeddedPlayerService } from '../services/embedded-player.service';
 import { AmbientBackgroundService } from '../services/ambient-background.service';
@@ -179,6 +180,7 @@ export class TvDetailComponent implements OnInit, AfterViewInit, OnDestroy {
     private cdr: ChangeDetectorRef,
     public embeddedPlayer: EmbeddedPlayerService,
     private ambientBackground: AmbientBackgroundService,
+    private favoritesService: FavoritesService,
   ) {}
 
 
@@ -209,6 +211,24 @@ export class TvDetailComponent implements OnInit, AfterViewInit, OnDestroy {
     }
 
     this.initShow(selected);
+
+    // Synchronize favorite changes from anywhere in the app
+    this.subs.push(
+      this.favoritesService.favoriteChanged$.subscribe((event) => {
+        if (!this.show) return;
+        const matchesShow = Number(this.show.id) === Number(event.channelId);
+        const matchesVersion = this.versions?.some((v) => Number(v.channel.id) === Number(event.channelId));
+        if (matchesShow || matchesVersion) {
+          this.show.favorite = event.isFavorite;
+          if (this.versions?.length) {
+            this.versions.forEach((v) => {
+              v.channel.favorite = event.isFavorite;
+            });
+          }
+          this.cdr.markForCheck();
+        }
+      }),
+    );
 
     // Listen for reactive TMDB background enrichment updates
     this.subs.push(
@@ -1430,20 +1450,18 @@ export class TvDetailComponent implements OnInit, AfterViewInit, OnDestroy {
   }
 
 
-  async toggleFavorite(event?: Event): Promise<void> {
+  toggleFavorite(event?: Event): void {
     if (event) event.stopPropagation();
     if (!this.show) return;
 
-    const wasFavorite = this.show.favorite;
-    const call = wasFavorite ? 'unfavorite_channel' : 'favorite_channel';
-
-    try {
-      await invoke(call, { channelId: this.show.id });
-      this.show.favorite = !wasFavorite;
-    } catch (err) {
-      console.error('Failed to update favorite status:', err);
-      this.toastr.error('Failed to update favorite status');
+    this.favoritesService.toggleFavorite(this.show);
+    if (this.versions?.length) {
+      const fav = !!this.show.favorite;
+      this.versions.forEach((v) => {
+        v.channel.favorite = fav;
+      });
     }
+    this.cdr.markForCheck();
   }
 
   // -------------------------------------------------------------

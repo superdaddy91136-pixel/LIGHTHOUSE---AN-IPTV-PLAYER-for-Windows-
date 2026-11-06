@@ -42,6 +42,7 @@ import { MovieDetailService } from "../services/movie-detail.service";
 import { TvDetailService } from "../services/tv-detail.service";
 import { PinService } from "../services/pin.service";
 import { EmbeddedPlayerService } from "../services/embedded-player.service";
+import { FavoritesService } from "../services/favorites.service";
 import { NavTab } from "../models/navTab";
 import { cleanMediaTitle } from "../utils/media-presentation";
 
@@ -150,6 +151,7 @@ export class ChannelTileComponent implements OnInit, OnDestroy, AfterViewInit, O
     private tvDetailService: TvDetailService,
     public pinService: PinService,
     public embeddedPlayer: EmbeddedPlayerService,
+    private favoritesService: FavoritesService,
     private cdr: ChangeDetectorRef,
   ) { }
   @Input() channel?: Channel;
@@ -188,6 +190,19 @@ export class ChannelTileComponent implements OnInit, OnDestroy, AfterViewInit, O
 
   ngOnInit(): void {
     this.updateChannelState();
+    this.alreadyExistsInFav = !!this.channel?.favorite;
+    this.subscriptions.push(
+      this.favoritesService.favoriteChanged$.subscribe((event) => {
+        if (this.channel && Number(this.channel.id) === Number(event.channelId)) {
+          this.channel.favorite = event.isFavorite;
+          this.alreadyExistsInFav = event.isFavorite;
+          if (this.viewMode === ViewMode.Favorites && !event.isFavorite) {
+            this.fade = true;
+          }
+          this.cdr.markForCheck();
+        }
+      }),
+    );
     if ((this.isLivestreamChannel || this.isLiveTvMode) && !this.isGroupTile && this.showEPG()) {
       this.loadNowPlayingEPG();
     }
@@ -445,23 +460,14 @@ export class ChannelTileComponent implements OnInit, OnDestroy, AfterViewInit, O
     this.cdr.markForCheck();
   }
 
-  async favorite() {
-    let call = "favorite_channel";
-    const wasFavorite = this.channel!.favorite;
-    if (wasFavorite) {
-      call = "unfavorite_channel";
+  favorite() {
+    if (!this.channel) return;
+    this.favoritesService.toggleFavorite(this.channel);
+    this.alreadyExistsInFav = !!this.channel.favorite;
+    if (this.viewMode === ViewMode.Favorites) {
+      this.fade = !this.channel.favorite;
     }
-    try {
-      await invoke(call, { channelId: this.channel!.id });
-      this.channel!.favorite = !wasFavorite;
-      if (this.viewMode == ViewMode.Favorites) {
-        this.fade = !!wasFavorite;
-      }
-      this.memory.clearCatalogPageCache();
-      this.cdr.markForCheck();
-    } catch (e) {
-      this.error.handleError(e, `Failed to add/remove "${this.channel?.name}" to/from favorites`);
-    }
+    this.cdr.markForCheck();
   }
 
   async removeFromHistory() {
