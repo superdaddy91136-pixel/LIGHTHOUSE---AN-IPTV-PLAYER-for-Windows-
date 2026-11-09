@@ -8,7 +8,7 @@
   <div id="home-video-canvas" class="movie-video-canvas embedded-video-canvas"></div>
 </div>
 
-<div [class.mb-5]="!isLiveTvTab" [class.live-tv-page-root]="isLiveTvTab">
+<div [class.mb-5]="!isLiveTvTab" [class.live-tv-page-root]="isLiveTvTab" [class.d-none]="embeddedPlayer.isPlayingEmbedded">
   <div [class.container-lg]="!isHomeDiscoveryMode && !isLiveTvTab" 
        [class.container-fluid]="isLiveTvTab" 
        [class.live-tv-fluid-wrap]="isLiveTvTab" 
@@ -698,16 +698,16 @@
         </div>
 
         <!-- Scrollable Category Folders List -->
-        <div class="live-sidebar-categories-scroll">
+        <div class="live-sidebar-categories-scroll" #liveSidebarScroll>
           <div *ngIf="categoryLoading && availableCategories.length === 0" class="sidebar-loading-wrap">
             <div class="spinner-border spinner-border-sm text-secondary" role="status"></div>
             <span class="loading-label">Loading categories...</span>
           </div>
 
-          <div class="sidebar-category-group" *ngIf="displayedLiveCategories.length > 0">
+          <div class="sidebar-category-group" *ngIf="renderedLiveCategories.length > 0">
             <div 
               class="sidebar-category-item" 
-              *ngFor="let cat of displayedLiveCategories; trackBy: trackCategoryById" 
+              *ngFor="let cat of renderedLiveCategories; trackBy: trackCategoryById" 
               [class.pinned]="cat.isPinned"
               [class.active]="liveSidebarSelection?.type === 'category' && liveSidebarSelection?.id === cat.id"
               (click)="selectLiveSidebarCategory(cat)">
@@ -715,6 +715,12 @@
                 <path d="M10,4H4C2.89,4 2,4.89 2,6V18A2,2 0 0,0 4,20H20A2,2 0 0,0 22,18V8C22,6.89 21.1,6 20,6H12L10,4Z"/>
               </svg>
               <span class="category-item-name" [title]="cat.name">{{ cat.cleanName || cat.name }}</span>
+              <span 
+                class="category-source-badge" 
+                *ngIf="cat.sourceName" 
+                [title]="'Source: ' + cat.sourceName">
+                {{ cat.sourceName }}
+              </span>
               <span class="category-item-count" *ngIf="cat.channelCount != null && cat.channelCount > 0">{{ cat.channelCount }}</span>
               <button 
                 type="button" 

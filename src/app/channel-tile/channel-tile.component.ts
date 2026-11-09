@@ -58,6 +58,16 @@ export class EpgQueueManager {
   private static activeCount = 0;
   private static readonly MAX_CONCURRENT = 2;
   private static readonly CACHE_TTL_MS = 10 * 60 * 1000; // 10 minutes
+  private static isPaused = false;
+
+  static setPaused(paused: boolean): void {
+    this.isPaused = paused;
+    if (paused) {
+      this.clearQueue();
+    } else {
+      this.processNext();
+    }
+  }
 
   static getCached(channelId: number): EPG | null | undefined {
     const entry = this.cache.get(channelId);
@@ -74,6 +84,9 @@ export class EpgQueueManager {
     const cached = this.getCached(channel.id);
     if (cached !== undefined) {
       return Promise.resolve(cached);
+    }
+    if (this.isPaused) {
+      return Promise.resolve(null);
     }
     if (this.inFlight.has(channel.id)) {
       return this.inFlight.get(channel.id)!;
@@ -94,7 +107,7 @@ export class EpgQueueManager {
   }
 
   private static processNext(): void {
-    if (this.activeCount >= this.MAX_CONCURRENT || this.queue.length === 0) {
+    if (this.isPaused || this.activeCount >= this.MAX_CONCURRENT || this.queue.length === 0) {
       return;
     }
 

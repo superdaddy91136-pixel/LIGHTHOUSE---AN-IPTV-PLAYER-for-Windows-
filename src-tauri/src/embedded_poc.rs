@@ -17,6 +17,8 @@ pub struct PocStreamInfo {
     pub origin: Option<String>,
     #[serde(default)]
     pub ignore_ssl: Option<bool>,
+    #[serde(default)]
+    pub media_type: Option<u8>,
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug)]
@@ -1330,6 +1332,7 @@ pub fn build_stream_info(
     name: String,
     url: String,
     source_id: Option<i64>,
+    media_type: Option<u8>,
 ) -> Result<PocStreamInfo, String> {
     let headers = crate::sql::get_channel_headers_by_id(channel_id).ok().flatten();
     let source = source_id.and_then(|id| crate::sql::get_source_from_id(id).ok());
@@ -1348,25 +1351,26 @@ pub fn build_stream_info(
         referrer,
         origin,
         ignore_ssl,
+        media_type,
     })
 }
 
 pub fn build_stream_info_from_channel(channel: &crate::types::Channel) -> Result<PocStreamInfo, String> {
     let channel_id = channel.id.ok_or_else(|| "Channel has no ID".to_string())?;
-    let (url, name, source_id) = if let Some(ref u) = channel.url {
-        (u.clone(), channel.name.clone(), channel.source_id)
+    let (url, name, source_id, media_type) = if let Some(ref u) = channel.url {
+        (u.clone(), channel.name.clone(), channel.source_id, Some(channel.media_type))
     } else {
         let conn = crate::sql::get_conn().map_err(|e| format!("{:?}", e))?;
         let row = conn
             .query_row(
-                "SELECT url, name, source_id FROM channels WHERE id = ?1",
+                "SELECT url, name, source_id, media_type FROM channels WHERE id = ?1",
                 [channel_id],
-                |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?, r.get::<_, Option<i64>>(2)?)),
+                |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?, r.get::<_, Option<i64>>(2)?, r.get::<_, Option<i64>>(3)?.map(|v| v as u8))),
             )
             .map_err(|e| format!("Channel not found: {:?}", e))?;
-        (row.0, row.1, row.2)
+        (row.0, row.1, row.2, row.3)
     };
-    build_stream_info(channel_id, name, url, source_id)
+    build_stream_info(channel_id, name, url, source_id, media_type)
 }
 
 pub fn build_embedded_mpv_args(
@@ -1377,9 +1381,26 @@ pub fn build_embedded_mpv_args(
     let mut args = Vec::new();
     args.push(format!("--wid={}", child_hwnd));
     args.push(format!("--input-ipc-server={}", pipe_name));
-    args.push("--vo=gpu-next".to_string());
+
+    let settings = crate::settings::get_settings().ok();
+    let enable_gpu = settings.as_ref().and_then(|s| s.enable_gpu).unwrap_or(false);
+    if enable_gpu {
+        args.push("--vo=gpu-next".to_string());
+    } else {
+        args.push("--vo=gpu".to_string());
+    }
     args.push("--gpu-context=d3d11".to_string());
-    args.push("--hwdec=auto".to_string());
+
+    let enable_hwdec = settings.as_ref().and_then(|s| s.enable_hwdec).unwrap_or(true);
+    if enable_hwdec {
+        args.push("--hwdec=auto-safe".to_string());
+    } else {
+        args.push("--hwdec=no".to_string());
+    }
+    args.push("--vd-lavc-dr=yes".to_string());
+    args.push("--vd-lavc-threads=4".to_string());
+    args.push("--framedrop=vo".to_string());
+
     args.push("--msg-level=all=error".to_string());
     args.push("--input-default-bindings=no".to_string());
     args.push("--input-vo-keyboard=no".to_string());
@@ -1387,7 +1408,21 @@ pub fn build_embedded_mpv_args(
     args.push("--cursor-autohide=no".to_string());
     args.push("--no-terminal".to_string());
     args.push("--osc=no".to_string());
-    args.push("--save-position-on-quit".to_string());
+
+    let is_live = stream
+        .media_type
+        .map(|m| m == crate::media_type::LIVESTREAM)
+        .unwrap_or(false);
+
+    if is_live {
+        args.push("--prefetch-playlist=yes".to_string());
+        args.push("--demuxer-lavf-analyzeduration=0.5".to_string());
+        args.push("--demuxer-lavf-probesize=32768".to_string());
+        args.push("--demuxer-readahead-secs=5".to_string());
+        args.push("--force-seekable=no".to_string());
+    } else {
+        args.push("--save-position-on-quit".to_string());
+    }
 
     if let Some(ref ua) = stream.user_agent {
         args.push(format!("--user-agent={}", ua));
@@ -1406,7 +1441,7 @@ pub fn build_embedded_mpv_args(
         args.push("--ytdl-raw-options=no-check-certificates=True".to_string());
     }
 
-    if let Ok(settings) = crate::settings::get_settings() {
+    if let Some(ref settings) = settings {
         if settings.use_stream_caching == Some(false) {
             args.push("--cache=no".to_string());
         }
@@ -1546,14 +1581,14 @@ pub async fn start_embedded_player_internal(
         state.active_pid.store(child_pid, Ordering::SeqCst);
         state.active_hwnd.store(child_hwnd, Ordering::SeqCst);
 
-        // 5. Connect to MPV Named Pipe JSON-IPC
+        // 5. Connect to MPV Named Pipe JSON-IPC (poll with low initial latency)
         let mut client_opt = None;
-        for _ in 0..50 {
-            tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+        for _ in 0..120 {
             if let Ok(client) = ClientOptions::new().open(&pipe_name) {
                 client_opt = Some(client);
                 break;
             }
+            tokio::time::sleep(std::time::Duration::from_millis(25)).await;
         }
         let client = match client_opt {
             Some(c) => c,
@@ -1796,7 +1831,7 @@ pub async fn switch_embedded_channel(
     if let Some(id) = channel.id {
         let _ = crate::sql::add_last_watched(id);
     }
-    let inner = state.inner.lock().await;
+    let mut inner = state.inner.lock().await;
     if let Some(ref tx) = inner.ipc_tx {
         let mut headers_vec = Vec::new();
         if let Some(ref orig) = stream.origin {
@@ -1824,6 +1859,8 @@ pub async fn switch_embedded_channel(
                 "command": ["loadfile", stream.url, "replace"]
             }).to_string())
             .await;
+
+        inner.stream_info = Some(stream.clone());
 
         let _ = app.emit(
             "embedded-player-started",

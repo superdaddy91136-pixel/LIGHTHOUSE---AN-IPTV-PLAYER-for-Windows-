@@ -31,7 +31,11 @@ body.fullscreen-player-active .app-main {
 body.theater-mode-active .movie-detail-container > *:not(.movie-embedded-host-wrapper):not(.embedded-player-host-wrapper),
 body.fullscreen-player-active .movie-detail-container > *:not(.movie-embedded-host-wrapper):not(.embedded-player-host-wrapper),
 body.theater-mode-active .profile-page-container > *:not(.movie-embedded-host-wrapper):not(.embedded-player-host-wrapper),
-body.fullscreen-player-active .profile-page-container > *:not(.movie-embedded-host-wrapper):not(.embedded-player-host-wrapper) {
+body.fullscreen-player-active .profile-page-container > *:not(.movie-embedded-host-wrapper):not(.embedded-player-host-wrapper),
+body.theater-mode-active .live-tv-page-root,
+body.fullscreen-player-active .live-tv-page-root,
+body.theater-mode-active .home-discovery-layout,
+body.fullscreen-player-active .home-discovery-layout {
   display: none !important;
 }
 
