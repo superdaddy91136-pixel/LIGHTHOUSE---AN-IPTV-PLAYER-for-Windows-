@@ -2,7 +2,7 @@ use serde::{Deserialize, Serialize};
 use std::sync::atomic::{AtomicU32, AtomicUsize, Ordering};
 use std::sync::Arc;
 use tauri::{AppHandle, Emitter, Listener, Manager, State, Window, WebviewWindow};
-use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
 use tokio::process::Child;
 use tokio::sync::{mpsc, Mutex};
 
@@ -1398,8 +1398,13 @@ pub fn build_embedded_mpv_args(
     } else {
         args.push("--hwdec=no".to_string());
     }
+    // Low-end / integrated GPU optimization profile:
+    // Enables fast bilinear scalers, disables multi-pass shader scaling,
+    // avoids 16-bit half-float FBO overhead, and runs in dumb mode
+    args.push("--profile=fast".to_string());
     args.push("--vd-lavc-dr=yes".to_string());
-    args.push("--vd-lavc-threads=4".to_string());
+    // Auto-detect CPU logical cores (prevents thread thrashing on 2-core CPUs)
+    args.push("--vd-lavc-threads=0".to_string());
     args.push("--framedrop=vo".to_string());
 
     args.push("--msg-level=all=error".to_string());
@@ -1565,16 +1570,19 @@ pub async fn start_embedded_player_internal(
 
         // 3. Locate bundled mpv.exe
         let mpv_path = crate::utils::get_bin("mpv");
-        let pipe_name = format!(r"\\.\pipe\lighthouse-mpv-poc-{}", std::process::id());
+        static POC_PIPE_COUNTER: AtomicUsize = AtomicUsize::new(1);
+        let pipe_seq = POC_PIPE_COUNTER.fetch_add(1, Ordering::SeqCst);
+        let pipe_name = format!(r"\\.\pipe\lighthouse-mpv-poc-{}-{}", std::process::id(), pipe_seq);
 
         // 4. Build MPV arguments with identical stream/header options to external MPV
         let args = build_embedded_mpv_args(child_hwnd, &pipe_name, &stream);
 
         let mut cmd = tokio::process::Command::new(&mpv_path);
         cmd.args(&args);
+        cmd.stderr(std::process::Stdio::piped());
         cmd.kill_on_drop(true);
 
-        let child = cmd
+        let mut child = cmd
             .spawn()
             .map_err(|e| format!("Failed to spawn mpv.exe at '{}': {:?}", mpv_path, e))?;
 
@@ -1589,11 +1597,36 @@ pub async fn start_embedded_player_internal(
                 client_opt = Some(client);
                 break;
             }
+
+            // Immediately catch premature process exit and extract error from stderr
+            if let Ok(Some(status)) = child.try_wait() {
+                let mut err_msg = String::new();
+                if let Some(mut stderr) = child.stderr.take() {
+                    let mut buf = Vec::new();
+                    let _ = tokio::io::AsyncReadExt::read_to_end(&mut stderr, &mut buf).await;
+                    err_msg = String::from_utf8_lossy(&buf).trim().to_string();
+                }
+                stop_embedded_poc_internal(&state).await;
+                return Err(format!(
+                    "MPV process exited prematurely ({:?}) before creating IPC named pipe: {}",
+                    status,
+                    if err_msg.is_empty() { "No stderr output" } else { &err_msg }
+                ));
+            }
+
             tokio::time::sleep(std::time::Duration::from_millis(25)).await;
         }
         let client = match client_opt {
             Some(c) => c,
             None => {
+                let mut err_msg = String::new();
+                if let Ok(Some(status)) = child.try_wait() {
+                    if let Some(mut stderr) = child.stderr.take() {
+                        let mut buf = Vec::new();
+                        let _ = tokio::io::AsyncReadExt::read_to_end(&mut stderr, &mut buf).await;
+                        err_msg = format!(" (process exited with {:?}: {})", status, String::from_utf8_lossy(&buf).trim());
+                    }
+                }
                 {
                     let mut inner = state.inner.lock().await;
                     inner.child_process = Some(child);
@@ -1602,9 +1635,19 @@ pub async fn start_embedded_player_internal(
                     inner.app_handle = Some(window.app_handle().clone());
                 }
                 stop_embedded_poc_internal(&state).await;
-                return Err("Timed out waiting for MPV Named Pipe server to initialize".to_string());
+                return Err(format!("Timed out waiting for MPV Named Pipe server to initialize (PID {}){}", child_pid, err_msg));
             }
         };
+
+        // Drain stderr in background so OS pipe buffer never fills up during long playback
+        if let Some(stderr) = child.stderr.take() {
+            tokio::spawn(async move {
+                let mut lines = BufReader::new(stderr).lines();
+                while let Ok(Some(line)) = lines.next_line().await {
+                    crate::log::log(format!("[mpv stderr] {}", line));
+                }
+            });
+        }
 
         let (reader, mut writer) = tokio::io::split(client);
         let (tx, mut rx) = mpsc::channel::<String>(32);
@@ -1630,8 +1673,18 @@ pub async fn start_embedded_player_internal(
             let mut last_dw: Option<f64> = None;
             let mut last_dh: Option<f64> = None;
             let mut last_emitted_aspect: f64 = 0.0;
+            let mut last_time_pos_emit = std::time::Instant::now();
 
             while let Ok(Some(line)) = lines.next_line().await {
+                // Throttle high-frequency time-pos property changes (emitted by mpv on every frame)
+                // to ~4Hz (every 250ms). This eliminates IPC flooding and runaway WebView change detection.
+                if line.contains(r#""name":"time-pos""#) {
+                    if last_time_pos_emit.elapsed() < std::time::Duration::from_millis(250) {
+                        continue;
+                    }
+                    last_time_pos_emit = std::time::Instant::now();
+                }
+
                 let _ = app_handle.emit("embedded-poc-event", &line);
 
                 if let Ok(val) = serde_json::from_str::<serde_json::Value>(&line) {
@@ -1759,12 +1812,6 @@ pub async fn start_embedded_player_internal(
             .await;
         let _ = tx
             .send(r#"{"command": ["observe_property", 13, "dheight"]}"#.to_string())
-            .await;
-        let _ = tx
-            .send(r#"{"command": ["observe_property", 15, "demuxer-cache-duration"]}"#.to_string())
-            .await;
-        let _ = tx
-            .send(r#"{"command": ["observe_property", 16, "demuxer-cache-state"]}"#.to_string())
             .await;
 
         // 6. Ensure the embedded child window is presented on top and updated now that MPV has connected

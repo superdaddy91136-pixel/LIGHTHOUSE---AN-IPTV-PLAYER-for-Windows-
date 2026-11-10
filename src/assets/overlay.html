@@ -3573,7 +3573,7 @@
         if (currentTime <= 5) return;
         const effDuration = duration > 0 ? duration : (cachedDuration > 0 ? cachedDuration : 0);
         const now = Date.now();
-        if (now - lastProgressSaveTime < 3000) return;
+        if (now - lastProgressSaveTime < 8000) return;
         lastProgressSaveTime = now;
         const threshold = currentContentMode === 'episode' ? 0.90 : 0.95;
         const isCompleted = effDuration > 0 && (
@@ -3608,21 +3608,31 @@
       }
 
       function updateTimeUI() {
-        if (!isDragging) {
-          if (duration > 0) {
-            const pct = Math.min(100, Math.max(0, (currentTime / duration) * 100));
-            progressFill.style.width = `${pct}%`;
-            progressThumb.style.left = `${pct}%`;
-          } else if (currentTime <= 0) {
-            progressFill.style.width = '0%';
-            progressThumb.style.left = '0%';
+        const isControlsVisible = overlayContainer && overlayContainer.classList.contains('active');
+
+        // Only manipulate DOM styles and text while controls are visible to avoid layout thrashing
+        if (isControlsVisible) {
+          if (!isDragging) {
+            if (duration > 0) {
+              const pct = Math.min(100, Math.max(0, (currentTime / duration) * 100));
+              progressFill.style.width = `${pct}%`;
+              progressThumb.style.left = `${pct}%`;
+            } else if (currentTime <= 0) {
+              progressFill.style.width = '0%';
+              progressThumb.style.left = '0%';
+            }
           }
+          if (remainingTimeDisplay) {
+            const rem = Math.max(0, duration - currentTime);
+            const remStr = (duration > 0 || currentTime > 0) ? formatRemainingTime(rem) : '00:00';
+            if (remainingTimeDisplay.textContent !== remStr) {
+              remainingTimeDisplay.textContent = remStr;
+            }
+          }
+          updateBufferedUI();
         }
-        if (remainingTimeDisplay) {
-          const rem = Math.max(0, duration - currentTime);
-          remainingTimeDisplay.textContent = (duration > 0 || currentTime > 0) ? formatRemainingTime(rem) : '00:00';
-        }
-        updateBufferedUI();
+
+        // Logical tracking (progress persistence, up-next, skip intro) runs continuously
         maybeSaveProgress();
         checkUpNextTrigger();
         checkSegmentBoundaries();
@@ -3811,6 +3821,7 @@
       // AUTO-HIDE SYSTEM
       function showControls() {
         overlayContainer.classList.add('active');
+        updateTimeUI();
         resetHideTimer();
       }
 
@@ -6564,14 +6575,12 @@
           nerdBuffer.textContent = '—';
         }
 
-        // Dropped Frames
-        if (nerdStats.droppedFrames != null) {
-          nerdDropped.textContent = `${nerdStats.droppedFrames} frames`;
-          if (nerdStats.droppedFrames > 0) {
-            nerdDropped.style.color = '#f87171';
-          } else {
-            nerdDropped.style.color = '#e5e5e5';
-          }
+        // Dropped Frames (separate presentation / video-output drops from decoder drops)
+        const voDrops = nerdStats.droppedFrames != null ? nerdStats.droppedFrames : 0;
+        const decDrops = nerdStats.decoderDroppedFrames != null ? nerdStats.decoderDroppedFrames : 0;
+        if (voDrops > 0 || decDrops > 0) {
+          nerdDropped.textContent = decDrops > 0 ? `${voDrops} vo / ${decDrops} dec` : `${voDrops} frames`;
+          nerdDropped.style.color = '#f87171';
         } else {
           nerdDropped.textContent = '0 frames';
           nerdDropped.style.color = '#e5e5e5';
@@ -6609,6 +6618,7 @@
         sendMpv(['get_property', 'hwdec-current'], 311);
         sendMpv(['get_property', 'frame-drop-count'], 312);
         sendMpv(['get_property', 'avsync'], 313);
+        sendMpv(['get_property', 'decoder-frame-drop-count'], 314);
       }
 
       function handleNerdStatsResponse(reqId, data) {
@@ -6655,6 +6665,9 @@
             break;
           case 313:
             nerdStats.avsync = typeof data === 'number' ? data : null;
+            break;
+          case 314:
+            nerdStats.decoderDroppedFrames = typeof data === 'number' ? data : null;
             break;
         }
         renderNerdStats();
@@ -6835,7 +6848,7 @@
             renderTracks();
             return;
           }
-          if (parsed.request_id >= 301 && parsed.request_id <= 313) {
+          if (parsed.request_id >= 301 && parsed.request_id <= 314) {
             if (parsed.request_id === 310 || (parsed.event === 'property-change' && parsed.name === 'chapter-list')) {
               if (Array.isArray(parsed.data)) {
                 detectedCreditStartTime = null;

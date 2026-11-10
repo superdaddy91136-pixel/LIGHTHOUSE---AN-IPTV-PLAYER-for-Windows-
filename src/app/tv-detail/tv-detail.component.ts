@@ -269,8 +269,11 @@ export class TvDetailComponent implements OnInit, AfterViewInit, OnDestroy {
       }),
       this.embeddedPlayer.playbackProgress$.subscribe((state) => {
         if (state.channelId) {
-          this.livePlaybackProgress[state.channelId] = state.percent;
-          this.cdr.markForCheck();
+          const prev = this.livePlaybackProgress[state.channelId];
+          if (prev === undefined || Math.abs(prev - state.percent) >= 0.5) {
+            this.livePlaybackProgress[state.channelId] = state.percent;
+            this.cdr.markForCheck();
+          }
         }
       }),
       this.embeddedPlayer.lastWatchedUpdated$.subscribe((chId) => {

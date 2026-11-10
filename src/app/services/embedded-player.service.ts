@@ -382,38 +382,56 @@ export class EmbeddedPlayerService implements OnDestroy {
       }
     });
 
-    // Listen for raw MPV IPC events to track real-time playback progress (updates during play and seek)
-    this.unlistenPocEvent = await listen('embedded-poc-event', (event: any) => {
-      if (typeof event?.payload === 'string') {
-        try {
-          const parsed = JSON.parse(event.payload);
-          if (parsed.event === 'property-change') {
-            if (parsed.name === 'time-pos' && typeof parsed.data === 'number') {
-              const curTime = parsed.data;
-              const curState = this.playbackProgress$.value;
-              const dur = curState.duration;
-              const pct = dur > 0 ? Math.min(100, Math.max(0, (curTime / dur) * 100)) : 0;
-              this.playbackProgress$.next({
-                channelId: this.currentChannel?.id,
-                time: curTime,
-                duration: dur,
-                percent: pct,
-              });
-            } else if (parsed.name === 'duration' && typeof parsed.data === 'number' && parsed.data > 0) {
-              const dur = parsed.data;
-              const curState = this.playbackProgress$.value;
-              const curTime = curState.time;
-              const pct = dur > 0 ? Math.min(100, Math.max(0, (curTime / dur) * 100)) : 0;
-              this.playbackProgress$.next({
-                channelId: this.currentChannel?.id,
-                time: curTime,
-                duration: dur,
-                percent: pct,
-              });
+    // Listen for raw MPV IPC events to track playback progress outside Angular zone
+    // to prevent high-frequency IPC events from triggering application-wide change detection.
+    let lastProgressEmitTime = 0;
+    let lastReportedPercent = -1;
+
+    this.unlistenPocEvent = await this.ngZone.runOutsideAngular(async () => {
+      return await listen('embedded-poc-event', (event: any) => {
+        if (typeof event?.payload === 'string') {
+          try {
+            const parsed = JSON.parse(event.payload);
+            if (parsed.event === 'property-change') {
+              if (parsed.name === 'time-pos' && typeof parsed.data === 'number') {
+                const now = Date.now();
+                const curTime = parsed.data;
+                const curState = this.playbackProgress$.value;
+                const dur = curState.duration;
+                const pct = dur > 0 ? Math.min(100, Math.max(0, (curTime / dur) * 100)) : 0;
+                const intPct = Math.floor(pct);
+
+                // Throttle progress emissions: notify subscribers at most once per second or when whole % advances
+                if (now - lastProgressEmitTime >= 1000 || intPct !== lastReportedPercent) {
+                  lastProgressEmitTime = now;
+                  lastReportedPercent = intPct;
+                  this.ngZone.run(() => {
+                    this.playbackProgress$.next({
+                      channelId: this.currentChannel?.id,
+                      time: curTime,
+                      duration: dur,
+                      percent: pct,
+                    });
+                  });
+                }
+              } else if (parsed.name === 'duration' && typeof parsed.data === 'number' && parsed.data > 0) {
+                const dur = parsed.data;
+                const curState = this.playbackProgress$.value;
+                const curTime = curState.time;
+                const pct = dur > 0 ? Math.min(100, Math.max(0, (curTime / dur) * 100)) : 0;
+                this.ngZone.run(() => {
+                  this.playbackProgress$.next({
+                    channelId: this.currentChannel?.id,
+                    time: curTime,
+                    duration: dur,
+                    percent: pct,
+                  });
+                });
+              }
             }
-          }
-        } catch {}
-      }
+          } catch {}
+        }
+      });
     });
   }
 
@@ -735,6 +753,7 @@ export class EmbeddedPlayerService implements OnDestroy {
     document.body.classList.remove('fullscreen-player-active');
 
     this.isPlayingEmbeddedSubject.next(false);
+    this.tmdbEnrichment.setPlaybackActive(false);
     this.restoreScrollPosition();
   }
 
@@ -777,6 +796,7 @@ export class EmbeddedPlayerService implements OnDestroy {
     this.onSwitchChannelCallback = undefined;
 
     this.isPlayingEmbeddedSubject.next(false);
+    this.tmdbEnrichment.setPlaybackActive(false);
     this.restoreScrollPosition();
   }
 
@@ -802,6 +822,7 @@ export class EmbeddedPlayerService implements OnDestroy {
       this.saveScrollPosition();
       this.hostTarget = hostElementOrId;
       this.isPlayingEmbeddedSubject.next(true);
+      this.tmdbEnrichment.setPlaybackActive(true);
       document.body.classList.add('theater-mode-active');
       await this.setupTauriListeners();
     }

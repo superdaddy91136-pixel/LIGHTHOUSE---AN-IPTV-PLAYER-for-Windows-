@@ -30,8 +30,22 @@ export class TmdbEnrichmentService {
   private queue: QueueItem[] = [];
   private inFlightKeys = new Set<string>();
   private activeWorkers = 0;
+  private isPlaybackActive = false;
   private readonly MAX_CONCURRENT = 2;
   private readonly REQUEST_DELAY_MS = 200;
+
+  /**
+   * Playback-aware workload coordinator: pauses nonessential background
+   * catalogue enrichment during active video playback to eliminate CPU and network contention,
+   * resuming automatically when playback ends.
+   */
+  public setPlaybackActive(active: boolean): void {
+    if (this.isPlaybackActive === active) return;
+    this.isPlaybackActive = active;
+    if (!active) {
+      this.processQueue();
+    }
+  }
 
   constructor(
     private configService: TmdbConfigService,
@@ -149,6 +163,12 @@ export class TmdbEnrichmentService {
 
   private processQueue(): void {
     if (this.activeWorkers >= this.MAX_CONCURRENT || this.queue.length === 0) {
+      return;
+    }
+
+    // While video playback is active, suspend nonessential background queue
+    // to preserve CPU for smooth video presentation. High priority user requests still execute.
+    if (this.isPlaybackActive && this.queue[0]?.priority !== 'high') {
       return;
     }
 
