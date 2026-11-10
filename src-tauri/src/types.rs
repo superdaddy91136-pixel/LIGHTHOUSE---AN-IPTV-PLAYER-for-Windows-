@@ -71,14 +71,46 @@ pub struct Source {
     pub last_updated: Option<i64>,
 }
 
-#[derive(Clone, PartialEq, Debug, Deserialize, Serialize)]
+#[derive(Clone, PartialEq, Debug, Deserialize, Serialize, Default)]
 pub struct XtreamStatus {
+    #[serde(default)]
     pub user_info: XtreamStatusUserInfo,
 }
 
-#[derive(Clone, PartialEq, Debug, Deserialize, Serialize)]
+#[derive(Clone, PartialEq, Debug, Deserialize, Serialize, Default)]
 pub struct XtreamStatusUserInfo {
+    #[serde(default)]
+    pub auth: serde_json::Value,
+    #[serde(default)]
+    pub status: Option<String>,
+    #[serde(default)]
     pub exp_date: serde_json::Value,
+    #[serde(default)]
+    pub message: Option<String>,
+}
+
+impl XtreamStatusUserInfo {
+    pub fn is_auth_successful(&self) -> bool {
+        if let Some(status) = &self.status {
+            let s = status.trim().to_ascii_lowercase();
+            if s == "disabled" || s == "expired" || s == "banned" || s == "inactive" {
+                return false;
+            }
+        }
+        match &self.auth {
+            serde_json::Value::Number(n) => n.as_i64() == Some(1),
+            serde_json::Value::String(s) => s.trim() == "1" || s.trim().eq_ignore_ascii_case("true"),
+            serde_json::Value::Bool(b) => *b,
+            serde_json::Value::Null => {
+                if let Some(status) = &self.status {
+                    status.trim().eq_ignore_ascii_case("active")
+                } else {
+                    false
+                }
+            }
+            _ => false,
+        }
+    }
 }
 
 #[derive(Clone, PartialEq, Debug, Deserialize, Serialize)]

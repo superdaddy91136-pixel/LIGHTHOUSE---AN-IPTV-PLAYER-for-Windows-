@@ -311,8 +311,8 @@ fn bulk_update(filters: Filters, action: u8) -> Result<(), String> {
 }
 
 #[tauri::command]
-async fn get_xtream(source: Source) -> Result<(), String> {
-    xtream::get_xtream(None, source, false)
+async fn get_xtream(app: AppHandle, source: Source) -> Result<(), String> {
+    xtream::get_xtream(Some(&app), source, false)
         .await
         .map_err(map_err_frontend)
 }

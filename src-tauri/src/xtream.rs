@@ -24,7 +24,6 @@ use rusqlite::{Transaction, params};
 use serde::Deserialize;
 use serde::Serialize;
 use std::collections::HashMap;
-use std::str::FromStr;
 use std::time::Duration;
 use tauri::AppHandle;
 use tokio::join;
@@ -118,20 +117,103 @@ struct XtreamEPGItem {
 fn build_xtream_url(source: &mut Source) -> Result<Url> {
     let mut url = Url::parse(&source.url.clone().context("Missing URL")?)?;
     source.url_origin = Some(
-        Url::from_str(&source.url.clone().unwrap())?
-            .origin()
-            .ascii_serialization(),
+        url.origin().ascii_serialization(),
     );
-    url.query_pairs_mut()
-        .append_pair(
+    if url.path().is_empty() || url.path() == "/" {
+        url.set_path("/player_api.php");
+        source.url = Some(url.to_string());
+    }
+    let has_username = url.query_pairs().any(|(k, _)| k == "username");
+    let has_password = url.query_pairs().any(|(k, _)| k == "password");
+    if !has_username {
+        url.query_pairs_mut().append_pair(
             "username",
             &source.username.clone().context("Missing username")?,
-        )
-        .append_pair(
+        );
+    }
+    if !has_password {
+        url.query_pairs_mut().append_pair(
             "password",
             &source.password.clone().context("Missing password")?,
         );
+    }
     Ok(url)
+}
+
+pub async fn authenticate_xtream(client: &Client, url: &Url) -> Result<XtreamStatus> {
+    let t_start = std::time::Instant::now();
+    let resp = match client.get(url.clone()).send().await {
+        Ok(r) => r,
+        Err(e) => {
+            if e.is_timeout() {
+                bail!("Connection timed out while connecting to Xtream server: {}", e);
+            } else if e.is_connect() {
+                bail!("Network error: could not connect to Xtream server (check server URL): {}", e);
+            } else {
+                bail!("Network error communicating with Xtream server: {}", e);
+            }
+        }
+    };
+
+    let status_code = resp.status();
+    if status_code == reqwest::StatusCode::UNAUTHORIZED || status_code == reqwest::StatusCode::FORBIDDEN {
+        bail!("Authentication failed: server returned HTTP {} (check username and password)", status_code);
+    }
+    if !status_code.is_success() {
+        bail!("Xtream server error: HTTP {}", status_code);
+    }
+
+    let bytes = resp.bytes().await?;
+    let trimmed = trim_bytes(&bytes);
+    if trimmed.is_empty() {
+        bail!("Invalid API response: server returned an empty response");
+    }
+    if trimmed.starts_with(b"<") {
+        bail!("Invalid API response: server returned HTML instead of Xtream JSON (verify the server URL and path)");
+    }
+
+    let status: XtreamStatus = match serde_json::from_slice(&bytes) {
+        Ok(s) => s,
+        Err(e) => {
+            if let Ok(val) = serde_json::from_slice::<serde_json::Value>(&bytes) {
+                if let Some(user_info) = val.get("user_info") {
+                    if let Some(auth_val) = user_info.get("auth") {
+                        if auth_val == 0 || auth_val == "0" {
+                            bail!("Authentication failed: invalid username or password");
+                        }
+                    }
+                }
+                if let Some(auth_val) = val.get("auth") {
+                    if auth_val == 0 || auth_val == "0" {
+                        bail!("Authentication failed: invalid username or password");
+                    }
+                }
+                if let Some(msg) = val.get("message").and_then(|m| m.as_str()) {
+                    bail!("Authentication failed: {}", msg);
+                }
+            }
+            bail!("Unexpected response format from Xtream server: {}", e);
+        }
+    };
+
+    if !status.user_info.is_auth_successful() {
+        let reason = if let Some(msg) = &status.user_info.message {
+            msg.clone()
+        } else if let Some(st) = &status.user_info.status {
+            format!("account status is '{}'", st)
+        } else {
+            "invalid username or password".to_string()
+        };
+        bail!("Authentication failed: {}", reason);
+    }
+
+    log::log(format!(
+        "[Xtream Auth] Authenticated successfully in {:.2}s (status: {:?})",
+        t_start.elapsed().as_secs_f64(),
+        status.user_info.status.as_deref().unwrap_or("Active")
+    ));
+
+    Ok(status)
 }
 
 pub async fn get_xtream(app: Option<&AppHandle>, mut source: Source, wipe: bool) -> Result<()> {
@@ -152,11 +234,26 @@ pub async fn get_xtream(app: Option<&AppHandle>, mut source: Source, wipe: bool)
     let user_agent = get_user_agent_from_source(&source)?;
     let client = Client::builder()
         .user_agent(user_agent)
-        .connect_timeout(Duration::from_secs(30))
-        .timeout(Duration::from_secs(360))
+        .connect_timeout(Duration::from_secs(20))
+        .timeout(Duration::from_secs(180))
         .build()?;
 
-    // Fetch categories concurrently (small JSON payloads, very fast)
+    // Step 1: Explicit Authentication & Account Verification
+    let _auth_status = authenticate_xtream(&client, &url).await?;
+
+    // Step 2: Fetch categories concurrently (small JSON payloads, very fast)
+    crate::utils::emit_source_refresh_progress(
+        app,
+        source_id,
+        "fetching_categories",
+        "Fetching categories...",
+        Some(3.0),
+        true,
+        None,
+        None,
+        None,
+    );
+    let t_cats = std::time::Instant::now();
     let (live_cats_res, vods_cats_res, series_cats_res) = join!(
         get_xtream_http_list_with_client::<XtreamCategory>(
             &client,
@@ -174,6 +271,11 @@ pub async fn get_xtream(app: Option<&AppHandle>, mut source: Source, wipe: bool)
             GET_SERIES_CATEGORIES
         ),
     );
+    log::log(format!(
+        "[Xtream] Categories fetched in {:.2}s for source {source_id}",
+        t_cats.elapsed().as_secs_f64()
+    ));
+
     let live_cats = live_cats_res.unwrap_or_else(|e| {
         log::log(format!(
             "Warning: failed to fetch live categories for source {source_id}: {e:#}"
@@ -193,7 +295,7 @@ pub async fn get_xtream(app: Option<&AppHandle>, mut source: Source, wipe: bool)
         Vec::new()
     });
 
-    // Fetch stream lists with stage-specific progress updates
+    // Step 3: Fetch stream lists with stage-specific progress updates and timings
     crate::utils::emit_source_refresh_progress(
         app,
         source_id,
@@ -205,12 +307,18 @@ pub async fn get_xtream(app: Option<&AppHandle>, mut source: Source, wipe: bool)
         None,
         None,
     );
+    let t_live = std::time::Instant::now();
     let live_res = get_xtream_http_list_with_client::<XtreamStream>(
         &client,
         url.clone(),
         GET_LIVE_STREAMS,
     )
     .await;
+    log::log(format!(
+        "[Xtream] Live TV fetch finished in {:.2}s for source {source_id} (success: {})",
+        t_live.elapsed().as_secs_f64(),
+        live_res.is_ok()
+    ));
 
     crate::utils::emit_source_refresh_progress(
         app,
@@ -223,12 +331,18 @@ pub async fn get_xtream(app: Option<&AppHandle>, mut source: Source, wipe: bool)
         None,
         None,
     );
+    let t_vods = std::time::Instant::now();
     let vods_res = get_xtream_http_list_with_client::<XtreamStream>(
         &client,
         url.clone(),
         GET_VODS,
     )
     .await;
+    log::log(format!(
+        "[Xtream] Movies fetch finished in {:.2}s for source {source_id} (success: {})",
+        t_vods.elapsed().as_secs_f64(),
+        vods_res.is_ok()
+    ));
 
     crate::utils::emit_source_refresh_progress(
         app,
@@ -241,12 +355,18 @@ pub async fn get_xtream(app: Option<&AppHandle>, mut source: Source, wipe: bool)
         None,
         None,
     );
+    let t_series = std::time::Instant::now();
     let series_res = get_xtream_http_list_with_client::<XtreamStream>(
         &client,
         url.clone(),
         GET_SERIES,
     )
     .await;
+    log::log(format!(
+        "[Xtream] TV Shows fetch finished in {:.2}s for source {source_id} (success: {})",
+        t_series.elapsed().as_secs_f64(),
+        series_res.is_ok()
+    ));
 
     // Inspect stream results and collect stage-specific errors
     let mut stage_errors: Vec<String> = Vec::new();
@@ -299,10 +419,11 @@ pub async fn get_xtream(app: Option<&AppHandle>, mut source: Source, wipe: bool)
         let tx = sql.transaction()?;
         let mut channel_preserve: Vec<ChannelPreserve> = Vec::new();
 
-        if wipe {
+        let effective_source_id = if wipe {
+            let id = source.id.context("no source id")?;
             crate::utils::emit_source_refresh_progress(
                 app_ref,
-                source_id,
+                id,
                 "preparing",
                 "Preparing database...",
                 Some(30.0),
@@ -311,21 +432,23 @@ pub async fn get_xtream(app: Option<&AppHandle>, mut source: Source, wipe: bool)
                 Some(total_items),
                 None,
             );
-            channel_preserve =
-                sql::get_preserve(&tx, source.id.context("no source id")?).unwrap_or_default();
+            channel_preserve = sql::get_preserve(&tx, id).unwrap_or_default();
+            id
         } else {
-            source.id = Some(sql::create_or_find_source_by_name(&tx, &source)?);
-        }
+            let new_id = sql::create_or_find_source_by_name(&tx, &source)?;
+            source.id = Some(new_id);
+            new_id
+        };
 
         let mut processed_so_far: usize = 0;
 
         if let Some(live) = live_opt {
             let existing_live =
-                sql::get_channel_count_by_media_type(&tx, source_id, media_type::LIVESTREAM)?;
+                sql::get_channel_count_by_media_type(&tx, effective_source_id, media_type::LIVESTREAM)?;
             let should_sync = existing_live == 0 || !live.is_empty();
             if !should_sync {
                 log::log(format!(
-                    "Source {source_id}: Live streams returned 0 items but database has {existing_live} items; preserving existing live channels to prevent data loss"
+                    "Source {effective_source_id}: Live streams returned 0 items but database has {existing_live} items; preserving existing live channels to prevent data loss"
                 ));
             } else {
                 process_xtream(
@@ -335,7 +458,7 @@ pub async fn get_xtream(app: Option<&AppHandle>, mut source: Source, wipe: bool)
                     &source,
                     media_type::LIVESTREAM,
                     app_ref,
-                    source_id,
+                    effective_source_id,
                     "live",
                     "Live TV",
                     &mut processed_so_far,
@@ -346,11 +469,11 @@ pub async fn get_xtream(app: Option<&AppHandle>, mut source: Source, wipe: bool)
 
         if let Some(vods) = vods_opt {
             let existing_vods =
-                sql::get_channel_count_by_media_type(&tx, source_id, media_type::MOVIE)?;
+                sql::get_channel_count_by_media_type(&tx, effective_source_id, media_type::MOVIE)?;
             let should_sync = existing_vods == 0 || !vods.is_empty();
             if !should_sync {
                 log::log(format!(
-                    "Source {source_id}: VOD streams returned 0 items but database has {existing_vods} items; preserving existing movies to prevent data loss"
+                    "Source {effective_source_id}: VOD streams returned 0 items but database has {existing_vods} items; preserving existing movies to prevent data loss"
                 ));
             } else {
                 process_xtream(
@@ -360,7 +483,7 @@ pub async fn get_xtream(app: Option<&AppHandle>, mut source: Source, wipe: bool)
                     &source,
                     media_type::MOVIE,
                     app_ref,
-                    source_id,
+                    effective_source_id,
                     "movies",
                     "Movies",
                     &mut processed_so_far,
@@ -371,11 +494,11 @@ pub async fn get_xtream(app: Option<&AppHandle>, mut source: Source, wipe: bool)
 
         if let Some(series) = series_opt {
             let existing_series =
-                sql::get_channel_count_by_media_type(&tx, source_id, media_type::SERIE)?;
+                sql::get_channel_count_by_media_type(&tx, effective_source_id, media_type::SERIE)?;
             let should_sync = existing_series == 0 || !series.is_empty();
             if !should_sync {
                 log::log(format!(
-                    "Source {source_id}: Series returned 0 items but database has {existing_series} items; preserving existing TV shows to prevent data loss"
+                    "Source {effective_source_id}: Series returned 0 items but database has {existing_series} items; preserving existing TV shows to prevent data loss"
                 ));
             } else {
                 process_xtream(
@@ -385,7 +508,7 @@ pub async fn get_xtream(app: Option<&AppHandle>, mut source: Source, wipe: bool)
                     &source,
                     media_type::SERIE,
                     app_ref,
-                    source_id,
+                    effective_source_id,
                     "series",
                     "TV Shows",
                     &mut processed_so_far,
@@ -396,7 +519,7 @@ pub async fn get_xtream(app: Option<&AppHandle>, mut source: Source, wipe: bool)
 
         crate::utils::emit_source_refresh_progress(
             app_ref,
-            source_id,
+            effective_source_id,
             "finalizing",
             "Finalizing database...",
             Some(95.0),
@@ -407,12 +530,15 @@ pub async fn get_xtream(app: Option<&AppHandle>, mut source: Source, wipe: bool)
         );
 
         if wipe {
-            sql::restore_preserve(&tx, source.id.context("no source id")?, channel_preserve)?;
+            sql::restore_preserve(&tx, effective_source_id, channel_preserve)?;
         }
         tx.commit()?;
 
         if !stage_errors_clone.is_empty() {
-            bail!("Partial refresh failure: {}", stage_errors_clone.join("; "));
+            log::log(format!(
+                "Source {effective_source_id} synchronized with partial warnings: {}",
+                stage_errors_clone.join("; ")
+            ));
         }
         Ok::<(), anyhow::Error>(())
     })
@@ -456,6 +582,20 @@ where
         Err(e) => {
             if let Ok(map) = serde_json::from_slice::<HashMap<String, T>>(&bytes) {
                 return Ok(map.into_values().collect());
+            }
+            if let Ok(val) = serde_json::from_slice::<serde_json::Value>(&bytes) {
+                if let Some(user_info) = val.get("user_info") {
+                    if let Some(auth_val) = user_info.get("auth") {
+                        if auth_val == 0 || auth_val == "0" {
+                            bail!("Authentication failed: provider returned auth=0 for {action}");
+                        }
+                    }
+                }
+                if let Some(auth_val) = val.get("auth") {
+                    if auth_val == 0 || auth_val == "0" {
+                        bail!("Authentication failed: provider returned auth=0 for {action}");
+                    }
+                }
             }
             Err(anyhow!("Failed to parse {action}: {e}"))
         }
@@ -567,13 +707,13 @@ fn process_xtream(
         }
     }
 
-    // 2. Pre-load existing groups for this source and media type
+    // 2. Pre-load ALL existing groups for this source across media types to avoid unique constraint collisions
     let mut groups_map: HashMap<String, i64> = HashMap::new();
     {
         let mut group_stmt = tx.prepare(
-            "SELECT id, name FROM groups WHERE source_id = ? AND media_type = ?",
+            "SELECT id, name FROM groups WHERE source_id = ?",
         )?;
-        let mut rows = group_stmt.query(params![source_id, stream_type])?;
+        let mut rows = group_stmt.query(params![source_id])?;
         while let Some(row) = rows.next()? {
             let id: i64 = row.get(0)?;
             let name: String = row.get(1)?;
@@ -581,7 +721,7 @@ fn process_xtream(
         }
     }
 
-    // 3. Process categories and register new groups
+    // 3. Process categories and register new groups safely
     let cat_names: HashMap<String, String> = cats
         .into_iter()
         .filter_map(|f| {
@@ -596,13 +736,20 @@ fn process_xtream(
 
     {
         let mut insert_group_stmt = tx.prepare(
-            "INSERT INTO groups (name, source_id, media_type) VALUES (?, ?, ?)",
+            "INSERT OR IGNORE INTO groups (name, source_id, media_type) VALUES (?, ?, ?)",
+        )?;
+        let mut select_group_stmt = tx.prepare(
+            "SELECT id FROM groups WHERE name = ? AND source_id = ?",
         )?;
         for (_cid, name) in &cat_names {
             if !groups_map.contains_key(name) {
                 insert_group_stmt.execute(params![name, source_id, stream_type])?;
-                let new_id = tx.last_insert_rowid();
-                groups_map.insert(name.clone(), new_id);
+                let group_id = select_group_stmt
+                    .query_row(params![name, source_id], |row| row.get::<_, i64>(0))
+                    .ok();
+                if let Some(gid) = group_id {
+                    groups_map.insert(name.clone(), gid);
+                }
             }
         }
     }
@@ -620,6 +767,8 @@ fn process_xtream(
     let mut to_insert: Vec<ChannelInsert> = Vec::new();
     let mut to_update: Vec<ChannelUpdate> = Vec::new();
     let mut unchanged_count: usize = 0;
+    let mut seen_stream_ids: std::collections::HashSet<u64> =
+        std::collections::HashSet::with_capacity(stage_total);
     let emit_interval = (stage_total / 30).max(100);
 
     for (idx, stream) in streams.into_iter().enumerate() {
@@ -629,6 +778,10 @@ fn process_xtream(
             Some(id) if id > 0 => id,
             _ => continue,
         };
+
+        if !seen_stream_ids.insert(stream_id) {
+            continue;
+        }
 
         let name = match stream.name.filter(|n| !n.trim().is_empty()) {
             Some(n) => n.trim().to_string(),
@@ -730,7 +883,7 @@ fn process_xtream(
 
     if !to_insert.is_empty() {
         let mut insert_stmt = tx.prepare(
-            "INSERT INTO channels (name, group_id, image, url, source_id, media_type, series_id, favorite, stream_id, tv_archive, season_id, episode_num)
+            "INSERT OR IGNORE INTO channels (name, group_id, image, url, source_id, media_type, series_id, favorite, stream_id, tv_archive, season_id, episode_num)
              VALUES (?, ?, ?, ?, ?, ?, NULL, 0, ?, ?, NULL, NULL)",
         )?;
         for item in to_insert {
@@ -1177,4 +1330,324 @@ pub async fn get_all_expiries() -> Result<HashMap<i64, i64>> {
         })
         .collect();
     Ok(statuses)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::types::XtreamStatusUserInfo;
+    use rusqlite::Connection;
+
+    #[test]
+    fn test_auth_check_valid() {
+        let u1 = XtreamStatusUserInfo {
+            auth: serde_json::json!(1),
+            status: Some("Active".to_string()),
+            exp_date: serde_json::json!("1735689600"),
+            message: None,
+        };
+        assert!(u1.is_auth_successful());
+
+        let u2 = XtreamStatusUserInfo {
+            auth: serde_json::json!("1"),
+            status: Some("active".to_string()),
+            exp_date: serde_json::Value::Null,
+            message: None,
+        };
+        assert!(u2.is_auth_successful());
+
+        let u3 = XtreamStatusUserInfo {
+            auth: serde_json::json!(true),
+            status: None,
+            exp_date: serde_json::Value::Null,
+            message: None,
+        };
+        assert!(u3.is_auth_successful());
+
+        // Provider omitting auth but returning active status
+        let u4 = XtreamStatusUserInfo {
+            auth: serde_json::Value::Null,
+            status: Some("Active".to_string()),
+            exp_date: serde_json::Value::Null,
+            message: None,
+        };
+        assert!(u4.is_auth_successful());
+    }
+
+    #[test]
+    fn test_auth_check_invalid_credentials() {
+        let u1 = XtreamStatusUserInfo {
+            auth: serde_json::json!(0),
+            status: None,
+            exp_date: serde_json::Value::Null,
+            message: None,
+        };
+        assert!(!u1.is_auth_successful());
+
+        let u2 = XtreamStatusUserInfo {
+            auth: serde_json::json!("0"),
+            status: None,
+            exp_date: serde_json::Value::Null,
+            message: Some("Invalid details".to_string()),
+        };
+        assert!(!u2.is_auth_successful());
+
+        let u3 = XtreamStatusUserInfo {
+            auth: serde_json::Value::Null,
+            status: None,
+            exp_date: serde_json::Value::Null,
+            message: None,
+        };
+        assert!(!u3.is_auth_successful());
+    }
+
+    #[test]
+    fn test_auth_check_disabled_expired_banned() {
+        for bad_status in &["Disabled", "Expired", "Banned", "Inactive", "disabled"] {
+            let u = XtreamStatusUserInfo {
+                auth: serde_json::json!(1),
+                status: Some(bad_status.to_string()),
+                exp_date: serde_json::Value::Null,
+                message: None,
+            };
+            assert!(!u.is_auth_successful(), "Expected failure for status: {}", bad_status);
+        }
+    }
+
+    #[test]
+    fn test_build_xtream_url_normalization() {
+        let mut source = Source {
+            id: None,
+            name: "Test".to_string(),
+            url: Some("http://example.com:8080".to_string()),
+            username: Some("myuser".to_string()),
+            password: Some("mypass".to_string()),
+            source_type: source_type::XTREAM,
+            enabled: true,
+            user_agent: None,
+            url_origin: None,
+            use_tvg_id: None,
+            max_streams: None,
+            stream_user_agent: None,
+            last_updated: None,
+        };
+        let url = build_xtream_url(&mut source).unwrap();
+        assert_eq!(url.path(), "/player_api.php");
+        assert_eq!(source.url_origin, Some("http://example.com:8080".to_string()));
+        let q: HashMap<_, _> = url.query_pairs().into_owned().collect();
+        assert_eq!(q.get("username").map(|s| s.as_str()), Some("myuser"));
+        assert_eq!(q.get("password").map(|s| s.as_str()), Some("mypass"));
+
+        let mut source2 = Source {
+            id: Some(42),
+            name: "Test 2".to_string(),
+            url: Some("http://example.com:8080/player_api.php".to_string()),
+            username: Some("u2".to_string()),
+            password: Some("p2".to_string()),
+            source_type: source_type::XTREAM,
+            enabled: true,
+            user_agent: None,
+            url_origin: None,
+            use_tvg_id: None,
+            max_streams: None,
+            stream_user_agent: None,
+            last_updated: None,
+        };
+        let url2 = build_xtream_url(&mut source2).unwrap();
+        assert_eq!(url2.path(), "/player_api.php");
+    }
+
+    #[test]
+    fn test_trim_bytes_and_empty_responses() {
+        assert_eq!(trim_bytes(b"   "), b"");
+        assert_eq!(trim_bytes(b" \r\n  {} \t "), b"{}");
+        assert_eq!(trim_bytes(b" null\n"), b"null");
+        assert_eq!(
+            trim_bytes(b"[{\"category_id\":\"1\",\"category_name\":\"News\"}]"),
+            b"[{\"category_id\":\"1\",\"category_name\":\"News\"}]"
+        );
+    }
+
+    #[test]
+    fn test_stream_deserialization_formats() {
+        let json_arr = r#"[
+            {"stream_id": 101, "name": "Channel One", "category_id": "1", "container_extension": "ts"},
+            {"stream_id": "102", "name": "Channel Two", "category_id": 2, "container_extension": "m3u8"}
+        ]"#;
+        let streams: Vec<XtreamStream> = serde_json::from_str(json_arr).unwrap();
+        assert_eq!(streams.len(), 2);
+        assert_eq!(get_serde_json_u64(&streams[0].stream_id), Some(101));
+        assert_eq!(get_serde_json_u64(&streams[1].stream_id), Some(102));
+
+        let json_map = r#"{
+            "101": {"stream_id": 101, "name": "Channel One", "category_id": "1"},
+            "102": {"stream_id": 102, "name": "Channel Two", "category_id": "1"}
+        }"#;
+        let map: HashMap<String, XtreamStream> = serde_json::from_str(json_map).unwrap();
+        assert_eq!(map.len(), 2);
+    }
+
+    #[test]
+    fn test_process_xtream_foreign_keys_and_group_conflicts() {
+        let mut conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch("
+            PRAGMA foreign_keys = ON;
+            CREATE TABLE sources (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                name varchar(100),
+                source_type integer,
+                url varchar(500),
+                username varchar(100),
+                password varchar(100),
+                enabled integer DEFAULT 1
+            );
+            CREATE TABLE groups (
+                id INTEGER PRIMARY KEY,
+                name varchar(100),
+                image varchar(500),
+                source_id integer,
+                media_type integer,
+                FOREIGN KEY (source_id) REFERENCES sources(id)
+            );
+            CREATE UNIQUE INDEX index_group_unique ON groups(name, source_id);
+
+            CREATE TABLE channels (
+                id INTEGER PRIMARY KEY,
+                name varchar(100),
+                image varchar(500),
+                url varchar(500),
+                media_type integer,
+                source_id integer,
+                favorite integer,
+                series_id integer,
+                group_id integer,
+                stream_id integer,
+                tv_archive integer,
+                season_id integer,
+                episode_num integer,
+                hidden integer DEFAULT 0,
+                last_watched integer,
+                FOREIGN KEY (source_id) REFERENCES sources(id),
+                FOREIGN KEY (group_id) REFERENCES groups(id)
+            );
+            CREATE UNIQUE INDEX channels_unique ON channels(name, source_id, url, series_id, season_id);
+        ").unwrap();
+
+        let tx = conn.transaction().unwrap();
+
+        // Simulate creating a new source
+        tx.execute(
+            "INSERT INTO sources (name, source_type, url, username, password, enabled) VALUES ('Test Provider', 2, 'http://test', 'u', 'p', 1)",
+            [],
+        ).unwrap();
+        let valid_source_id = tx.last_insert_rowid();
+        assert!(valid_source_id > 0);
+
+        let source = Source {
+            id: Some(valid_source_id),
+            name: "Test Provider".to_string(),
+            url: Some("http://test/player_api.php".to_string()),
+            username: Some("u".to_string()),
+            password: Some("p".to_string()),
+            source_type: source_type::XTREAM,
+            enabled: true,
+            user_agent: None,
+            url_origin: Some("http://test".to_string()),
+            use_tvg_id: None,
+            max_streams: None,
+            stream_user_agent: None,
+            last_updated: None,
+        };
+
+        // Live categories have "Documentary"
+        let live_cats = vec![
+            XtreamCategory {
+                category_id: serde_json::json!("1"),
+                category_name: Some("Documentary".to_string()),
+            },
+        ];
+        let live_streams = vec![
+            XtreamStream {
+                stream_id: serde_json::json!(1001),
+                name: Some("Nature HD".to_string()),
+                category_id: serde_json::json!("1"),
+                stream_icon: None,
+                series_id: serde_json::Value::Null,
+                cover: None,
+                container_extension: Some("ts".to_string()),
+                tv_archive: serde_json::json!(0),
+            },
+            // Duplicate stream entry from provider
+            XtreamStream {
+                stream_id: serde_json::json!(1001),
+                name: Some("Nature HD".to_string()),
+                category_id: serde_json::json!("1"),
+                stream_icon: None,
+                series_id: serde_json::Value::Null,
+                cover: None,
+                container_extension: Some("ts".to_string()),
+                tv_archive: serde_json::json!(0),
+            },
+        ];
+
+        let mut processed = 0;
+        let res_live = process_xtream(
+            &tx,
+            live_streams,
+            live_cats,
+            &source,
+            media_type::LIVESTREAM,
+            None,
+            valid_source_id,
+            "live",
+            "Live TV",
+            &mut processed,
+            2,
+        );
+        assert!(res_live.is_ok(), "Live sync failed: {:?}", res_live.err());
+
+        // Movie categories ALSO have "Documentary" (cross-media group conflict test)
+        let vod_cats = vec![
+            XtreamCategory {
+                category_id: serde_json::json!("20"),
+                category_name: Some("Documentary".to_string()),
+            },
+        ];
+        let vod_streams = vec![
+            XtreamStream {
+                stream_id: serde_json::json!(5001),
+                name: Some("Deep Sea Movie".to_string()),
+                category_id: serde_json::json!("20"),
+                stream_icon: None,
+                series_id: serde_json::Value::Null,
+                cover: None,
+                container_extension: Some("mp4".to_string()),
+                tv_archive: serde_json::json!(0),
+            },
+        ];
+
+        let res_vod = process_xtream(
+            &tx,
+            vod_streams,
+            vod_cats,
+            &source,
+            media_type::MOVIE,
+            None,
+            valid_source_id,
+            "movies",
+            "Movies",
+            &mut processed,
+            1,
+        );
+        assert!(res_vod.is_ok(), "VOD sync with cross-media group failed: {:?}", res_vod.err());
+
+        tx.commit().unwrap();
+
+        // Verify counts
+        let channel_count: i64 = conn.query_row("SELECT COUNT(1) FROM channels WHERE source_id = ?", [valid_source_id], |r| r.get(0)).unwrap();
+        assert_eq!(channel_count, 2); // 1 live channel (deduplicated) + 1 movie
+
+        let group_count: i64 = conn.query_row("SELECT COUNT(1) FROM groups WHERE source_id = ?", [valid_source_id], |r| r.get(0)).unwrap();
+        assert_eq!(group_count, 1); // "Documentary" group reused safely
+    }
 }

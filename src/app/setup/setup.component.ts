@@ -185,8 +185,9 @@ export class SetupComponent {
     try {
       await invoke("get_xtream", { source: this.source });
       this.success();
-    } catch (e) {
-      this.error.handleError(e, "Invalid URL or credentials. Please try again");
+    } catch (e: any) {
+      const errStr = typeof e === "string" ? e : (e?.message || "Invalid URL or credentials. Please try again");
+      this.error.handleError(e, errStr);
     }
     this.loading = false;
   }
