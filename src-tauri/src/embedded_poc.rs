@@ -1324,6 +1324,7 @@ pub fn stop_embedded_player_sync(state: &EmbeddedPocState) {
         }
         let _ = app.emit("overlay-top-crop", serde_json::json!({ "crop": OVERLAY_TOP_CROP_LOGICAL_PX }));
         let _ = app.emit("embedded-poc-stopped", ());
+        crate::auto_refresh::notify_playback_ended(app);
     }
 }
 
@@ -1716,6 +1717,7 @@ pub async fn start_embedded_player_internal(
         }
     }
     let _ = app_handle.emit("embedded-poc-stopped", ());
+    crate::auto_refresh::notify_playback_ended(&app_handle);
 });
 
         // Observe playback properties
@@ -2052,6 +2054,7 @@ pub async fn stop_embedded_poc_internal(state: &EmbeddedPocState) {
         }
         let _ = app.emit("overlay-top-crop", serde_json::json!({ "crop": OVERLAY_TOP_CROP_LOGICAL_PX }));
         let _ = app.emit("embedded-poc-stopped", ());
+        crate::auto_refresh::notify_playback_ended(app);
     }
 }
 

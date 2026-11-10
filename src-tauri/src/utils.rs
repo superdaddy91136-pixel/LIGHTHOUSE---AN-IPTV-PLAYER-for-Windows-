@@ -117,7 +117,9 @@ async fn refresh_source_unlocked(app: &AppHandle, source: Source) -> Result<()> 
     match res {
         Ok(_) => {
             if id > 0 {
+                let now = chrono::Utc::now().timestamp();
                 let _ = sql::update_source_last_updated(id);
+                let _ = sql::record_source_refresh_success(id, now);
             }
             emit_source_refresh_progress(
                 Some(app),
@@ -130,10 +132,16 @@ async fn refresh_source_unlocked(app: &AppHandle, source: Source) -> Result<()> 
                 None,
                 None,
             );
+            let _ = app.emit("source-refresh-complete", id);
+            crate::auto_refresh::notify_source_refresh_settled(app, id);
             Ok(())
         }
         Err(e) => {
             let err_msg = format!("{:#}", e);
+            if id > 0 {
+                let now = chrono::Utc::now().timestamp();
+                let _ = sql::record_source_refresh_error(id, now, &err_msg);
+            }
             emit_source_refresh_progress(
                 Some(app),
                 id,
@@ -145,6 +153,7 @@ async fn refresh_source_unlocked(app: &AppHandle, source: Source) -> Result<()> 
                 None,
                 Some(err_msg),
             );
+            crate::auto_refresh::notify_source_refresh_settled(app, id);
             Err(e)
         }
     }

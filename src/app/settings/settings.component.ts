@@ -1,4 +1,4 @@
-import { ChangeDetectorRef, Component, ElementRef, HostListener, ViewChild } from "@angular/core";
+import { ChangeDetectorRef, Component, ElementRef, HostListener, NgZone, ViewChild } from "@angular/core";
 import { debounceTime, distinctUntilChanged, fromEvent, map, Subscription } from "rxjs";
 import { Settings } from "../models/settings";
 import { invoke } from "@tauri-apps/api/core";
@@ -10,6 +10,7 @@ import { ViewMode } from "../models/viewMode";
 import { NgbModal } from "@ng-bootstrap/ng-bootstrap";
 import { ConfirmDeleteModalComponent } from "../confirm-delete-modal/confirm-delete-modal.component";
 import { SORT_TYPES, SortType, getSortTypeText } from "../models/sortType";
+import { SourceType } from "../models/sourceType";
 import { NavTab } from "../models/navTab";
 import { ToastrService } from "ngx-toastr";
 import { TmdbConfigService } from "../services/tmdb-config.service";
@@ -129,6 +130,7 @@ export class SettingsComponent {
   refreshAllFailureCount = 0;
   private refreshAllSettledSourceIds = new Set<number>();
   private unlistenSourceRefreshProgress?: UnlistenFn;
+  private unlistenSourceDeleted?: UnlistenFn;
   sortTypes = SORT_TYPES;
   @ViewChild("mpvParams") mpvParams!: ElementRef;
 
@@ -141,6 +143,7 @@ export class SettingsComponent {
     public tmdbCache: TmdbCacheService,
     private toastr: ToastrService,
     private cdr: ChangeDetectorRef,
+    private ngZone: NgZone,
   ) { }
 
   _getSortTypeText(sortType: SortType) {
@@ -217,6 +220,19 @@ export class SettingsComponent {
     if (this.memory.XtreamSourceIds.size > 0)
       this.getExpiries();
     void this.setupRefreshAllProgressListener();
+    void this.setupSourceDeletedListener();
+  }
+
+  private async setupSourceDeletedListener(): Promise<void> {
+    try {
+      this.unlistenSourceDeleted = await listen<number>("source-deleted", (event) => {
+        if (event.payload != null) {
+          this.onSourceDeleted(event.payload);
+        }
+      });
+    } catch (err) {
+      console.warn("Failed to listen for source-deleted in settings", err);
+    }
   }
 
   private async setupRefreshAllProgressListener(): Promise<void> {
@@ -292,14 +308,42 @@ export class SettingsComponent {
     });
   }
 
-  getSources() {
-    invoke("get_sources").then((x) => {
-      this.sources = x as Source[];
-      if (this.sources.length === 0) {
-        this.memory.AddingAdditionalSource = false;
-        this.nav.navigateByUrl("setup");
+  trackBySourceId(_index: number, source: Source): number {
+    return source.id ?? _index;
+  }
+
+  onSourceDeleted(sourceId: number): void {
+    this.ngZone.run(() => {
+      this.sources = this.sources.filter((s) => s.id !== sourceId);
+      this.memory.Sources.delete(sourceId);
+      this.memory.XtreamSourceIds.delete(sourceId);
+      this.memory.CustomSourceIds.delete(sourceId);
+      if (this.expiries) {
+        delete this.expiries[sourceId];
       }
+      this.cdr.markForCheck();
+      this.getSources();
     });
+  }
+
+  getSources(): void {
+    invoke<Source[]>("get_sources")
+      .then((sources) => {
+        this.ngZone.run(() => {
+          this.sources = sources || [];
+          this.memory.Sources = new Map(this.sources.filter((x) => x.enabled).map((s) => [s.id!, s]));
+          this.memory.CustomSourceIds = new Set(
+            this.sources.filter((x) => x.source_type === SourceType.Custom).map((x) => x.id!),
+          );
+          this.memory.XtreamSourceIds = new Set(
+            this.sources.filter((x) => x.source_type === SourceType.Xtream).map((x) => x.id!),
+          );
+          this.cdr.markForCheck();
+        });
+      })
+      .catch((err) => {
+        console.error("Failed to fetch sources in settings", err);
+      });
   }
 
   getExpiries() {
@@ -469,5 +513,6 @@ export class SettingsComponent {
   ngOnDestroy(): void {
     this.subscriptions.forEach((x) => x.unsubscribe());
     this.unlistenSourceRefreshProgress?.();
+    this.unlistenSourceDeleted?.();
   }
 }

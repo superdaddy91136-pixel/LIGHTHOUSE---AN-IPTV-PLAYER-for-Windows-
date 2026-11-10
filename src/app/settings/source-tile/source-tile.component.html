@@ -100,6 +100,39 @@
         </span>
       </span>
     </div>
+
+    <!-- 7. Last Refresh on this device -->
+    <div class="source-detail-item" *ngIf="source?.source_type != sourceTypeEnum.Custom && !editing">
+      <span class="detail-label">Last Refresh</span>
+      <span class="detail-value" [class.text-warning]="!deviceRefreshStatus?.last_successful_refresh">
+        {{ deviceRefreshStatus?.last_successful_refresh ? (deviceRefreshStatus!.last_successful_refresh! * 1000 | date:'medium') : 'Not refreshed on this device yet' }}
+      </span>
+    </div>
+
+    <!-- 8. Next Eligible Refresh -->
+    <div class="source-detail-item" *ngIf="source?.source_type != sourceTypeEnum.Custom && !editing">
+      <span class="detail-label">Next Eligible Refresh</span>
+      <span class="detail-value">
+        <span *ngIf="deviceRefreshStatus?.is_deferred_playback" class="expiry-pill text-warning">
+          Deferred (Playback active)
+        </span>
+        <span *ngIf="deviceRefreshStatus?.is_deferred_metered" class="expiry-pill text-warning">
+          Deferred (Metered connection)
+        </span>
+        <span *ngIf="!deviceRefreshStatus?.is_deferred_playback && !deviceRefreshStatus?.is_deferred_metered && deviceRefreshStatus?.next_eligible_refresh">
+          {{ isDue(deviceRefreshStatus?.next_eligible_refresh) ? 'Due now' : (deviceRefreshStatus!.next_eligible_refresh! * 1000 | date:'medium') }}
+        </span>
+        <span *ngIf="!deviceRefreshStatus?.is_deferred_playback && !deviceRefreshStatus?.is_deferred_metered && !deviceRefreshStatus?.next_eligible_refresh">
+          Due now
+        </span>
+      </span>
+    </div>
+
+    <!-- 9. Last Refresh Error -->
+    <div class="source-detail-item source-detail-span" *ngIf="deviceRefreshStatus?.last_error && !editing">
+      <span class="detail-label text-danger">Last Refresh Error</span>
+      <span class="detail-value text-danger small font-monospace">{{ deviceRefreshStatus?.last_error }}</span>
+    </div>
   </div>
 
   <!-- Content Statistics (Live TV, Movies, TV Shows) -->

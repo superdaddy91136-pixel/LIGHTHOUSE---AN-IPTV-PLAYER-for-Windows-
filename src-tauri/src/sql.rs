@@ -311,6 +311,17 @@ fn apply_migrations() -> Result<()> {
               ON channels(source_id, media_type, hidden, series_id);
             "#,
         ),
+        M::up(
+            r#"
+              CREATE TABLE IF NOT EXISTS "source_refresh_state" (
+                "source_id" INTEGER PRIMARY KEY,
+                "last_successful_refresh" INTEGER,
+                "last_refresh_attempt" INTEGER,
+                "last_error" TEXT,
+                FOREIGN KEY (source_id) REFERENCES sources(id) ON DELETE CASCADE
+              );
+            "#,
+        ),
     ]);
     migrations.to_latest(&mut sql)?;
     Ok(())
@@ -1208,6 +1219,13 @@ pub fn delete_source(id: i64) -> Result<()> {
     "#,
         params![id],
     )?;
+    let _ = sql.execute(
+        r#"
+        DELETE FROM source_refresh_state
+        WHERE source_id = ?;
+    "#,
+        params![id],
+    );
     let count = sql.execute(
         r#"
         DELETE FROM sources
@@ -2087,3 +2105,83 @@ pub fn update_source_last_updated(source_id: i64) -> Result<()> {
     )?;
     Ok(())
 }
+
+#[derive(Clone, Debug, Default)]
+pub struct SourceRefreshDbState {
+    pub source_id: i64,
+    pub last_successful_refresh: Option<i64>,
+    pub last_refresh_attempt: Option<i64>,
+    pub last_error: Option<String>,
+}
+
+pub fn get_source_refresh_state(source_id: i64) -> Result<Option<SourceRefreshDbState>> {
+    let sql = get_conn()?;
+    let mut stmt = sql.prepare(
+        "SELECT source_id, last_successful_refresh, last_refresh_attempt, last_error FROM source_refresh_state WHERE source_id = ?",
+    )?;
+    let mut rows = stmt.query(params![source_id])?;
+    if let Some(row) = rows.next()? {
+        Ok(Some(SourceRefreshDbState {
+            source_id: row.get(0)?,
+            last_successful_refresh: row.get(1)?,
+            last_refresh_attempt: row.get(2)?,
+            last_error: row.get(3)?,
+        }))
+    } else {
+        Ok(None)
+    }
+}
+
+pub fn get_all_source_refresh_states() -> Result<HashMap<i64, SourceRefreshDbState>> {
+    let sql = get_conn()?;
+    let mut stmt = sql.prepare(
+        "SELECT source_id, last_successful_refresh, last_refresh_attempt, last_error FROM source_refresh_state",
+    )?;
+    let rows = stmt.query_map([], |row| {
+        Ok(SourceRefreshDbState {
+            source_id: row.get(0)?,
+            last_successful_refresh: row.get(1)?,
+            last_refresh_attempt: row.get(2)?,
+            last_error: row.get(3)?,
+        })
+    })?;
+    let mut map = HashMap::new();
+    for item in rows {
+        if let Ok(state) = item {
+            map.insert(state.source_id, state);
+        }
+    }
+    Ok(map)
+}
+
+pub fn record_source_refresh_success(source_id: i64, timestamp: i64) -> Result<()> {
+    let sql = get_conn()?;
+    sql.execute(
+        r#"
+        INSERT INTO source_refresh_state (source_id, last_successful_refresh, last_refresh_attempt, last_error)
+        VALUES (?1, ?2, ?2, NULL)
+        ON CONFLICT(source_id) DO UPDATE SET
+            last_successful_refresh = ?2,
+            last_refresh_attempt = ?2,
+            last_error = NULL
+        "#,
+        params![source_id, timestamp],
+    )?;
+    Ok(())
+}
+
+pub fn record_source_refresh_error(source_id: i64, timestamp: i64, error: &str) -> Result<()> {
+    let sql = get_conn()?;
+    sql.execute(
+        r#"
+        INSERT INTO source_refresh_state (source_id, last_successful_refresh, last_refresh_attempt, last_error)
+        VALUES (?1, NULL, ?2, ?3)
+        ON CONFLICT(source_id) DO UPDATE SET
+            last_refresh_attempt = ?2,
+            last_error = ?3
+        "#,
+        params![source_id, timestamp, error],
+    )?;
+    Ok(())
+}
+

@@ -249,3 +249,17 @@ pub struct SourceRefreshProgress {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub error: Option<String>,
 }
+
+#[derive(Clone, PartialEq, Debug, Deserialize, Serialize)]
+pub struct SourceDeviceRefreshStatus {
+    pub source_id: i64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub last_successful_refresh: Option<i64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub next_eligible_refresh: Option<i64>,
+    pub current_status: String,
+    pub is_deferred_playback: bool,
+    pub is_deferred_metered: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub last_error: Option<String>,
+}

@@ -1,4 +1,4 @@
-import { ChangeDetectorRef, Component, Input, NgZone, OnChanges, OnDestroy, OnInit, SimpleChanges } from "@angular/core";
+import { ChangeDetectorRef, Component, EventEmitter, Input, NgZone, OnChanges, OnDestroy, OnInit, Output, SimpleChanges } from "@angular/core";
 import { Source } from "../../models/source";
 import { SourceType } from "../../models/sourceType";
 import { invoke } from "@tauri-apps/api/core";
@@ -15,6 +15,7 @@ import { CHANNEL_EXTENSION, FAVS_BACKUP, PLAYLIST_EXTENSION } from "../../models
 import { sanitizeFileName } from "../../utils";
 import { SourceContentCounts } from "../../models/sourceContentCounts";
 import { SourceRefreshProgress } from "../../models/sourceRefreshProgress";
+import { SourceDeviceRefreshStatus } from "../../models/sourceRefreshStatus";
 import { Subscription } from "rxjs";
 
 @Component({
@@ -27,6 +28,7 @@ export class SourceTileComponent implements OnInit, OnChanges, OnDestroy {
   source?: Source;
   @Input("expiry")
   expiry?: number;
+  @Output() sourceDeleted = new EventEmitter<number>();
   showUsername = false;
   showPassword = false;
   loading = false;
@@ -44,6 +46,8 @@ export class SourceTileComponent implements OnInit, OnChanges, OnDestroy {
   errorMessage = "";
   progress?: SourceRefreshProgress;
   private unlistenProgress?: UnlistenFn;
+  private unlistenStatusChanged?: UnlistenFn;
+  deviceRefreshStatus?: SourceDeviceRefreshStatus;
   private completeTimeout?: any;
 
   constructor(
@@ -61,6 +65,8 @@ export class SourceTileComponent implements OnInit, OnChanges, OnDestroy {
       this.loadCounts();
     });
     await this.setupProgressListener();
+        await this.setupStatusListener();
+        this.loadDeviceRefreshStatus();
   }
 
   async ngOnChanges(changes: SimpleChanges): Promise<void> {
@@ -72,6 +78,8 @@ export class SourceTileComponent implements OnInit, OnChanges, OnDestroy {
       const curr = changes['source'].currentValue as Source | undefined;
       if (prev?.id !== curr?.id) {
         await this.setupProgressListener();
+        await this.setupStatusListener();
+        this.loadDeviceRefreshStatus();
       }
     }
   }
@@ -81,6 +89,10 @@ export class SourceTileComponent implements OnInit, OnChanges, OnDestroy {
     if (this.unlistenProgress) {
       this.unlistenProgress();
       this.unlistenProgress = undefined;
+    }
+    if (this.unlistenStatusChanged) {
+      this.unlistenStatusChanged();
+      this.unlistenStatusChanged = undefined;
     }
     if (this.completeTimeout) {
       clearTimeout(this.completeTimeout);
@@ -92,6 +104,10 @@ export class SourceTileComponent implements OnInit, OnChanges, OnDestroy {
     if (this.unlistenProgress) {
       this.unlistenProgress();
       this.unlistenProgress = undefined;
+    }
+    if (this.unlistenStatusChanged) {
+      this.unlistenStatusChanged();
+      this.unlistenStatusChanged = undefined;
     }
     if (!this.source?.id) return;
 
@@ -193,6 +209,48 @@ export class SourceTileComponent implements OnInit, OnChanges, OnDestroy {
     }
   }
 
+  private async setupStatusListener(): Promise<void> {
+    if (this.unlistenStatusChanged) {
+      this.unlistenStatusChanged();
+      this.unlistenStatusChanged = undefined;
+    }
+    if (!this.source?.id) return;
+
+    try {
+      this.unlistenStatusChanged = await listen<SourceDeviceRefreshStatus>(
+        "source-refresh-status-changed",
+        (event) => {
+          if (event.payload && event.payload.source_id === this.source?.id) {
+            this.ngZone.run(() => {
+              this.deviceRefreshStatus = event.payload;
+              this.cdr.markForCheck();
+            });
+          }
+        },
+      );
+    } catch (err) {
+      console.warn("Failed to listen for source refresh status changed", this.source.id, err);
+    }
+  }
+
+  async loadDeviceRefreshStatus(): Promise<void> {
+    if (!this.source?.id) return;
+    try {
+      this.deviceRefreshStatus = await invoke<SourceDeviceRefreshStatus>(
+        "get_source_refresh_status",
+        { sourceId: this.source.id },
+      );
+      this.cdr.markForCheck();
+    } catch (err) {
+      console.warn("Failed to load device refresh status for source", this.source.id, err);
+    }
+  }
+
+  isDue(timestamp?: number): boolean {
+    if (!timestamp) return true;
+    return Date.now() >= timestamp * 1000;
+  }
+
   get_source_type_name() {
     if (!this.source) return null;
     return SourceType[this.source.source_type!];
@@ -230,6 +288,7 @@ export class SourceTileComponent implements OnInit, OnChanges, OnDestroy {
       this.toastr.success("Successfully updated source");
       this.memory.RefreshSources.next(true);
       await this.loadCounts();
+      await this.loadDeviceRefreshStatus();
       if (this.completeTimeout) {
         clearTimeout(this.completeTimeout);
       }
@@ -249,6 +308,7 @@ export class SourceTileComponent implements OnInit, OnChanges, OnDestroy {
       this.errorMessage = msg;
       this.errorService.handleError(err, "Failed to refresh source");
       await this.loadCounts();
+      await this.loadDeviceRefreshStatus();
       this.memory.RefreshSources.next(true);
     } finally {
       this.cdr.markForCheck();
@@ -262,11 +322,15 @@ export class SourceTileComponent implements OnInit, OnChanges, OnDestroy {
   }
 
   async delete() {
-    if (this.refreshing) return;
-    await this.memory.tryIPC("Successfully deleted source", "Failed to delete source", () =>
-      invoke("delete_source", { id: this.source?.id }),
+    if (this.refreshing || !this.source?.id) return;
+    const sourceId = this.source.id;
+    const error = await this.memory.tryIPC("Successfully deleted source", "Failed to delete source", () =>
+      invoke("delete_source", { id: sourceId }),
     );
-    this.memory.RefreshSources.next(true);
+    if (!error) {
+      this.sourceDeleted.emit(sourceId);
+      this.memory.RefreshSources.next(true);
+    }
   }
 
   async toggleEnabled() {

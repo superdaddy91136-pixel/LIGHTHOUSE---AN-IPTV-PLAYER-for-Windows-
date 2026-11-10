@@ -320,10 +320,11 @@
 
           <!-- Sources Cards Container -->
           <div class="sources-list" *ngIf="sources.length > 0">
-            <div class="source-tile-wrap" *ngFor="let source of sources">
+            <div class="source-tile-wrap" *ngFor="let source of sources; trackBy: trackBySourceId">
               <app-source-tile 
                 [source]="source"
-                [expiry]="source.source_type === 2 ? expiries[source.id!] : undefined">
+                [expiry]="source.source_type === 2 ? expiries[source.id!] : undefined"
+                (sourceDeleted)="onSourceDeleted($event)">
               </app-source-tile>
             </div>
           </div>

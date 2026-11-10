@@ -30,6 +30,7 @@ import { MediaType } from "../models/mediaType";
 import { ToastrService } from "ngx-toastr";
 import { FocusArea, FocusAreaPrefix } from "../models/focusArea";
 import { invoke } from "@tauri-apps/api/core";
+import { listen, UnlistenFn } from "@tauri-apps/api/event";
 import { Source } from "../models/source";
 import { Filters } from "../models/filters";
 import { SourceType } from "../models/sourceType";
@@ -231,6 +232,8 @@ export class HomeComponent implements AfterViewInit, OnDestroy {
   categoryLoading = false;
   private categoryLoadingInFlight = new Set<string>();
   private categoryCache: Map<string, CategoryOption[]> = new Map();
+  private unlistenSourceRefreshComplete?: UnlistenFn;
+  private unlistenSourceDeleted?: UnlistenFn;
   private tabFilterStates: Map<NavTab, TabFilterSortState> = new Map();
 
   get isSearching(): boolean {
@@ -1492,6 +1495,45 @@ export class HomeComponent implements AfterViewInit, OnDestroy {
     this.restoreSearchStateIfPresent();
     this.getSources();
     this.updatePinnedItems();
+
+    listen<number>("source-refresh-complete", () => {
+      this.ngZone.run(() => {
+        this.categoryCache.clear();
+        this.memory.clearCatalogPageCache();
+        invoke<Source[]>("get_sources").then((sources) => {
+          this.memory.Sources = new Map(sources.filter((x) => x.enabled).map((s) => [s.id!, s]));
+          if ((this.isCatalogTab || this.isLiveTvTab) && !this.isSearching) {
+            this.load();
+            this.loadAvailableCategories();
+          }
+          this.cdr.markForCheck();
+        }).catch(() => {});
+      });
+    }).then((unlisten) => {
+      this.unlistenSourceRefreshComplete = unlisten;
+    }).catch(() => {});
+
+    listen<number>("source-deleted", (event) => {
+      this.ngZone.run(() => {
+        const sourceId = event.payload;
+        if (sourceId != null) {
+          this.memory.Sources.delete(sourceId);
+          this.memory.XtreamSourceIds.delete(sourceId);
+          this.memory.CustomSourceIds.delete(sourceId);
+          this.memory.SeriesRefreshed.delete(sourceId);
+        }
+        this.categoryCache.clear();
+        this.memory.clearCatalogPageCache();
+        this.getSources();
+        if ((this.isCatalogTab || this.isLiveTvTab) && !this.isSearching) {
+          this.load();
+          this.loadAvailableCategories();
+        }
+        this.cdr.markForCheck();
+      });
+    }).then((unlisten) => {
+      this.unlistenSourceDeleted = unlisten;
+    }).catch(() => {});
   }
 
   private restoreSearchStateIfPresent(): boolean {
@@ -1583,14 +1625,12 @@ export class HomeComponent implements AfterViewInit, OnDestroy {
             this.updateDisplayedLiveCategories();
             this.cdr.markForCheck();
           }
-          sources
-            .filter((x) => x.source_type == SourceType.Custom)
-            .map((x) => x.id!)
-            .forEach((x) => this.memory.CustomSourceIds?.add(x));
-          sources
-            .filter((x) => x.source_type == SourceType.Xtream)
-            .map((x) => x.id!)
-            .forEach((x) => this.memory.XtreamSourceIds.add(x));
+          this.memory.CustomSourceIds = new Set(
+            sources.filter((x) => x.source_type == SourceType.Custom).map((x) => x.id!)
+          );
+          this.memory.XtreamSourceIds = new Set(
+            sources.filter((x) => x.source_type == SourceType.Xtream).map((x) => x.id!)
+          );
           if (
             this.memory.XtreamSourceIds.size > 0 &&
             !sessionStorage.getItem("epgCheckedOnStart")
@@ -2905,6 +2945,8 @@ export class HomeComponent implements AfterViewInit, OnDestroy {
     if (this.embeddedPlayer.isPlayingEmbedded) {
       this.embeddedPlayer.stopPlayer().catch(console.warn);
     }
+    this.unlistenSourceRefreshComplete?.();
+    this.unlistenSourceDeleted?.();
     this.subscriptions.forEach((x) => x.unsubscribe());
   }
 

@@ -11,6 +11,7 @@ use types::{
     IdName, NetworkInfo, Settings, Source, SourceContentCounts,
 };
 
+pub mod auto_refresh;
 pub mod bulk_action_type;
 pub mod embedded_poc;
 pub mod epg;
@@ -121,13 +122,18 @@ pub fn run() {
             embedded_poc::save_external_subtitle,
             embedded_poc::get_saved_external_subtitles,
             embedded_poc::remove_external_subtitle,
-            embedded_poc::fetch_playback_segments
+            embedded_poc::fetch_playback_segments,
+            get_source_refresh_status,
+            get_all_source_refresh_statuses,
+            trigger_auto_refresh_check
         ])
         .setup(|app| {
             app.manage(Mutex::new(AppState {
                 ..Default::default()
             }));
             app.manage(embedded_poc::EmbeddedPocState::new());
+            let auto_refresh_coord = auto_refresh::start_auto_refresh_coordinator(app.handle().clone());
+            app.manage(auto_refresh_coord);
             if let Some(window) = app.get_webview_window("main") {
                 let _ = window.show();
             }
@@ -324,6 +330,29 @@ async fn refresh_all(app: AppHandle) -> Result<(), String> {
 }
 
 #[tauri::command]
+fn get_source_refresh_status(
+    state: State<'_, auto_refresh::AutoRefreshCoordinator>,
+    source_id: i64,
+) -> Result<types::SourceDeviceRefreshStatus, String> {
+    Ok(state.get_status(source_id))
+}
+
+#[tauri::command]
+fn get_all_source_refresh_statuses(
+    state: State<'_, auto_refresh::AutoRefreshCoordinator>,
+) -> Result<Vec<types::SourceDeviceRefreshStatus>, String> {
+    Ok(state.get_all_statuses())
+}
+
+#[tauri::command]
+fn trigger_auto_refresh_check(
+    state: State<'_, auto_refresh::AutoRefreshCoordinator>,
+) -> Result<(), String> {
+    state.request_evaluation();
+    Ok(())
+}
+
+#[tauri::command]
 async fn get_episodes(channel: Channel) -> Result<(), String> {
     xtream::get_episodes(channel)
         .await
@@ -371,8 +400,13 @@ fn get_enabled_sources() -> Result<Vec<Source>, String> {
 }
 
 #[tauri::command(async)]
-fn delete_source(id: i64) -> Result<(), String> {
-    sql::delete_source(id).map_err(map_err_frontend)
+fn delete_source(app: AppHandle, id: i64) -> Result<(), String> {
+    sql::delete_source(id).map_err(map_err_frontend)?;
+    if let Some(coord) = app.try_state::<auto_refresh::AutoRefreshCoordinator>() {
+        coord.remove_source(id);
+    }
+    let _ = app.emit("source-deleted", id);
+    Ok(())
 }
 
 #[tauri::command(async)]
