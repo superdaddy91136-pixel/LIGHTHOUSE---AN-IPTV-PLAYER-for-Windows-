@@ -253,8 +253,8 @@ pub async fn get_m3u8_from_link(app: Option<&AppHandle>, source: Source, wipe: b
     let user_agent = get_user_agent_from_source(&source)?;
     let client = reqwest::Client::builder()
         .user_agent(user_agent)
-        .connect_timeout(std::time::Duration::from_secs(15))
-        .timeout(std::time::Duration::from_secs(120))
+        .connect_timeout(std::time::Duration::from_secs(30))
+        .timeout(std::time::Duration::from_secs(360))
         .build()?;
     let url = source.url.clone().context("Invalid source")?;
     let mut response = client.get(&url).send().await?;

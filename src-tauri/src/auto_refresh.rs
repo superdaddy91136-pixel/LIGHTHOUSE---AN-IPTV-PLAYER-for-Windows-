@@ -187,7 +187,7 @@ pub fn is_playback_active(app: &AppHandle) -> bool {
     #[cfg(target_os = "windows")]
     unsafe {
         #[link(name = "kernel32")]
-        extern "system" {
+        unsafe extern "system" {
             fn OpenProcess(
                 dw_desired_access: u32,
                 b_inherit_handle: i32,
@@ -562,7 +562,7 @@ pub fn start_auto_refresh_coordinator(app_handle: AppHandle) -> AutoRefreshCoord
     let coordinator = AutoRefreshCoordinator::new(app_handle.clone(), eval_tx);
     let coord_clone = coordinator.clone();
 
-    tokio::spawn(async move {
+    tauri::async_runtime::spawn(async move {
         // Initial delay on startup (3 seconds) to allow DB migrations and window init
         tokio::time::sleep(Duration::from_secs(3)).await;
 

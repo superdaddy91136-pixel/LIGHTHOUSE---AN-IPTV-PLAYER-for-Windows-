@@ -1836,6 +1836,69 @@ pub fn wipe(tx: &Transaction, id: i64) -> Result<()> {
     Ok(())
 }
 
+pub fn get_channel_count_by_media_type(
+    tx: &Transaction,
+    source_id: i64,
+    stream_type: u8,
+) -> Result<i64> {
+    let count: i64 = match stream_type {
+        media_type::LIVESTREAM => tx.query_row(
+            "SELECT COUNT(1) FROM channels WHERE source_id = ? AND media_type = 0",
+            params![source_id],
+            |row| row.get(0),
+        )?,
+        media_type::MOVIE => tx.query_row(
+            "SELECT COUNT(1) FROM channels WHERE source_id = ? AND media_type = 1 AND series_id IS NULL",
+            params![source_id],
+            |row| row.get(0),
+        )?,
+        media_type::SERIE => tx.query_row(
+            "SELECT COUNT(1) FROM channels WHERE source_id = ? AND media_type = 2",
+            params![source_id],
+            |row| row.get(0),
+        )?,
+        _ => 0,
+    };
+    Ok(count)
+}
+
+pub fn wipe_by_media_type(tx: &Transaction, source_id: i64, stream_type: u8) -> Result<()> {
+    match stream_type {
+        media_type::LIVESTREAM => {
+            tx.execute(
+                "DELETE FROM channels WHERE source_id = ? AND media_type = 0",
+                params![source_id],
+            )?;
+            tx.execute(
+                "DELETE FROM groups WHERE source_id = ? AND media_type = 0",
+                params![source_id],
+            )?;
+        }
+        media_type::MOVIE => {
+            tx.execute(
+                "DELETE FROM channels WHERE source_id = ? AND media_type = 1 AND series_id IS NULL",
+                params![source_id],
+            )?;
+            tx.execute(
+                "DELETE FROM groups WHERE source_id = ? AND media_type = 1",
+                params![source_id],
+            )?;
+        }
+        media_type::SERIE => {
+            tx.execute(
+                "DELETE FROM channels WHERE source_id = ? AND media_type = 2",
+                params![source_id],
+            )?;
+            tx.execute(
+                "DELETE FROM groups WHERE source_id = ? AND media_type = 2",
+                params![source_id],
+            )?;
+        }
+        _ => {}
+    }
+    Ok(())
+}
+
 pub fn clean_epgs() -> Result<()> {
     let sql = get_conn()?;
     sql.execute_batch(

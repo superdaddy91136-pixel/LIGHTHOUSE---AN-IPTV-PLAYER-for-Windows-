@@ -153,6 +153,7 @@ async fn refresh_source_unlocked(app: &AppHandle, source: Source) -> Result<()> 
                 None,
                 Some(err_msg),
             );
+            let _ = app.emit("source-refresh-complete", id);
             crate::auto_refresh::notify_source_refresh_settled(app, id);
             Err(e)
         }

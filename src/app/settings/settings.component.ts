@@ -133,6 +133,7 @@ export class SettingsComponent {
   private unlistenSourceDeleted?: UnlistenFn;
   sortTypes = SORT_TYPES;
   @ViewChild("mpvParams") mpvParams!: ElementRef;
+  @ViewChild("settingsPanel") settingsPanel?: ElementRef<HTMLElement>;
 
   constructor(
     private router: Router,
@@ -151,7 +152,12 @@ export class SettingsComponent {
   }
 
   selectCategory(category: SettingsCategoryId) {
-    this.activeCategory = category;
+    if (this.activeCategory !== category) {
+      this.activeCategory = category;
+      if (this.settingsPanel?.nativeElement) {
+        this.settingsPanel.nativeElement.scrollTo({ top: 0, behavior: "instant" });
+      }
+    }
   }
 
   trackByCategory(_index: number, category: SettingsCategory) {
@@ -180,7 +186,7 @@ export class SettingsComponent {
         break;
     }
 
-    this.activeCategory = this.categories[nextIndex].id;
+    this.selectCategory(this.categories[nextIndex].id);
     const buttons = (event.currentTarget as HTMLElement).querySelectorAll<HTMLButtonElement>(".settings-nav-item");
     buttons[nextIndex]?.focus();
   }
@@ -211,6 +217,7 @@ export class SettingsComponent {
   }
 
   ngOnInit(): void {
+    window.scrollTo({ top: 0, left: 0, behavior: "instant" });
     this.memory.activeNavTab.next(NavTab.Settings);
     this.getSettings();
     this.getSources();

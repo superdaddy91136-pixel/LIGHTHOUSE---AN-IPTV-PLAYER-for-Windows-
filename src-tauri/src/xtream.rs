@@ -152,12 +152,12 @@ pub async fn get_xtream(app: Option<&AppHandle>, mut source: Source, wipe: bool)
     let user_agent = get_user_agent_from_source(&source)?;
     let client = Client::builder()
         .user_agent(user_agent)
-        .connect_timeout(Duration::from_secs(15))
-        .timeout(Duration::from_secs(90))
+        .connect_timeout(Duration::from_secs(30))
+        .timeout(Duration::from_secs(360))
         .build()?;
 
     // Fetch categories concurrently (small JSON payloads, very fast)
-    let (live_cats, vods_cats, series_cats) = join!(
+    let (live_cats_res, vods_cats_res, series_cats_res) = join!(
         get_xtream_http_list_with_client::<XtreamCategory>(
             &client,
             url.clone(),
@@ -174,9 +174,24 @@ pub async fn get_xtream(app: Option<&AppHandle>, mut source: Source, wipe: bool)
             GET_SERIES_CATEGORIES
         ),
     );
-    let live_cats = live_cats.unwrap_or_default();
-    let vods_cats = vods_cats.unwrap_or_default();
-    let series_cats = series_cats.unwrap_or_default();
+    let live_cats = live_cats_res.unwrap_or_else(|e| {
+        log::log(format!(
+            "Warning: failed to fetch live categories for source {source_id}: {e:#}"
+        ));
+        Vec::new()
+    });
+    let vods_cats = vods_cats_res.unwrap_or_else(|e| {
+        log::log(format!(
+            "Warning: failed to fetch VOD categories for source {source_id}: {e:#}"
+        ));
+        Vec::new()
+    });
+    let series_cats = series_cats_res.unwrap_or_else(|e| {
+        log::log(format!(
+            "Warning: failed to fetch series categories for source {source_id}: {e:#}"
+        ));
+        Vec::new()
+    });
 
     // Fetch stream lists with stage-specific progress updates
     crate::utils::emit_source_refresh_progress(
@@ -233,21 +248,51 @@ pub async fn get_xtream(app: Option<&AppHandle>, mut source: Source, wipe: bool)
     )
     .await;
 
+    // Inspect stream results and collect stage-specific errors
+    let mut stage_errors: Vec<String> = Vec::new();
+    let live_opt = match live_res {
+        Ok(items) => Some(items),
+        Err(e) => {
+            let msg = format!("Live TV: {:#}", e);
+            log::log(format!("Source {source_id} {}", msg));
+            stage_errors.push(msg);
+            None
+        }
+    };
+    let vods_opt = match vods_res {
+        Ok(items) => Some(items),
+        Err(e) => {
+            let msg = format!("Movies: {:#}", e);
+            log::log(format!("Source {source_id} {}", msg));
+            stage_errors.push(msg);
+            None
+        }
+    };
+    let series_opt = match series_res {
+        Ok(items) => Some(items),
+        Err(e) => {
+            let msg = format!("TV Shows: {:#}", e);
+            log::log(format!("Source {source_id} {}", msg));
+            stage_errors.push(msg);
+            None
+        }
+    };
+
     // If all stream requests failed, abort without modifying existing database
-    if live_res.is_err() && vods_res.is_err() && series_res.is_err() {
-        let err_msg = live_res
-            .err()
-            .map(|e| e.to_string())
-            .unwrap_or_else(|| "Failed to retrieve any streams".to_string());
-        bail!("Failed to retrieve Xtream catalog: {}", err_msg);
+    if live_opt.is_none() && vods_opt.is_none() && series_opt.is_none() {
+        bail!(
+            "Failed to retrieve catalog from provider: {}",
+            stage_errors.join("; ")
+        );
     }
 
-    let live = live_res.unwrap_or_default();
-    let vods = vods_res.unwrap_or_default();
-    let series = series_res.unwrap_or_default();
-    let total_items = live.len() + vods.len() + series.len();
+    let live_len = live_opt.as_ref().map(|v| v.len()).unwrap_or(0);
+    let vods_len = vods_opt.as_ref().map(|v| v.len()).unwrap_or(0);
+    let series_len = series_opt.as_ref().map(|v| v.len()).unwrap_or(0);
+    let total_items = live_len + vods_len + series_len;
 
     let app_clone = app.cloned();
+    let stage_errors_clone = stage_errors.clone();
     tokio::task::spawn_blocking(move || {
         let app_ref = app_clone.as_ref();
         let mut sql = sql::get_conn()?;
@@ -268,54 +313,98 @@ pub async fn get_xtream(app: Option<&AppHandle>, mut source: Source, wipe: bool)
             );
             channel_preserve =
                 sql::get_preserve(&tx, source.id.context("no source id")?).unwrap_or_default();
-            sql::wipe(&tx, source.id.context("Source should have id")?)?;
         } else {
             source.id = Some(sql::create_or_find_source_by_name(&tx, &source)?);
         }
 
         let mut processed_so_far: usize = 0;
 
-        process_xtream(
-            &tx,
-            live,
-            live_cats,
-            &source,
-            media_type::LIVESTREAM,
-            app_ref,
-            source_id,
-            "live",
-            "Live TV",
-            &mut processed_so_far,
-            total_items,
-        )?;
+        if let Some(live) = live_opt {
+            let existing_live =
+                sql::get_channel_count_by_media_type(&tx, source_id, media_type::LIVESTREAM)?;
+            let should_wipe = wipe && (existing_live == 0 || !live.is_empty());
+            if wipe && !should_wipe {
+                log::log(format!(
+                    "Source {source_id}: Live streams returned 0 items but database has {existing_live} items; preserving existing live channels to prevent data loss"
+                ));
+            } else if should_wipe {
+                sql::wipe_by_media_type(&tx, source_id, media_type::LIVESTREAM)?;
+            }
 
-        process_xtream(
-            &tx,
-            vods,
-            vods_cats,
-            &source,
-            media_type::MOVIE,
-            app_ref,
-            source_id,
-            "movies",
-            "Movies",
-            &mut processed_so_far,
-            total_items,
-        )?;
+            if should_wipe || !live.is_empty() {
+                process_xtream(
+                    &tx,
+                    live,
+                    live_cats,
+                    &source,
+                    media_type::LIVESTREAM,
+                    app_ref,
+                    source_id,
+                    "live",
+                    "Live TV",
+                    &mut processed_so_far,
+                    total_items,
+                )?;
+            }
+        }
 
-        process_xtream(
-            &tx,
-            series,
-            series_cats,
-            &source,
-            media_type::SERIE,
-            app_ref,
-            source_id,
-            "series",
-            "TV Shows",
-            &mut processed_so_far,
-            total_items,
-        )?;
+        if let Some(vods) = vods_opt {
+            let existing_vods =
+                sql::get_channel_count_by_media_type(&tx, source_id, media_type::MOVIE)?;
+            let should_wipe = wipe && (existing_vods == 0 || !vods.is_empty());
+            if wipe && !should_wipe {
+                log::log(format!(
+                    "Source {source_id}: VOD streams returned 0 items but database has {existing_vods} items; preserving existing movies to prevent data loss"
+                ));
+            } else if should_wipe {
+                sql::wipe_by_media_type(&tx, source_id, media_type::MOVIE)?;
+            }
+
+            if should_wipe || !vods.is_empty() {
+                process_xtream(
+                    &tx,
+                    vods,
+                    vods_cats,
+                    &source,
+                    media_type::MOVIE,
+                    app_ref,
+                    source_id,
+                    "movies",
+                    "Movies",
+                    &mut processed_so_far,
+                    total_items,
+                )?;
+            }
+        }
+
+        if let Some(series) = series_opt {
+            let existing_series =
+                sql::get_channel_count_by_media_type(&tx, source_id, media_type::SERIE)?;
+            let should_wipe = wipe && (existing_series == 0 || !series.is_empty());
+            if wipe && !should_wipe {
+                log::log(format!(
+                    "Source {source_id}: Series returned 0 items but database has {existing_series} items; preserving existing TV shows to prevent data loss"
+                ));
+            } else if should_wipe {
+                sql::wipe_by_media_type(&tx, source_id, media_type::SERIE)?;
+            }
+
+            if should_wipe || !series.is_empty() {
+                process_xtream(
+                    &tx,
+                    series,
+                    series_cats,
+                    &source,
+                    media_type::SERIE,
+                    app_ref,
+                    source_id,
+                    "series",
+                    "TV Shows",
+                    &mut processed_so_far,
+                    total_items,
+                )?;
+            }
+        }
 
         crate::utils::emit_source_refresh_progress(
             app_ref,
@@ -333,6 +422,10 @@ pub async fn get_xtream(app: Option<&AppHandle>, mut source: Source, wipe: bool)
             sql::restore_preserve(&tx, source.id.context("no source id")?, channel_preserve)?;
         }
         tx.commit()?;
+
+        if !stage_errors_clone.is_empty() {
+            bail!("Partial refresh failure: {}", stage_errors_clone.join("; "));
+        }
         Ok::<(), anyhow::Error>(())
     })
     .await??;
