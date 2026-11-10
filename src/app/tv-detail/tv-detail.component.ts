@@ -427,14 +427,15 @@ export class TvDetailComponent implements OnInit, AfterViewInit, OnDestroy {
       if (cachedVersions?.length) {
         for (const v of cachedVersions) {
           cached = this.tmdbEnrichment.getEnrichmentSync(v.channel);
-          if (cached?.backdropPath) break;
+          if (cached?.backdropPath && cached.backdropVersion === 1) break;
         }
       }
     }
 
     if (cached) {
-      this.loadingEnrichment = false;
       this.applyEnrichment(cached, show.id);
+      // Keep skeleton shimmer active while async enrichment retrieves backdrops if cache lacks one
+      this.loadingEnrichment = !this.backdropUrl;
     } else {
       this.loadingEnrichment = true;
     }
@@ -540,7 +541,7 @@ export class TvDetailComponent implements OnInit, AfterViewInit, OnDestroy {
 
           if (!this.enrichment || !this.enrichment.backdropPath) {
             const verCached = this.tmdbEnrichment.getEnrichmentSync(targetVersion.channel);
-            if (verCached) {
+            if (verCached?.backdropPath && verCached.backdropVersion === 1) {
               this.applyEnrichment(verCached, this.show.id);
             }
           }
@@ -567,7 +568,7 @@ export class TvDetailComponent implements OnInit, AfterViewInit, OnDestroy {
       if (!this.enrichment?.backdropPath && this.versions?.length) {
         for (const v of this.versions) {
           const vCached = this.tmdbEnrichment.getEnrichmentSync(v.channel);
-          if (vCached?.backdropPath) {
+          if (vCached?.backdropPath && vCached.backdropVersion === 1) {
             this.applyEnrichment(vCached, this.show?.id);
             break;
           }
@@ -661,15 +662,36 @@ export class TvDetailComponent implements OnInit, AfterViewInit, OnDestroy {
 
   /**
    * Picks a rotated backdrop path for this detail-screen visit.
-   * Rotates through backdropPaths on each new visit, persisting the index and path per TMDB ID.
-   * Returns the chosen path or falls back to the single backdropPath.
+   * Only uses eligible backdrop images starting from index 1 (never index 0).
+   * Rotates through eligible backdrops on each reopening of the detail screen.
+   * Persists the chosen index and path in localStorage.
    */
   private pickRotatedBackdrop(enr: TmdbMediaEnrichment): string | undefined {
-    if (!enr.backdropPath) return undefined;
-    const paths = enr.backdropPaths;
-    if (!paths || paths.length <= 1) {
-      this.currentBackdropPath = enr.backdropPath;
-      return enr.backdropPath;
+    // Only accept backdrops verified by the new selection logic (backdropVersion === 1)
+    if (enr.backdropVersion !== 1 || !enr.backdropPath) {
+      return undefined;
+    }
+
+    const paths = (enr.backdropPaths && enr.backdropPaths.length > 0
+      ? enr.backdropPaths
+      : [enr.backdropPath]
+    ).filter(
+      (p) =>
+        p &&
+        p.trim() !== '' &&
+        (!enr.posterPath ||
+          p.trim().replace(/^\//, '') !== enr.posterPath.trim().replace(/^\//, '')),
+    );
+
+    if (paths.length === 0) {
+      this.currentBackdropPath = undefined;
+      return undefined;
+    }
+
+    // If only one eligible backdrop exists, display it without rotation.
+    if (paths.length === 1) {
+      this.currentBackdropPath = paths[0];
+      return paths[0];
     }
 
     const storageKey = `lh_backdrop_idx_${enr.tmdbId}`;
@@ -678,21 +700,29 @@ export class TvDetailComponent implements OnInit, AfterViewInit, OnDestroy {
     if (!this.backdropRotationApplied) {
       this.backdropRotationApplied = true;
       try {
+        const persistedPath = localStorage.getItem(pathKey);
         const prev = localStorage.getItem(storageKey);
         const prevIdx = prev != null ? parseInt(prev, 10) : -1;
-        const nextIdx = (isNaN(prevIdx) || prevIdx < 0) ? 0 : (prevIdx + 1) % paths.length;
-        const chosen = paths[nextIdx] || enr.backdropPath;
+
+        // If persisted path is not in eligible paths (e.g. was the old index 0 or invalid), start fresh at 0
+        const isPersistedValid = !!(persistedPath && paths.includes(persistedPath));
+        const nextIdx =
+          !isPersistedValid || isNaN(prevIdx) || prevIdx < 0 || prevIdx >= paths.length
+            ? 0
+            : (prevIdx + 1) % paths.length;
+
+        const chosen = paths[nextIdx] || paths[0];
         localStorage.setItem(storageKey, String(nextIdx));
         localStorage.setItem(pathKey, chosen);
         this.currentBackdropPath = chosen;
         return chosen;
       } catch {
-        this.currentBackdropPath = enr.backdropPath;
-        return enr.backdropPath;
+        this.currentBackdropPath = paths[0];
+        return paths[0];
       }
     }
 
-    if (this.currentBackdropPath) {
+    if (this.currentBackdropPath && paths.includes(this.currentBackdropPath)) {
       return this.currentBackdropPath;
     }
 
@@ -703,12 +733,14 @@ export class TvDetailComponent implements OnInit, AfterViewInit, OnDestroy {
         return persistedPath;
       }
       const idx = parseInt(localStorage.getItem(storageKey) || '0', 10);
-      const chosen = paths[isNaN(idx) ? 0 : idx % paths.length] || enr.backdropPath;
+      const chosen =
+        paths[isNaN(idx) || idx < 0 || idx >= paths.length ? 0 : idx % paths.length] ||
+        paths[0];
       this.currentBackdropPath = chosen;
       return chosen;
     } catch {
-      this.currentBackdropPath = enr.backdropPath;
-      return enr.backdropPath;
+      this.currentBackdropPath = paths[0];
+      return paths[0];
     }
   }
 
@@ -721,13 +753,20 @@ export class TvDetailComponent implements OnInit, AfterViewInit, OnDestroy {
     if (chosenBackdrop) {
       this.currentBackdropPath = chosenBackdrop;
       // Prioritize w1280 first for instantaneous progressive loading, fall back to original
-      const backdropUrl = getTmdbBackdropUrl(chosenBackdrop, 'w1280') || getTmdbBackdropUrl(chosenBackdrop, 'original');
+      const backdropUrl =
+        getTmdbBackdropUrl(chosenBackdrop, 'w1280') ||
+        getTmdbBackdropUrl(chosenBackdrop, 'original');
       if (backdropUrl) {
         this.backdropUrl = backdropUrl;
         this.isBackdropFallback = false;
         this.backdropError = false;
         this.updateAmbientBackground();
       }
+    } else {
+      this.currentBackdropPath = undefined;
+      this.backdropUrl = undefined;
+      this.isBackdropFallback = false;
+      this.updateAmbientBackground();
     }
 
     if (enr.posterPath) {

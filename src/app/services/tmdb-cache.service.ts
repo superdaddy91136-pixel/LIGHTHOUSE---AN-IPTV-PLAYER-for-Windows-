@@ -142,6 +142,14 @@ export class TmdbCacheService {
       item.logoLanguage = undefined;
       item.logoVersion = undefined;
     }
+    // Strict isolation: a backdrop must never match the title's poster
+    if (item.backdropPath && item.posterPath) {
+      const norm = (p: string) => p.trim().startsWith('/') ? p.trim() : `/${p.trim()}`;
+      if (norm(item.backdropPath) === norm(item.posterPath)) {
+        item.backdropPath = undefined;
+        item.backdropPaths = undefined;
+      }
+    }
     return item;
   }
 

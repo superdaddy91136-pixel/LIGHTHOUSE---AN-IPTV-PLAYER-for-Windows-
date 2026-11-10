@@ -1376,6 +1376,19 @@ body::-webkit-scrollbar-thumb:active {
   transform: none;
   object-position: center 25%;
 }
+.movie-backdrop-empty-fallback {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  background: radial-gradient(
+    ellipse 85% 65% at 65% 35%,
+    rgba(28, 36, 52, 0.40) 0%,
+    rgba(14, 18, 27, 0.75) 45%,
+    rgba(7, 8, 12, 0.98) 100%
+  );
+  pointer-events: none;
+}
 .movie-backdrop-gradient {
   position: absolute;
   inset: 0;

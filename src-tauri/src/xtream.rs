@@ -20,7 +20,7 @@ use chrono::Local;
 use chrono::NaiveDateTime;
 use futures::future::join_all;
 use reqwest::Client;
-use rusqlite::Transaction;
+use rusqlite::{Transaction, params};
 use serde::Deserialize;
 use serde::Serialize;
 use std::collections::HashMap;
@@ -322,16 +322,12 @@ pub async fn get_xtream(app: Option<&AppHandle>, mut source: Source, wipe: bool)
         if let Some(live) = live_opt {
             let existing_live =
                 sql::get_channel_count_by_media_type(&tx, source_id, media_type::LIVESTREAM)?;
-            let should_wipe = wipe && (existing_live == 0 || !live.is_empty());
-            if wipe && !should_wipe {
+            let should_sync = existing_live == 0 || !live.is_empty();
+            if !should_sync {
                 log::log(format!(
                     "Source {source_id}: Live streams returned 0 items but database has {existing_live} items; preserving existing live channels to prevent data loss"
                 ));
-            } else if should_wipe {
-                sql::wipe_by_media_type(&tx, source_id, media_type::LIVESTREAM)?;
-            }
-
-            if should_wipe || !live.is_empty() {
+            } else {
                 process_xtream(
                     &tx,
                     live,
@@ -351,16 +347,12 @@ pub async fn get_xtream(app: Option<&AppHandle>, mut source: Source, wipe: bool)
         if let Some(vods) = vods_opt {
             let existing_vods =
                 sql::get_channel_count_by_media_type(&tx, source_id, media_type::MOVIE)?;
-            let should_wipe = wipe && (existing_vods == 0 || !vods.is_empty());
-            if wipe && !should_wipe {
+            let should_sync = existing_vods == 0 || !vods.is_empty();
+            if !should_sync {
                 log::log(format!(
                     "Source {source_id}: VOD streams returned 0 items but database has {existing_vods} items; preserving existing movies to prevent data loss"
                 ));
-            } else if should_wipe {
-                sql::wipe_by_media_type(&tx, source_id, media_type::MOVIE)?;
-            }
-
-            if should_wipe || !vods.is_empty() {
+            } else {
                 process_xtream(
                     &tx,
                     vods,
@@ -380,16 +372,12 @@ pub async fn get_xtream(app: Option<&AppHandle>, mut source: Source, wipe: bool)
         if let Some(series) = series_opt {
             let existing_series =
                 sql::get_channel_count_by_media_type(&tx, source_id, media_type::SERIE)?;
-            let should_wipe = wipe && (existing_series == 0 || !series.is_empty());
-            if wipe && !should_wipe {
+            let should_sync = existing_series == 0 || !series.is_empty();
+            if !should_sync {
                 log::log(format!(
                     "Source {source_id}: Series returned 0 items but database has {existing_series} items; preserving existing TV shows to prevent data loss"
                 ));
-            } else if should_wipe {
-                sql::wipe_by_media_type(&tx, source_id, media_type::SERIE)?;
-            }
-
-            if should_wipe || !series.is_empty() {
+            } else {
                 process_xtream(
                     &tx,
                     series,
@@ -499,6 +487,34 @@ where
     get_xtream_http_data_with_client(&client, url, action).await
 }
 
+struct ExistingChannelMeta {
+    id: i64,
+    name: String,
+    group_id: Option<i64>,
+    image: Option<String>,
+    url: Option<String>,
+    favorite: bool,
+    last_watched: Option<i64>,
+    hidden: bool,
+}
+
+struct ChannelInsert {
+    name: String,
+    group_id: Option<i64>,
+    image: Option<String>,
+    url: Option<String>,
+    stream_id: u64,
+    tv_archive: Option<bool>,
+}
+
+struct ChannelUpdate {
+    id: i64,
+    name: String,
+    group_id: Option<i64>,
+    image: Option<String>,
+    url: Option<String>,
+}
+
 fn process_xtream(
     tx: &Transaction,
     streams: Vec<XtreamStream>,
@@ -512,7 +528,61 @@ fn process_xtream(
     processed_so_far: &mut usize,
     total_items: usize,
 ) -> Result<()> {
-    let cats: HashMap<String, String> = cats
+    let t_start = std::time::Instant::now();
+    let stage_total = streams.len();
+
+    // 1. Pre-load existing channels for this source and media type
+    let mut existing_map: HashMap<u64, ExistingChannelMeta> =
+        HashMap::with_capacity(stage_total.min(200_000));
+    {
+        let mut query_stmt = tx.prepare(
+            "SELECT id, stream_id, name, group_id, image, url, favorite, last_watched, hidden
+             FROM channels
+             WHERE source_id = ? AND media_type = ? AND series_id IS NULL AND stream_id IS NOT NULL",
+        )?;
+        let mut rows = query_stmt.query(params![source_id, stream_type])?;
+        while let Some(row) = rows.next()? {
+            let id: i64 = row.get(0)?;
+            let stream_id: u64 = row.get::<_, i64>(1)? as u64;
+            let name: String = row.get(2)?;
+            let group_id: Option<i64> = row.get(3)?;
+            let image: Option<String> = row.get(4)?;
+            let url: Option<String> = row.get(5)?;
+            let favorite: bool = row.get(6)?;
+            let last_watched: Option<i64> = row.get(7)?;
+            let hidden: bool = row.get(8)?;
+            existing_map.insert(
+                stream_id,
+                ExistingChannelMeta {
+                    id,
+                    name,
+                    group_id,
+                    image,
+                    url,
+                    favorite,
+                    last_watched,
+                    hidden,
+                },
+            );
+        }
+    }
+
+    // 2. Pre-load existing groups for this source and media type
+    let mut groups_map: HashMap<String, i64> = HashMap::new();
+    {
+        let mut group_stmt = tx.prepare(
+            "SELECT id, name FROM groups WHERE source_id = ? AND media_type = ?",
+        )?;
+        let mut rows = group_stmt.query(params![source_id, stream_type])?;
+        while let Some(row) = rows.next()? {
+            let id: i64 = row.get(0)?;
+            let name: String = row.get(1)?;
+            groups_map.insert(name, id);
+        }
+    }
+
+    // 3. Process categories and register new groups
+    let cat_names: HashMap<String, String> = cats
         .into_iter()
         .filter_map(|f| {
             let category_id = get_serde_json_string(&f.category_id);
@@ -523,39 +593,94 @@ fn process_xtream(
             }
         })
         .collect();
-    let mut groups: HashMap<String, i64> = HashMap::new();
-    let stage_total = streams.len();
-    let emit_interval = (stage_total / 40).max(50);
 
-    if stage_total > 0 && app.is_some() {
-        let pct = if total_items > 0 {
-            30.0 + ((*processed_so_far as f64 / total_items as f64) * 65.0)
-        } else {
-            30.0
-        };
-        crate::utils::emit_source_refresh_progress(
-            app,
-            source_id,
-            stage_name,
-            &format!("Syncing {} (0 / {})...", stage_prefix, stage_total),
-            Some((pct * 10.0).round() / 10.0),
-            false,
-            Some(*processed_so_far),
-            Some(total_items),
-            None,
-        );
+    {
+        let mut insert_group_stmt = tx.prepare(
+            "INSERT INTO groups (name, source_id, media_type) VALUES (?, ?, ?)",
+        )?;
+        for (_cid, name) in &cat_names {
+            if !groups_map.contains_key(name) {
+                insert_group_stmt.execute(params![name, source_id, stream_type])?;
+                let new_id = tx.last_insert_rowid();
+                groups_map.insert(name.clone(), new_id);
+            }
+        }
     }
 
-    for (idx, live) in streams.into_iter().enumerate() {
-        let category_name = get_cat_name(&cats, get_serde_json_string(&live.category_id));
-        if let Ok(mut channel) = convert_xtream_live_to_channel(live, source, stream_type, category_name) {
-            let _ = sql::set_channel_group_id(
-                &mut groups,
-                &mut channel,
-                tx,
-                source.id.as_ref().unwrap(),
-            );
-            let _ = sql::insert_channel(tx, channel);
+    // 4. Pre-format base stream URL prefix to avoid repetitive String formatting in loop
+    let base_url = format!(
+        "{}/{}/{}/{}/",
+        source.url_origin.as_deref().unwrap_or(""),
+        get_media_type_string(stream_type)?,
+        source.username.as_deref().unwrap_or(""),
+        source.password.as_deref().unwrap_or(""),
+    );
+
+    // 5. Compute diff
+    let mut to_insert: Vec<ChannelInsert> = Vec::new();
+    let mut to_update: Vec<ChannelUpdate> = Vec::new();
+    let mut unchanged_count: usize = 0;
+    let emit_interval = (stage_total / 30).max(100);
+
+    for (idx, stream) in streams.into_iter().enumerate() {
+        let stream_id = get_serde_json_u64(&stream.stream_id)
+            .or_else(|| get_serde_json_u64(&stream.series_id));
+        let stream_id = match stream_id {
+            Some(id) if id > 0 => id,
+            _ => continue,
+        };
+
+        let name = match stream.name.filter(|n| !n.trim().is_empty()) {
+            Some(n) => n.trim().to_string(),
+            None => continue,
+        };
+
+        let category_name = get_serde_json_string(&stream.category_id)
+            .and_then(|cid| cat_names.get(&cid).cloned());
+        let group_id = category_name.as_ref().and_then(|cn| groups_map.get(cn).copied());
+
+        let image = stream
+            .stream_icon
+            .or(stream.cover)
+            .map(|x| x.trim().to_string());
+
+        let url = if stream_type == media_type::SERIE {
+            Some(stream_id.to_string())
+        } else {
+            let ext = stream
+                .container_extension
+                .as_deref()
+                .unwrap_or(LIVE_STREAM_EXTENSION);
+            Some(format!("{base_url}{stream_id}.{ext}"))
+        };
+
+        let tv_archive = get_serde_json_u64(&stream.tv_archive).map(|x| x == 1);
+
+        if let Some(existing) = existing_map.remove(&stream_id) {
+            let changed = existing.name != name
+                || existing.group_id != group_id
+                || existing.image != image
+                || existing.url != url;
+            if changed {
+                to_update.push(ChannelUpdate {
+                    id: existing.id,
+                    name,
+                    group_id,
+                    image,
+                    url,
+                });
+            } else {
+                unchanged_count += 1;
+            }
+        } else {
+            to_insert.push(ChannelInsert {
+                name,
+                group_id,
+                image,
+                url,
+                stream_id,
+                tv_archive,
+            });
         }
 
         *processed_so_far += 1;
@@ -563,7 +688,8 @@ fn process_xtream(
         if (current_in_stage % emit_interval == 0 || current_in_stage == stage_total)
             && app.is_some()
         {
-            let pct = if total_items > 0 {
+            let stage_pct = (current_in_stage as f64 / stage_total.max(1) as f64) * 100.0;
+            let overall_pct = if total_items > 0 {
                 30.0 + ((*processed_so_far as f64 / total_items as f64) * 65.0)
             } else {
                 30.0
@@ -573,20 +699,98 @@ fn process_xtream(
                 source_id,
                 stage_name,
                 &format!(
-                    "Syncing {} ({} / {})...",
-                    stage_prefix, current_in_stage, stage_total
+                    "Syncing {} ({} / {} • {:.0}%)...",
+                    stage_prefix, current_in_stage, stage_total, stage_pct
                 ),
-                Some((pct * 10.0).round() / 10.0),
+                Some((overall_pct * 10.0).round() / 10.0),
                 false,
-                Some(*processed_so_far),
-                Some(total_items),
+                Some(current_in_stage),
+                Some(stage_total),
                 None,
             );
         }
     }
+
+    // 6. Removed items (streams no longer present in provider catalog)
+    let mut to_delete: Vec<i64> = Vec::new();
+    for (_sid, item) in existing_map {
+        // Protect user favorites, Continue Watching, and hidden channels!
+        if !item.favorite && item.last_watched.is_none() && !item.hidden {
+            to_delete.push(item.id);
+        }
+    }
+
+    let diff_duration = t_start.elapsed();
+
+    // 7. Apply DB writes with prepared statements
+    let write_start = std::time::Instant::now();
+    let to_insert_len = to_insert.len();
+    let to_update_len = to_update.len();
+    let to_delete_len = to_delete.len();
+
+    if !to_insert.is_empty() {
+        let mut insert_stmt = tx.prepare(
+            "INSERT INTO channels (name, group_id, image, url, source_id, media_type, series_id, favorite, stream_id, tv_archive, season_id, episode_num)
+             VALUES (?, ?, ?, ?, ?, ?, NULL, 0, ?, ?, NULL, NULL)",
+        )?;
+        for item in to_insert {
+            insert_stmt.execute(params![
+                item.name,
+                item.group_id,
+                item.image,
+                item.url,
+                source_id,
+                stream_type,
+                item.stream_id as i64,
+                item.tv_archive,
+            ])?;
+        }
+    }
+
+    if !to_update.is_empty() {
+        let mut update_stmt = tx.prepare(
+            "UPDATE channels SET name = ?, group_id = ?, image = ?, url = ? WHERE id = ?",
+        )?;
+        for item in to_update {
+            update_stmt.execute(params![
+                item.name,
+                item.group_id,
+                item.image,
+                item.url,
+                item.id,
+            ])?;
+        }
+    }
+
+    if !to_delete.is_empty() {
+        let mut delete_stmt = tx.prepare(
+            "DELETE FROM channels WHERE id = ?",
+        )?;
+        for id in to_delete {
+            delete_stmt.execute(params![id])?;
+        }
+    }
+
+    let write_duration = write_start.elapsed();
+    let total_duration = t_start.elapsed();
+
+    log::log(format!(
+        "[Catalog Sync] {} completed in {:.2}s (diff: {:.2}s, writes: {:.2}s) — Total: {}, Unchanged: {}, Inserted: {}, Updated: {}, Deleted: {}",
+        stage_prefix,
+        total_duration.as_secs_f64(),
+        diff_duration.as_secs_f64(),
+        write_duration.as_secs_f64(),
+        stage_total,
+        unchanged_count,
+        to_insert_len,
+        to_update_len,
+        to_delete_len
+    ));
+
     Ok(())
 }
 
+#[allow(dead_code)]
 fn get_cat_name(cats: &HashMap<String, String>, category_id: Option<String>) -> Option<String> {
     if category_id.is_none() {
         return None;
@@ -594,6 +798,7 @@ fn get_cat_name(cats: &HashMap<String, String>, category_id: Option<String>) -> 
     return cats.get(&category_id.unwrap()).map(|t| t.to_string());
 }
 
+#[allow(dead_code)]
 fn convert_xtream_live_to_channel(
     stream: XtreamStream,
     source: &Source,

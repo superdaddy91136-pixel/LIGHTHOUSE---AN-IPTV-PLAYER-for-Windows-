@@ -417,7 +417,7 @@ export class TmdbService {
     const logoLanguage = logoResult?.language;
     const backdropResult = extractBestBackdropPath(raw.backdrop_path, raw.poster_path, raw.images);
     const backdropPath = backdropResult.best;
-    const backdropPaths = backdropResult.all.length > 1 ? backdropResult.all : undefined;
+    const backdropPaths = backdropResult.all.length > 0 ? backdropResult.all : undefined;
 
     return {
       providerItemId,
@@ -431,6 +431,7 @@ export class TmdbService {
       posterPath: raw.poster_path || undefined,
       backdropPath,
       backdropPaths,
+      backdropVersion: 1,
       logoPath,
       logoLanguage,
       logoVersion: 2,
@@ -498,7 +499,7 @@ export class TmdbService {
     const logoLanguage = logoResult?.language;
     const backdropResult = extractBestBackdropPath(raw.backdrop_path, raw.poster_path, raw.images);
     const backdropPath = backdropResult.best;
-    const backdropPaths = backdropResult.all.length > 1 ? backdropResult.all : undefined;
+    const backdropPaths = backdropResult.all.length > 0 ? backdropResult.all : undefined;
 
     return {
       providerItemId,
@@ -512,6 +513,7 @@ export class TmdbService {
       posterPath: raw.poster_path || undefined,
       backdropPath,
       backdropPaths,
+      backdropVersion: 1,
       logoPath,
       logoLanguage,
       logoVersion: 2,
@@ -653,61 +655,115 @@ function extractBestLogoPath(images: any, originalLanguage?: string): string | u
 }
 
 /**
- * Selects the best cinematic backdrop from TMDB's backdrop collection only.
- * Poster artwork is explicitly excluded, even when a malformed response reuses its path.
- * Returns both the best path and all quality-sorted valid paths for detail-screen rotation.
+ * Selects cinematic landscape backdrops from TMDB's backdrop collection starting strictly from index 1.
+ * Index 0 (TMDB's default/first backdrop, often identical to or derived from the poster/thumbnail)
+ * is strictly excluded from selection and rotation.
+ * If only 1 backdrop is available (or <= 1 remaining), returns undefined to trigger the clean fallback behaviour.
  */
 function extractBestBackdropPath(
   primaryBackdrop: any,
   posterPath: any,
   images: any,
 ): { best: string | undefined; all: string[] } {
-  const backdrops: any[] = images?.backdrops;
-  const primaryPath = typeof primaryBackdrop === 'string' ? primaryBackdrop.trim() : '';
-  const excludedPosterPath = typeof posterPath === 'string' ? posterPath.trim() : '';
-  const candidates = Array.isArray(backdrops) ? [...backdrops] : [];
+  const normPath = (p: unknown): string => {
+    if (typeof p !== 'string') return '';
+    const trimmed = p.trim();
+    if (!trimmed) return '';
+    return trimmed.startsWith('/') ? trimmed : `/${trimmed}`;
+  };
 
-  // The detail endpoint's primary backdrop is valid only as a last resort when
-  // TMDB did not return a collection to rank.
-  if (primaryPath && candidates.length === 0) {
-    candidates.push({ file_path: primaryPath });
+  // Build a comprehensive set of excluded poster paths from primary poster and all poster collections
+  const excludedPosterPaths = new Set<string>();
+  const primaryPoster = normPath(posterPath);
+  if (primaryPoster) {
+    excludedPosterPaths.add(primaryPoster);
+  }
+  if (Array.isArray(images?.posters)) {
+    for (const p of images.posters) {
+      const pPath = normPath(p?.file_path);
+      if (pPath) excludedPosterPaths.add(pPath);
+    }
   }
 
-  const valid = candidates.filter((b) => {
-    if (!b || typeof b.file_path !== 'string' || b.file_path.trim() === '') return false;
-    if (excludedPosterPath && b.file_path.trim() === excludedPosterPath) return false;
+  const rawBackdrops: any[] = Array.isArray(images?.backdrops) ? images.backdrops : [];
 
-    // TMDB backdrops are normally 16:9; reject portrait and near-square artwork.
+  // Exclude index 0 from TMDB's backdrops collection and primary backdrop
+  const excludedBackdropPaths = new Set<string>();
+  if (rawBackdrops.length > 0) {
+    const firstBackdropPath = normPath(rawBackdrops[0]?.file_path);
+    if (firstBackdropPath) excludedBackdropPaths.add(firstBackdropPath);
+  }
+  const primary = normPath(primaryBackdrop);
+  if (primary) {
+    excludedBackdropPaths.add(primary);
+  }
+
+  // Never select index 0; start selection strictly from index 1
+  // If there is only 1 (or 0) backdrop available, remaining entries are empty
+  const remainingCandidates = rawBackdrops.length > 1 ? rawBackdrops.slice(1) : [];
+
+  if (remainingCandidates.length === 0) {
+    return { best: undefined, all: [] };
+  }
+
+  // Filter candidates: strictly require landscape aspect ratio, non-poster paths, and non-index-0 paths
+  const valid = remainingCandidates.filter((b) => {
+    const filePath = normPath(b?.file_path);
+    if (!filePath || excludedPosterPaths.has(filePath) || excludedBackdropPaths.has(filePath)) {
+      return false;
+    }
+
     const width = Number(b.width);
     const height = Number(b.height);
-    return !width || !height || width / height >= 1.5;
+    if (width > 0 && height > 0) {
+      // Must be cinematic landscape (reject 2:3 portraits ~0.67 and near-square artwork)
+      if (width / height < 1.33) return false;
+    }
+    const aspectRatio = Number(b.aspect_ratio);
+    if (aspectRatio > 0 && aspectRatio < 1.33) return false;
+
+    return true;
   });
-  if (valid.length === 0) return { best: undefined, all: [] };
+
+  if (valid.length === 0) {
+    return { best: undefined, all: [] };
+  }
 
   const scored = [...valid].sort((a, b) => {
-    // Prefer the wide cinematic aspect ratio before resolution and rating.
-    const aAspect = Number(a.width) && Number(a.height) ? Number(a.width) / Number(a.height) : 0;
-    const bAspect = Number(b.width) && Number(b.height) ? Number(b.width) / Number(b.height) : 0;
+    // 1. Cinematic 16:9 aspect ratio proximity (16/9 ~ 1.778)
+    const aAspect = Number(a.width) && Number(a.height) ? Number(a.width) / Number(a.height) : Number(a.aspect_ratio) || 0;
+    const bAspect = Number(b.width) && Number(b.height) ? Number(b.width) / Number(b.height) : Number(b.aspect_ratio) || 0;
     const aAspectScore = aAspect ? -Math.abs(aAspect - (16 / 9)) : -1;
     const bAspectScore = bAspect ? -Math.abs(bAspect - (16 / 9)) : -1;
-    if (aAspectScore !== bAspectScore) return bAspectScore - aAspectScore;
+    if (Math.abs(aAspectScore - bAspectScore) > 0.05) return bAspectScore - aAspectScore;
 
-    const aPixels = Number(a.width || 0) * Number(a.height || 0);
-    const bPixels = Number(b.width || 0) * Number(b.height || 0);
-    if (aPixels !== bPixels) return bPixels - aPixels;
-
-    // Prefer higher vote score
-    const aScore = (a.vote_average || 0) * (a.vote_count || 1);
-    const bScore = (b.vote_average || 0) * (b.vote_count || 1);
+    // 2. Community vote quality
+    const aScore = (Number(a.vote_average) || 0) * (Number(a.vote_count) || 1);
+    const bScore = (Number(b.vote_average) || 0) * (Number(b.vote_count) || 1);
     if (aScore !== bScore) return bScore - aScore;
 
-    // Prefer language-neutral or English only after visual quality ties.
+    // 3. Prefer higher resolution
+    const aPixels = (Number(a.width) || 0) * (Number(a.height) || 0);
+    const bPixels = (Number(b.width) || 0) * (Number(b.height) || 0);
+    if (aPixels !== bPixels) return bPixels - aPixels;
+
+    // 4. Prefer language-neutral or English
     const aLang = !a.iso_639_1 ? 2 : (a.iso_639_1 === 'en' ? 1 : 0);
     const bLang = !b.iso_639_1 ? 2 : (b.iso_639_1 === 'en' ? 1 : 0);
     return bLang - aLang;
   });
 
-  const allPaths = scored.map((s) => s.file_path as string);
+  // Extract unique paths in sorted priority order
+  const seenPaths = new Set<string>();
+  const allPaths: string[] = [];
+  for (const s of scored) {
+    const p = normPath(s.file_path);
+    if (p && !seenPaths.has(p) && !excludedPosterPaths.has(p) && !excludedBackdropPaths.has(p)) {
+      seenPaths.add(p);
+      allPaths.push(p);
+    }
+  }
+
   return { best: allPaths[0] || undefined, all: allPaths };
 }
 

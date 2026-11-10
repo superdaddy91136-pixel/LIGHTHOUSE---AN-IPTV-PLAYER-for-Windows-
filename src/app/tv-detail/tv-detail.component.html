@@ -23,7 +23,7 @@
     <!-- Backdrop Layer -->
     <div class="movie-backdrop-wrap">
       <!-- Dark Skeleton Backdrop with shimmer while loading enrichment -->
-      <div class="skeleton-backdrop skeleton-shimmer" *ngIf="(!backdropUrl || isBackdropFallback) && loadingEnrichment && !backdropError"></div>
+      <div class="skeleton-backdrop skeleton-shimmer" *ngIf="!backdropUrl && loadingEnrichment && !backdropError"></div>
 
       <img 
         *ngIf="backdropUrl && !backdropError" 
@@ -32,6 +32,10 @@
         alt="{{ cleanTitle }}" 
         class="movie-backdrop-img progressive-fade-in"
         [class.is-fallback]="isBackdropFallback" />
+
+      <!-- Deliberate Fallback when no backdrop exists or backdrop failed (never poster) -->
+      <div class="movie-backdrop-empty-fallback" *ngIf="!backdropUrl && !loadingEnrichment"></div>
+
       <div class="movie-backdrop-gradient"></div>
       <div class="movie-backdrop-vignette"></div>
     </div>

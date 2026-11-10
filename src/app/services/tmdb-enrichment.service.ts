@@ -82,7 +82,12 @@ export class TmdbEnrichmentService {
         return undefined;
       }
 
-      const isIncomplete = priority === 'high' && (!cached.backdropPath || (!cached.overview && !cached.cast) || !cached.logoPath);
+      const isIncomplete =
+        priority === 'high' &&
+        (cached.backdropVersion !== 1 ||
+          !cached.backdropPath ||
+          (!cached.overview && !cached.cast) ||
+          !cached.logoPath);
       if ((this.cacheService.isStale(cached) || isIncomplete) && allowBackgroundFetch && this.configService.isEnabled()) {
         this.enqueue(channel, priority);
       }
@@ -543,6 +548,17 @@ export class TmdbEnrichmentService {
       ? item.genres.map((g: any) => (typeof g === 'string' ? g : g.name)).filter(Boolean)
       : undefined;
 
+    const normPath = (p: unknown): string | undefined => {
+      if (typeof p !== 'string') return undefined;
+      const t = p.trim();
+      if (!t) return undefined;
+      return t.startsWith('/') ? t : `/${t}`;
+    };
+
+    const cleanPoster = normPath(item.poster_path);
+    const rawBackdrop = normPath(item.backdrop_path);
+    const cleanBackdrop = rawBackdrop && rawBackdrop !== cleanPoster ? rawBackdrop : undefined;
+
     const enrichment: TmdbMediaEnrichment = {
       providerItemId: channel.id,
       tmdbId: item.id,
@@ -552,12 +568,8 @@ export class TmdbEnrichmentService {
       originalTitle: item.original_title || item.original_name,
       matchConfidence: 0.95,
       overview: item.overview?.trim() || undefined,
-      posterPath: item.poster_path || undefined,
-      // Discovery results contain only the primary backdrop, so reject it if a
-      // malformed response repeats the title poster path.
-      backdropPath: item.backdrop_path && item.backdrop_path !== item.poster_path
-        ? item.backdrop_path
-        : undefined,
+      posterPath: cleanPoster,
+      backdropPath: cleanBackdrop,
       releaseDate: dateStr || undefined,
       releaseYear,
       genres,
