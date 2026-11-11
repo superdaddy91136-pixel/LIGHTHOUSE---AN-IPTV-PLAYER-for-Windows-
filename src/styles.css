@@ -976,7 +976,7 @@ body::-webkit-scrollbar-thumb:active {
 
 .media-card.cw-card.cw-next-episode-card .card-cw-remove-btn {
   left: auto;
-  right: 42px;
+  right: 8px;
 }
 
 .poster-img {
@@ -1695,6 +1695,11 @@ body::-webkit-scrollbar-thumb:active {
 .btn-detail-secondary svg {
   width: 1.1rem;
   height: 1.1rem;
+}
+.btn-trailer-yt-icon {
+  width: 1.2rem;
+  height: 1.2rem;
+  flex-shrink: 0;
 }
 .btn-detail-secondary:hover {
   background: rgba(255, 255, 255, 0.16);

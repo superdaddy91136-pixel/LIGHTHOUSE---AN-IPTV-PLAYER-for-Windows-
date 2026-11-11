@@ -204,6 +204,7 @@
 
               <!-- Favorite Toggle -->
               <button 
+                *ngIf="row.id !== 'row-continue-watching'" 
                 class="card-fav-btn" 
                 [class.favorited]="item.favorite" 
                 (click)="toggleFavorite(item, $event)" 
