@@ -1131,6 +1131,38 @@
       margin-bottom: 8px;
     }
 
+    .modal-col-title-subs {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+    }
+
+    .subtitle-add-btn {
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      width: 18px;
+      height: 18px;
+      padding: 0;
+      border: none;
+      border-radius: 4px;
+      background: transparent;
+      color: rgba(255, 255, 255, 0.55);
+      cursor: pointer;
+      transition: all 0.15s ease;
+    }
+
+    .subtitle-add-btn:hover {
+      color: #ffffff;
+      background: rgba(255, 255, 255, 0.12);
+    }
+
+    .subtitle-add-btn svg {
+      width: 14px;
+      height: 14px;
+      display: block;
+    }
+
     .modal-col-list {
       overflow-y: auto;
       display: flex;
@@ -2805,7 +2837,12 @@
         </div>
         <!-- SUBTITLES COLUMN -->
         <div class="modal-col">
-          <div class="modal-col-title">Subtitles</div>
+          <div class="modal-col-title modal-col-title-subs">
+            <span>Subtitles</span>
+            <button class="subtitle-add-btn" id="btnAddExternalSubHeader" title="Add External Subtitles" type="button">
+              <svg viewBox="0 0 24 24" fill="currentColor"><path d="M19 13h-6v6h-2v-6H5v-2h6V5h2v6h6v2z"/></svg>
+            </button>
+          </div>
           <div class="modal-col-list" id="subTrackList"></div>
           <div class="subtitle-size-control">
             <div class="subtitle-size-header">
@@ -3204,6 +3241,7 @@
       const btnCloseAudioSubs = document.getElementById('btnCloseAudioSubs');
       const audioTrackList = document.getElementById('audioTrackList');
       const subTrackList = document.getElementById('subTrackList');
+      const btnAddExternalSubHeader = document.getElementById('btnAddExternalSubHeader');
       const subtitleSizeSlider = document.getElementById('subtitleSizeSlider');
       const subtitleSizeValue = document.getElementById('subtitleSizeValue');
 
@@ -4126,6 +4164,11 @@
         e.stopPropagation();
       });
 
+      btnAddExternalSubHeader.addEventListener('click', (e) => {
+        e.stopPropagation();
+        handleAddExternalSubtitles();
+      });
+
       const ISO_LANG_MAP = {
         eng: 'English', en: 'English',
         spa: 'Spanish', es: 'Spanish',
@@ -4632,28 +4675,6 @@
           selectSubtitleTrack('no');
         });
         subTrackList.appendChild(offBtn);
-
-        const addExtBtn = document.createElement('button');
-        addExtBtn.className = 'track-option track-action-btn';
-        addExtBtn.id = 'btnAddExternalSub';
-        addExtBtn.title = 'Add subtitle file (.srt, .ass, .ssa, .vtt)';
-        addExtBtn.innerHTML = `
-          <span class="track-action-label">
-            <svg class="track-action-icon" viewBox="0 0 24 24" fill="currentColor">
-              <path d="M19 13h-6v6h-2v-6H5v-2h6V5h2v6h6v2z"/>
-            </svg>
-            Add External Subtitles…
-          </span>
-        `;
-        addExtBtn.addEventListener('click', (e) => {
-          e.stopPropagation();
-          handleAddExternalSubtitles();
-        });
-        subTrackList.appendChild(addExtBtn);
-
-        const sep = document.createElement('div');
-        sep.className = 'track-list-divider';
-        subTrackList.appendChild(sep);
 
         if (subTracks.length === 0) {
           const empty = document.createElement('div');

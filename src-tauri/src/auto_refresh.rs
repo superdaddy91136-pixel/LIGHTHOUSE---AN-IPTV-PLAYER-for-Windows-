@@ -10,7 +10,7 @@ use crate::sql;
 use crate::types::{Source, SourceDeviceRefreshStatus};
 use crate::utils;
 
-pub const AUTO_REFRESH_INTERVAL_SECS: i64 = 12 * 3600; // 12 hours
+pub const AUTO_REFRESH_INTERVAL_SECS: i64 = 48 * 3600; // 48 hours (2 days)
 
 #[cfg(target_os = "windows")]
 pub mod network_cost {
