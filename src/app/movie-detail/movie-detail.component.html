@@ -286,7 +286,7 @@
   <!-- ========================================== -->
   <!-- 3. MORE LIKE THIS                          -->
   <!-- ========================================== -->
-  <section class="movie-body-section" *ngIf="similarMovies.length > 0 || loadingSimilar">
+  <section class="movie-body-section movie-similar-section" *ngIf="similarMovies.length > 0 || loadingSimilar">
     <div class="section-block detail-section-flat">
       <div class="section-header-row">
         <h3 class="section-heading">
@@ -482,7 +482,7 @@
   </section>
 
   <!-- Similar Movies Skeleton -->
-  <section class="movie-body-section">
+  <section class="movie-body-section movie-similar-section">
     <div class="section-block detail-section-flat">
       <div class="section-header-row">
         <h3 class="section-heading">More Like This</h3>
