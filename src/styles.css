@@ -1266,6 +1266,29 @@ body::-webkit-scrollbar-thumb:active {
 /* ==========================================================================
    MOVIE DETAIL SCREEN STYLES (Liquid-Glass Cinematic Experience)
    ========================================================================== */
+
+/* Hide page vertical scrollbar while viewing Movie or TV detail screens */
+html:has(.movie-detail-container),
+body:has(.movie-detail-container),
+html:has(app-movie-detail),
+body:has(app-movie-detail),
+html:has(app-tv-detail),
+body:has(app-tv-detail) {
+  scrollbar-width: none !important;
+  -ms-overflow-style: none !important;
+}
+
+html:has(.movie-detail-container)::-webkit-scrollbar,
+body:has(.movie-detail-container)::-webkit-scrollbar,
+html:has(app-movie-detail)::-webkit-scrollbar,
+body:has(app-movie-detail)::-webkit-scrollbar,
+html:has(app-tv-detail)::-webkit-scrollbar,
+body:has(app-tv-detail)::-webkit-scrollbar {
+  display: none !important;
+  width: 0 !important;
+  height: 0 !important;
+}
+
 .movie-detail-container {
   position: relative;
   width: 100%;
@@ -1273,6 +1296,14 @@ body::-webkit-scrollbar-thumb:active {
   padding-bottom: 4rem;
   color: #ffffff;
   background: transparent;
+  scrollbar-width: none !important;
+  -ms-overflow-style: none !important;
+}
+
+.movie-detail-container::-webkit-scrollbar {
+  display: none !important;
+  width: 0 !important;
+  height: 0 !important;
 }
 
 /* ── Standardized Circular Back Button ── */
