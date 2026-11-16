@@ -629,35 +629,59 @@ body::-webkit-scrollbar-thumb:active {
   color: #ffffff;
 }
 
-/* Pagination Dots */
+/* Pagination Indicators */
 .hero-pagination-dots {
+  position: absolute;
+  bottom: 1.25rem;
+  left: 108px;
+  right: 0;
   display: flex;
   align-items: center;
+  justify-content: center;
   gap: 8px;
-  margin-top: 1.5rem;
+  z-index: 20;
+  pointer-events: auto;
+}
+
+@media screen and (max-width: 767px) {
+  .hero-pagination-dots {
+    left: 86px;
+    bottom: 0.75rem;
+  }
 }
 
 .hero-dot {
-  width: 7px;
-  height: 7px;
+  position: relative;
+  width: 6px;
+  height: 6px;
   border-radius: 50%;
-  background: rgba(255, 255, 255, 0.35);
+  background: rgba(255, 255, 255, 0.32);
   border: none;
   padding: 0;
   cursor: pointer;
-  transition: all 0.25s cubic-bezier(0.4, 0, 0.2, 1);
+  transition: width 0.25s ease, background-color 0.25s ease;
+  outline: none;
+}
+
+/* Subtle hit target padding for comfortable clicking without altering dot visual size */
+.hero-dot::before {
+  content: '';
+  position: absolute;
+  top: -8px;
+  bottom: -8px;
+  left: -5px;
+  right: -5px;
 }
 
 .hero-dot:hover {
-  background: rgba(255, 255, 255, 0.7);
-  transform: scale(1.2);
+  background: rgba(255, 255, 255, 0.55);
 }
 
 .hero-dot.active {
   width: 22px;
   border-radius: 9999px;
   background: #ffffff;
-  box-shadow: 0 0 10px rgba(255, 255, 255, 0.5);
+  cursor: default;
 }
 
 /* Arrow Navigation */

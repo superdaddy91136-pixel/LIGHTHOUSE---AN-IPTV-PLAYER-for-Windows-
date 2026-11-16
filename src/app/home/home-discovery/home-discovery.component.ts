@@ -167,6 +167,8 @@ export class HomeDiscoveryComponent implements OnInit, AfterViewInit, OnDestroy 
   allRecommended: Channel[] = [];
   private transitionTimeout?: any;
   private preloadedImages = new Set<HTMLImageElement>();
+  private cachedPaginationKey = '';
+  private cachedPaginationIndicators: { targetIndex: number; isActive: boolean }[] = [];
 
   // Continue Watching deduplication & state tracking
   groupedHistoryIds: Map<number, number[]> = new Map();
@@ -889,6 +891,54 @@ export class HomeDiscoveryComponent implements OnInit, AfterViewInit, OnDestroy 
         }, 50);
       }, 280);
     }
+  }
+
+  get heroPaginationIndicators(): { targetIndex: number; isActive: boolean }[] {
+    const total = this.heroItems.length;
+    if (total <= 1) return [];
+
+    const key = `${this.currentHeroIndex}_${total}`;
+    if (key === this.cachedPaginationKey) {
+      return this.cachedPaginationIndicators;
+    }
+
+    const dotCount = 5;
+    const indicators: { targetIndex: number; isActive: boolean }[] = [];
+
+    if (total >= dotCount) {
+      const page = Math.floor(this.currentHeroIndex / dotCount);
+      const startIndex = Math.max(0, Math.min(page * dotCount, total - dotCount));
+      for (let i = 0; i < dotCount; i++) {
+        const targetIndex = startIndex + i;
+        indicators.push({
+          targetIndex,
+          isActive: targetIndex === this.currentHeroIndex,
+        });
+      }
+    } else {
+      for (let i = 0; i < dotCount; i++) {
+        const targetIndex = i % total;
+        indicators.push({
+          targetIndex,
+          isActive: i === (this.currentHeroIndex % dotCount),
+        });
+      }
+    }
+
+    this.cachedPaginationKey = key;
+    this.cachedPaginationIndicators = indicators;
+    return indicators;
+  }
+
+  onPaginationDotClick(targetIndex: number, event?: Event): void {
+    if (event) {
+      event.stopPropagation();
+    }
+    this.setHeroIndex(targetIndex);
+  }
+
+  trackByDotIndex(index: number): number {
+    return index;
   }
 
   nextHero(isAuto: boolean = false) {

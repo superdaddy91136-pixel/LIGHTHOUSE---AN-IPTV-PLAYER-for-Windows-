@@ -131,6 +131,24 @@
           </button>
         </div>
       </div>
+
+      <!-- 5-Dot Pagination Indicators -->
+      <div 
+        *ngIf="heroPaginationIndicators.length > 0" 
+        class="hero-pagination-dots" 
+        role="tablist" 
+        aria-label="Featured hero pagination">
+        <button
+          *ngFor="let dot of heroPaginationIndicators; trackBy: trackByDotIndex"
+          type="button"
+          role="tab"
+          class="hero-dot"
+          [class.active]="dot.isActive"
+          [attr.aria-selected]="dot.isActive"
+          [attr.aria-label]="'Go to hero item ' + (dot.targetIndex + 1)"
+          (click)="onPaginationDotClick(dot.targetIndex, $event)">
+        </button>
+      </div>
     </div>
 
 
