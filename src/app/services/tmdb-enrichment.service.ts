@@ -380,7 +380,16 @@ export class TmdbEnrichmentService {
   private topRatedMoviesCache = new Map<number, { data: any[]; timestamp: number }>();
   private topRatedTvCache = new Map<number, { data: any[]; timestamp: number }>();
   private recommendationsCache = new Map<string, { data: any[]; timestamp: number }>();
+  private discoverMoviesCache = new Map<string, { data: any[]; timestamp: number }>();
+  private discoverTvCache = new Map<string, { data: any[]; timestamp: number }>();
+  private inFlightDiscoverMovies = new Map<string, Promise<any[]>>();
+  private inFlightDiscoverTv = new Map<string, Promise<any[]>>();
   private readonly DISCOVERY_CACHE_TTL = 30 * 60 * 1000; // 30 minutes
+
+  private getDiscoverCacheKey(params: Record<string, string | number | undefined>): string {
+    const keys = Object.keys(params).sort();
+    return keys.map((k) => `${k}=${params[k]}`).join('&');
+  }
 
   /**
    * Fetches trending movies from TMDB with memory cache to avoid repeated requests.
@@ -484,18 +493,64 @@ export class TmdbEnrichmentService {
 
   /**
    * Discovers movies from TMDB based on criteria (genres, ratings, sort).
+   * Cached for 30 minutes with in-flight request deduplication.
    */
   async discoverMovies(params: Record<string, string | number | undefined> = {}): Promise<any[]> {
     if (!this.configService.isEnabled()) return [];
-    return await this.tmdbService.discoverMovies(params);
+    const cacheKey = this.getDiscoverCacheKey(params);
+    const now = Date.now();
+    const cached = this.discoverMoviesCache.get(cacheKey);
+    if (cached && now - cached.timestamp < this.DISCOVERY_CACHE_TTL) {
+      return cached.data;
+    }
+    const inFlight = this.inFlightDiscoverMovies.get(cacheKey);
+    if (inFlight) {
+      return await inFlight;
+    }
+    const fetchPromise = (async () => {
+      try {
+        const results = await this.tmdbService.discoverMovies(params);
+        if (results && results.length > 0) {
+          this.discoverMoviesCache.set(cacheKey, { data: results, timestamp: Date.now() });
+        }
+        return results || [];
+      } finally {
+        this.inFlightDiscoverMovies.delete(cacheKey);
+      }
+    })();
+    this.inFlightDiscoverMovies.set(cacheKey, fetchPromise);
+    return await fetchPromise;
   }
 
   /**
    * Discovers TV shows from TMDB based on criteria (genres, ratings, sort).
+   * Cached for 30 minutes with in-flight request deduplication.
    */
   async discoverTv(params: Record<string, string | number | undefined> = {}): Promise<any[]> {
     if (!this.configService.isEnabled()) return [];
-    return await this.tmdbService.discoverTv(params);
+    const cacheKey = this.getDiscoverCacheKey(params);
+    const now = Date.now();
+    const cached = this.discoverTvCache.get(cacheKey);
+    if (cached && now - cached.timestamp < this.DISCOVERY_CACHE_TTL) {
+      return cached.data;
+    }
+    const inFlight = this.inFlightDiscoverTv.get(cacheKey);
+    if (inFlight) {
+      return await inFlight;
+    }
+    const fetchPromise = (async () => {
+      try {
+        const results = await this.tmdbService.discoverTv(params);
+        if (results && results.length > 0) {
+          this.discoverTvCache.set(cacheKey, { data: results, timestamp: Date.now() });
+        }
+        return results || [];
+      } finally {
+        this.inFlightDiscoverTv.delete(cacheKey);
+      }
+    })();
+    this.inFlightDiscoverTv.set(cacheKey, fetchPromise);
+    return await fetchPromise;
   }
 
   /**
@@ -508,8 +563,11 @@ export class TmdbEnrichmentService {
     const now = Date.now();
     const candidateMap = new Map<number, any>();
 
-    // Bounded concurrency: up to 4 seed calls
-    const targetSeeds = seeds.slice(0, 4);
+    // Balance movie seeds and TV seeds: up to 3 movie seeds and up to 3 TV seeds (max 6 total)
+    const movieSeeds = seeds.filter((s) => !s.isTv).slice(0, 3);
+    const tvSeeds = seeds.filter((s) => s.isTv).slice(0, 3);
+    const targetSeeds = [...movieSeeds, ...tvSeeds];
+
     const promises = targetSeeds.map(async (seed) => {
       const cacheKey = `${seed.isTv ? 'tv' : 'mv'}_${seed.tmdbId}`;
       const cached = this.recommendationsCache.get(cacheKey);
@@ -528,10 +586,20 @@ export class TmdbEnrichmentService {
 
       const items: any[] = [];
       if (rec.status === 'fulfilled' && Array.isArray(rec.value)) {
-        items.push(...rec.value);
+        for (const it of rec.value) {
+          if (it) {
+            it.media_type = seed.isTv ? 'tv' : 'movie';
+            items.push(it);
+          }
+        }
       }
       if (sim.status === 'fulfilled' && Array.isArray(sim.value)) {
-        items.push(...sim.value);
+        for (const it of sim.value) {
+          if (it) {
+            it.media_type = seed.isTv ? 'tv' : 'movie';
+            items.push(it);
+          }
+        }
       }
 
       this.recommendationsCache.set(cacheKey, { data: items, timestamp: now });
