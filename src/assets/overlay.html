@@ -286,6 +286,64 @@
       100% { transform: translate(-50%, -50%) scale(1); }
     }
 
+    /* CENTER SUBTITLE SYNC TOAST */
+    .sub-sync-toast {
+      position: absolute;
+      top: 50%;
+      left: 50%;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      gap: 12px;
+      padding: 10px 20px;
+      background: rgba(16, 17, 24, 0.88);
+      backdrop-filter: blur(20px);
+      -webkit-backdrop-filter: blur(20px);
+      border: 1px solid rgba(255, 255, 255, 0.18);
+      border-radius: 9999px;
+      box-shadow: 0 16px 40px rgba(0, 0, 0, 0.75), inset 0 1px 0 0 rgba(255, 255, 255, 0.14);
+      color: #ffffff;
+      opacity: 0;
+      visibility: hidden;
+      pointer-events: none;
+      transform: translate(-50%, -50%) scale(0.92);
+      transition: opacity 0.16s ease-out, visibility 0.16s ease-out, transform 0.16s cubic-bezier(0.16, 1, 0.3, 1);
+      z-index: 7;
+      user-select: none;
+      -webkit-user-select: none;
+      -webkit-font-smoothing: antialiased;
+    }
+
+    .sub-sync-toast.visible {
+      opacity: 1;
+      visibility: visible;
+      transform: translate(-50%, -50%) scale(1);
+    }
+
+    .sub-sync-toast-content {
+      display: flex;
+      flex-direction: column;
+      align-items: flex-start;
+      gap: 1px;
+    }
+
+    .sub-sync-toast-title {
+      font-size: 11px;
+      font-weight: 600;
+      text-transform: uppercase;
+      letter-spacing: 0.06em;
+      color: rgba(255, 255, 255, 0.65);
+      line-height: 1.1;
+    }
+
+    .sub-sync-toast-value {
+      font-size: 18px;
+      font-weight: 700;
+      font-variant-numeric: tabular-nums;
+      color: #ffffff;
+      line-height: 1.2;
+    }
+
     #seekToastText {
       font-variant-numeric: tabular-nums;
       white-space: nowrap;
@@ -1110,7 +1168,7 @@
       display: flex;
       padding: 16px 18px 18px 18px;
       gap: 20px;
-      max-height: 330px;
+      max-height: min(440px, calc(100vh - 120px));
     }
 
     .modal-col {
@@ -1135,6 +1193,161 @@
       display: flex;
       align-items: center;
       justify-content: space-between;
+    }
+
+    .subtitle-header-actions {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+    }
+
+    .subtitle-sync-toggle-btn {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      height: 20px;
+      padding: 0 7px;
+      font-size: 10px;
+      font-weight: 700;
+      letter-spacing: 0.05em;
+      text-transform: uppercase;
+      border-radius: 4px;
+      border: 1px solid rgba(255, 255, 255, 0.14);
+      background: rgba(255, 255, 255, 0.06);
+      color: rgba(255, 255, 255, 0.7);
+      cursor: pointer;
+      transition: all 0.15s ease;
+      line-height: 1;
+    }
+
+    .subtitle-sync-toggle-btn:hover {
+      color: #ffffff;
+      background: rgba(255, 255, 255, 0.12);
+      border-color: rgba(255, 255, 255, 0.22);
+    }
+
+    .subtitle-sync-toggle-btn.active {
+      color: #ffffff;
+      background: rgba(229, 9, 20, 0.25);
+      border-color: rgba(229, 9, 20, 0.6);
+      box-shadow: 0 1px 4px rgba(229, 9, 20, 0.25);
+    }
+
+    .subtitle-sync-panel {
+      display: none;
+      flex-direction: column;
+      gap: 8px;
+      padding: 10px 12px;
+      margin-bottom: 10px;
+      background: rgba(0, 0, 0, 0.28);
+      border: 1px solid rgba(255, 255, 255, 0.09);
+      border-radius: 8px;
+      box-shadow: inset 0 1px 2px rgba(0, 0, 0, 0.3);
+      animation: subSyncPanelSlideDown 0.18s cubic-bezier(0.16, 1, 0.3, 1);
+    }
+
+    .subtitle-sync-panel.open {
+      display: flex;
+    }
+
+    @keyframes subSyncPanelSlideDown {
+      from {
+        opacity: 0;
+        transform: translateY(-4px);
+      }
+      to {
+        opacity: 1;
+        transform: translateY(0);
+      }
+    }
+
+    .sub-sync-top {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 8px;
+    }
+
+    .sub-sync-offset-box {
+      display: flex;
+      flex-direction: column;
+      gap: 1px;
+      min-width: 0;
+    }
+
+    .sub-sync-offset-val {
+      font-size: 16px;
+      font-weight: 700;
+      color: #ffffff;
+      font-variant-numeric: tabular-nums;
+      line-height: 1.2;
+    }
+
+    .sub-sync-direction-desc {
+      font-size: 11px;
+      color: rgba(255, 255, 255, 0.55);
+      line-height: 1.2;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+
+    .sub-sync-reset-btn {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      padding: 3px 8px;
+      font-size: 11px;
+      font-weight: 600;
+      color: rgba(255, 255, 255, 0.65);
+      background: rgba(255, 255, 255, 0.06);
+      border: 1px solid rgba(255, 255, 255, 0.12);
+      border-radius: 4px;
+      cursor: pointer;
+      transition: all 0.15s ease;
+      flex-shrink: 0;
+    }
+
+    .sub-sync-reset-btn:hover {
+      color: #ffffff;
+      background: rgba(255, 255, 255, 0.14);
+      border-color: rgba(255, 255, 255, 0.22);
+    }
+
+    .sub-sync-actions {
+      display: grid;
+      grid-template-columns: repeat(4, 1fr);
+      gap: 4px;
+    }
+
+    .sub-sync-adj-btn {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      padding: 5px 0;
+      font-size: 11px;
+      font-weight: 600;
+      color: rgba(255, 255, 255, 0.88);
+      background: rgba(255, 255, 255, 0.07);
+      border: 1px solid rgba(255, 255, 255, 0.1);
+      border-radius: 5px;
+      cursor: pointer;
+      transition: all 0.12s ease;
+      white-space: nowrap;
+      user-select: none;
+    }
+
+    .sub-sync-adj-btn:hover {
+      color: #ffffff;
+      background: rgba(255, 255, 255, 0.16);
+      border-color: rgba(255, 255, 255, 0.24);
+      transform: translateY(-1px);
+    }
+
+    .sub-sync-adj-btn:active {
+      transform: translateY(0);
+      background: rgba(229, 9, 20, 0.3);
+      border-color: rgba(229, 9, 20, 0.6);
     }
 
     .subtitle-add-btn {
@@ -1168,7 +1381,7 @@
       display: flex;
       flex-direction: column;
       gap: 4px;
-      max-height: 250px;
+      max-height: 220px;
       padding-right: 4px;
     }
 
@@ -2635,6 +2848,17 @@
       <span id="seekToastText">+10s</span>
     </div>
 
+    <!-- CENTER SUBTITLE SYNC TOAST -->
+    <div class="sub-sync-toast" id="subSyncToast" aria-live="polite">
+      <svg width="22" height="22" viewBox="0 0 24 24" fill="currentColor">
+        <path d="M20 4H4c-1.1 0-2 .9-2 2v12c0 1.1.9 2 2 2h16c1.1 0 2-.9 2-2V6c0-1.1-.9-2-2-2zm0 14H4V6h16v12zM6 10h2v2H6zm0 4h8v2H6zm10 0h2v2h-2zm-6-4h8v2h-8z"/>
+      </svg>
+      <div class="sub-sync-toast-content">
+        <span class="sub-sync-toast-title">Subtitle Sync</span>
+        <span class="sub-sync-toast-value" id="subSyncToastText">+0.00s</span>
+      </div>
+    </div>
+
     <!-- BOTTOM CONTROLS DOCK -->
     <footer class="bottom-bar" id="bottomBar">
       <!-- PROGRESS / SEEK BAR & REMAINING TIME -->
@@ -2839,9 +3063,31 @@
         <div class="modal-col">
           <div class="modal-col-title modal-col-title-subs">
             <span>Subtitles</span>
-            <button class="subtitle-add-btn" id="btnAddExternalSubHeader" title="Add External Subtitles" type="button">
-              <svg viewBox="0 0 24 24" fill="currentColor"><path d="M19 13h-6v6h-2v-6H5v-2h6V5h2v6h6v2z"/></svg>
-            </button>
+            <div class="subtitle-header-actions">
+              <button class="subtitle-sync-toggle-btn" id="btnToggleSubSync" title="Subtitle Synchronization" type="button">
+                Sync
+              </button>
+              <button class="subtitle-add-btn" id="btnAddExternalSubHeader" title="Add External Subtitles" type="button">
+                <svg viewBox="0 0 24 24" fill="currentColor"><path d="M19 13h-6v6h-2v-6H5v-2h6V5h2v6h6v2z"/></svg>
+              </button>
+            </div>
+          </div>
+          <div class="subtitle-sync-panel" id="subtitleSyncPanel">
+            <div class="sub-sync-top">
+              <div class="sub-sync-offset-box">
+                <span class="sub-sync-offset-val" id="subSyncValue">0.00s</span>
+                <span class="sub-sync-direction-desc" id="subSyncDesc">No delay</span>
+              </div>
+              <button class="sub-sync-reset-btn" id="btnSubSyncReset" type="button" title="Reset subtitle delay to 0.00s">
+                Reset
+              </button>
+            </div>
+            <div class="sub-sync-actions">
+              <button class="sub-sync-adj-btn" id="btnSubSyncQuickMinus" type="button" title="Subtitle delay -1s (appear earlier)">−1s</button>
+              <button class="sub-sync-adj-btn" id="btnSubSyncFineMinus" type="button" title="Subtitle delay -100ms (appear earlier)">−100 ms</button>
+              <button class="sub-sync-adj-btn" id="btnSubSyncFinePlus" type="button" title="Subtitle delay +100ms (appear later)">+100 ms</button>
+              <button class="sub-sync-adj-btn" id="btnSubSyncQuickPlus" type="button" title="Subtitle delay +1s (appear later)">+1s</button>
+            </div>
           </div>
           <div class="modal-col-list" id="subTrackList"></div>
           <div class="subtitle-size-control">
@@ -3101,6 +3347,7 @@
       let volumeHudTimer = null;
       let suppressHudUntil = Date.now() + 1500;
       let seekToastTimer = null;
+      let subSyncToastTimer = null;
       let accumulatedSeekSeconds = 0;
       let isFileDialogOpen = false;
       let tracks = [];
@@ -3242,6 +3489,17 @@
       const audioTrackList = document.getElementById('audioTrackList');
       const subTrackList = document.getElementById('subTrackList');
       const btnAddExternalSubHeader = document.getElementById('btnAddExternalSubHeader');
+      const btnToggleSubSync = document.getElementById('btnToggleSubSync');
+      const subtitleSyncPanel = document.getElementById('subtitleSyncPanel');
+      const subSyncValue = document.getElementById('subSyncValue');
+      const subSyncDesc = document.getElementById('subSyncDesc');
+      const btnSubSyncReset = document.getElementById('btnSubSyncReset');
+      const btnSubSyncFineMinus = document.getElementById('btnSubSyncFineMinus');
+      const btnSubSyncFinePlus = document.getElementById('btnSubSyncFinePlus');
+      const btnSubSyncQuickMinus = document.getElementById('btnSubSyncQuickMinus');
+      const btnSubSyncQuickPlus = document.getElementById('btnSubSyncQuickPlus');
+      const subSyncToast = document.getElementById('subSyncToast');
+      const subSyncToastText = document.getElementById('subSyncToastText');
       const subtitleSizeSlider = document.getElementById('subtitleSizeSlider');
       const subtitleSizeValue = document.getElementById('subtitleSizeValue');
 
@@ -4125,6 +4383,7 @@
         sendMpv(['get_property', 'track-list'], 200);
         sendMpv(['get_property', 'aid'], 201);
         sendMpv(['get_property', 'sid'], 202);
+        sendMpv(['get_property', 'sub-delay'], 203);
       }
 
       function openAudioSubsMenu() {
@@ -4168,6 +4427,120 @@
         e.stopPropagation();
         handleAddExternalSubtitles();
       });
+
+      // SUBTITLE SYNCHRONISATION
+      let currentSubDelay = 0;
+      let isSubSyncExpanded = false;
+
+      function formatSubDelay(sec) {
+        const rounded = Math.round(sec * 100) / 100;
+        if (Math.abs(rounded) < 0.001) {
+          return '0.00s';
+        }
+        const sign = rounded > 0 ? '+' : '';
+        return `${sign}${rounded.toFixed(2)}s`;
+      }
+
+      function getSubDelayDirectionText(sec) {
+        const rounded = Math.round(sec * 100) / 100;
+        if (Math.abs(rounded) < 0.001) {
+          return 'No delay';
+        }
+        if (rounded > 0) {
+          return 'Subtitles appear later';
+        }
+        return 'Subtitles appear earlier';
+      }
+
+      function updateSubDelayUI() {
+        const formatted = formatSubDelay(currentSubDelay);
+        const desc = getSubDelayDirectionText(currentSubDelay);
+        if (subSyncValue) subSyncValue.textContent = formatted;
+        if (subSyncDesc) subSyncDesc.textContent = desc;
+        if (btnSubSyncReset) {
+          btnSubSyncReset.style.opacity = Math.abs(currentSubDelay) < 0.001 ? '0.5' : '1';
+        }
+      }
+
+      function toggleSubSyncPanel() {
+        isSubSyncExpanded = !isSubSyncExpanded;
+        if (subtitleSyncPanel) subtitleSyncPanel.classList.toggle('open', isSubSyncExpanded);
+        if (btnToggleSubSync) btnToggleSubSync.classList.toggle('active', isSubSyncExpanded);
+      }
+
+      function closeSubSyncPanel() {
+        isSubSyncExpanded = false;
+        if (subtitleSyncPanel) subtitleSyncPanel.classList.remove('open');
+        if (btnToggleSubSync) btnToggleSubSync.classList.remove('active');
+      }
+
+      function setSubDelay(newDelay, emitMpv = true) {
+        currentSubDelay = Math.round(newDelay * 100) / 100;
+        updateSubDelayUI();
+        if (emitMpv) {
+          sendMpv(['set_property', 'sub-delay', currentSubDelay]);
+        }
+      }
+
+      function showSubSyncToast() {
+        if (!subSyncToast || !subSyncToastText) return;
+        subSyncToastText.textContent = formatSubDelay(currentSubDelay);
+        clearTimeout(subSyncToastTimer);
+        subSyncToast.classList.add('visible');
+        subSyncToastTimer = setTimeout(() => {
+          if (subSyncToast) subSyncToast.classList.remove('visible');
+        }, 1300);
+      }
+
+      function adjustSubDelay(deltaSeconds) {
+        const target = Math.round((currentSubDelay + deltaSeconds) * 100) / 100;
+        setSubDelay(target, true);
+        if (!modalAudioSubs.classList.contains('open')) {
+          showSubSyncToast();
+        }
+      }
+
+      if (btnToggleSubSync) {
+        btnToggleSubSync.addEventListener('click', (e) => {
+          e.stopPropagation();
+          toggleSubSyncPanel();
+        });
+      }
+
+      if (btnSubSyncReset) {
+        btnSubSyncReset.addEventListener('click', (e) => {
+          e.stopPropagation();
+          setSubDelay(0, true);
+        });
+      }
+
+      if (btnSubSyncFineMinus) {
+        btnSubSyncFineMinus.addEventListener('click', (e) => {
+          e.stopPropagation();
+          adjustSubDelay(-0.1);
+        });
+      }
+
+      if (btnSubSyncFinePlus) {
+        btnSubSyncFinePlus.addEventListener('click', (e) => {
+          e.stopPropagation();
+          adjustSubDelay(0.1);
+        });
+      }
+
+      if (btnSubSyncQuickMinus) {
+        btnSubSyncQuickMinus.addEventListener('click', (e) => {
+          e.stopPropagation();
+          adjustSubDelay(-1.0);
+        });
+      }
+
+      if (btnSubSyncQuickPlus) {
+        btnSubSyncQuickPlus.addEventListener('click', (e) => {
+          e.stopPropagation();
+          adjustSubDelay(1.0);
+        });
+      }
 
       const ISO_LANG_MAP = {
         eng: 'English', en: 'English',
@@ -6802,8 +7175,19 @@
         handleArrowSeek(10);
       });
 
+      tauriListen('player-sub-delay-up', () => {
+        adjustSubDelay(0.1);
+      });
+
+      tauriListen('player-sub-delay-down', () => {
+        adjustSubDelay(-0.1);
+      });
+
       // KEYBOARD SHORTCUTS IN OVERLAY
       document.addEventListener('keydown', (e) => {
+        const activeTag = document.activeElement ? document.activeElement.tagName : '';
+        const isTextInput = activeTag === 'TEXTAREA' || (activeTag === 'INPUT' && document.activeElement.type === 'text') || (document.activeElement && document.activeElement.isContentEditable);
+
         // If search input inside drawer is focused, allow typing without triggering player hotkeys
         if (document.activeElement === channelSearchInput) {
           if (e.key === 'Escape') {
@@ -6870,6 +7254,24 @@
         } else if (e.key === 'f' || e.key === 'F') {
           toggleFullscreen();
           e.preventDefault();
+        } else if (
+          (e.key === '+' || e.key === '=' || e.code === 'NumpadAdd') &&
+          !e.ctrlKey &&
+          !e.altKey &&
+          !e.metaKey &&
+          !isTextInput
+        ) {
+          adjustSubDelay(0.1);
+          e.preventDefault();
+        } else if (
+          (e.key === '-' || e.key === '_' || e.code === 'NumpadSubtract') &&
+          !e.ctrlKey &&
+          !e.altKey &&
+          !e.metaKey &&
+          !isTextInput
+        ) {
+          adjustSubDelay(-0.1);
+          e.preventDefault();
         } else if ((e.key === 's' || e.key === 'S') && !e.ctrlKey && !e.altKey && !e.metaKey) {
           if (currentActiveSegment && btnSkipSegment && btnSkipSegment.style.display !== 'none') {
             executeSkipSegment();
@@ -6913,6 +7315,13 @@
           if (parsed.request_id === 202) {
             currentSid = parsed.data;
             renderTracks();
+            return;
+          }
+          if (parsed.request_id === 203) {
+            if (typeof parsed.data === 'number' && Number.isFinite(parsed.data)) {
+              currentSubDelay = Math.round(parsed.data * 100) / 100;
+              updateSubDelayUI();
+            }
             return;
           }
           if (parsed.request_id >= 301 && parsed.request_id <= 314) {
@@ -7103,6 +7512,15 @@
               case 'sid':
                 currentSid = parsed.data;
                 renderTracks();
+                break;
+              case 'sub-delay':
+                if (typeof parsed.data === 'number' && Number.isFinite(parsed.data)) {
+                  const rounded = Math.round(parsed.data * 100) / 100;
+                  if (rounded !== currentSubDelay) {
+                    currentSubDelay = rounded;
+                    updateSubDelayUI();
+                  }
+                }
                 break;
               case 'video-params':
                 if (parsed.data) {
@@ -7580,12 +7998,17 @@
         }
         loadedExternalSubtitles = [];
         attachSavedExternalSubtitles();
+        currentSubDelay = 0;
+        updateSubDelayUI();
+        closeSubSyncPanel();
+        sendMpv(['set_property', 'sub-delay', 0]);
         renderTracks();
         requestTrackInfo();
         sendMpv(['observe_property', 14, 'speed']);
         sendMpv(['observe_property', 15, 'demuxer-cache-duration']);
         sendMpv(['observe_property', 16, 'demuxer-cache-state']);
         sendMpv(['observe_property', 18, 'chapter-list']);
+        sendMpv(['observe_property', 19, 'sub-delay']);
         sendMpv(['get_property', 'demuxer-cache-duration'], 307);
         sendMpv(['get_property', 'demuxer-cache-state'], 308);
         sendMpv(['get_property', 'chapter-list'], 310);
@@ -7633,6 +8056,9 @@
         setTopCrop(32);
         setContentMode('movie');
         closeAllPanels();
+        currentSubDelay = 0;
+        updateSubDelayUI();
+        closeSubSyncPanel();
         tracks = [];
         currentAid = null;
         currentSid = 'no';

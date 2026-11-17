@@ -622,6 +622,32 @@ export class EmbeddedPlayerService implements OnDestroy {
       event.stopPropagation();
       return;
     }
+
+    if (
+      (event.key === '+' || event.key === '=' || event.code === 'NumpadAdd') &&
+      !event.ctrlKey &&
+      !event.altKey &&
+      !event.metaKey &&
+      !isInputFocused()
+    ) {
+      emit('player-sub-delay-up').catch(console.warn);
+      event.preventDefault();
+      event.stopPropagation();
+      return;
+    }
+
+    if (
+      (event.key === '-' || event.key === '_' || event.code === 'NumpadSubtract') &&
+      !event.ctrlKey &&
+      !event.altKey &&
+      !event.metaKey &&
+      !isInputFocused()
+    ) {
+      emit('player-sub-delay-down').catch(console.warn);
+      event.preventDefault();
+      event.stopPropagation();
+      return;
+    }
   }
 
   public syncBounds(immediate: boolean = false): void {
