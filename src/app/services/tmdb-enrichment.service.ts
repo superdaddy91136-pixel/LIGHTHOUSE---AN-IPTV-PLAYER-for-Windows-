@@ -11,13 +11,15 @@ import {
   TMDB_MINIMUM_CONFIDENCE_THRESHOLD,
 } from '../utils/tmdb-matcher';
 import { getTmdbStillUrl } from '../utils/tmdb-image';
-import { TmdbCacheService } from './tmdb-cache.service';
+import { TmdbCacheService, CURRENT_LOGO_ALGO_VERSION } from './tmdb-cache.service';
 import { TmdbConfigService } from './tmdb-config.service';
 import { TmdbService } from './tmdb.service';
 
+export type EnrichmentPriority = 'urgent' | 'high' | 'upcoming' | 'normal';
+
 interface QueueItem {
   channel: Channel;
-  priority: 'high' | 'normal';
+  priority: EnrichmentPriority;
 }
 
 @Injectable({
@@ -78,7 +80,7 @@ export class TmdbEnrichmentService {
   async getEnrichment(
     channel: Channel,
     allowBackgroundFetch = true,
-    priority: 'high' | 'normal' = 'normal',
+    priority: EnrichmentPriority = 'normal',
   ): Promise<TmdbMediaEnrichment | undefined> {
     if (!channel?.id || channel.media_type === MediaType.livestream) {
       return undefined;
@@ -97,7 +99,7 @@ export class TmdbEnrichmentService {
       }
 
       const isIncomplete =
-        priority === 'high' &&
+        (priority === 'urgent' || priority === 'high') &&
         (cached.backdropVersion !== 1 ||
           !cached.backdropPath ||
           (!cached.overview && !cached.cast) ||
@@ -109,7 +111,7 @@ export class TmdbEnrichmentService {
     }
 
     if (allowBackgroundFetch && this.configService.isEnabled()) {
-      if (priority === 'high') {
+      if (priority === 'urgent' || priority === 'high') {
         return new Promise<TmdbMediaEnrichment | undefined>((resolve) => {
           const sub = this.enrichmentUpdated$.subscribe((res) => {
             if (Number(res.providerItemId) === Number(channel.id)) {
@@ -122,7 +124,7 @@ export class TmdbEnrichmentService {
             resolve(this.cacheService.getEnrichmentSync(channel.id));
           }, 8000);
 
-          this.enqueue(channel, 'high');
+          this.enqueue(channel, priority);
         });
       } else {
         this.enqueue(channel, priority);
@@ -132,11 +134,31 @@ export class TmdbEnrichmentService {
     return undefined;
   }
 
+  private getPriorityWeight(priority: EnrichmentPriority): number {
+    switch (priority) {
+      case 'urgent': return 3;
+      case 'high': return 2;
+      case 'upcoming': return 1;
+      case 'normal':
+      default: return 0;
+    }
+  }
+
+  private insertByPriority(item: QueueItem): void {
+    const itemWeight = this.getPriorityWeight(item.priority);
+    const insertIdx = this.queue.findIndex(existing => this.getPriorityWeight(existing.priority) < itemWeight);
+    if (insertIdx === -1) {
+      this.queue.push(item);
+    } else {
+      this.queue.splice(insertIdx, 0, item);
+    }
+  }
+
   /**
    * Enqueues a channel for background TMDB enrichment.
    * Deduplicates requests and handles priority ordering.
    */
-  enqueue(channel: Channel, priority: 'high' | 'normal' = 'normal'): void {
+  enqueue(channel: Channel, priority: EnrichmentPriority = 'normal'): void {
     if (!channel?.id || !this.configService.isEnabled()) return;
 
     const key = `ch_${channel.id}`;
@@ -145,19 +167,15 @@ export class TmdbEnrichmentService {
     // Check if already in queue
     const existingIdx = this.queue.findIndex(item => item.channel.id === channel.id);
     if (existingIdx !== -1) {
-      if (priority === 'high' && this.queue[existingIdx].priority !== 'high') {
+      const existing = this.queue[existingIdx];
+      if (this.getPriorityWeight(priority) > this.getPriorityWeight(existing.priority)) {
         this.queue.splice(existingIdx, 1);
-        this.queue.unshift({ channel, priority });
+        this.insertByPriority({ channel, priority });
       }
       return;
     }
 
-    if (priority === 'high') {
-      this.queue.unshift({ channel, priority });
-    } else {
-      this.queue.push({ channel, priority });
-    }
-
+    this.insertByPriority({ channel, priority });
     this.processQueue();
   }
 
@@ -168,7 +186,7 @@ export class TmdbEnrichmentService {
 
     // While video playback is active, suspend nonessential background queue
     // to preserve CPU for smooth video presentation. High priority user requests still execute.
-    if (this.isPlaybackActive && this.queue[0]?.priority !== 'high') {
+    if (this.isPlaybackActive && this.queue[0]?.priority !== 'urgent' && this.queue[0]?.priority !== 'high') {
       return;
     }
 
@@ -193,11 +211,22 @@ export class TmdbEnrichmentService {
   /**
    * Background enrichment worker executing the matching pipeline.
    */
-  private async enrichWorker(channel: Channel, priority: 'high' | 'normal' = 'normal'): Promise<void> {
+  private async enrichWorker(channel: Channel, priority: EnrichmentPriority = 'normal'): Promise<void> {
     if (!channel.id || !this.configService.isEnabled()) return;
 
     const isSeries = Number(channel.media_type) === MediaType.serie || (channel as any).series_id != null;
     const mediaType: 'movie' | 'tv' = isSeries ? 'tv' : 'movie';
+
+    // 0. Check existing memory and IndexedDB enrichment records before making network requests
+    const cached = await this.cacheService.getEnrichment(channel.id);
+    if (cached && !this.cacheService.isStale(cached)) {
+      if (!cached.mediaType || cached.mediaType === mediaType) {
+        if (cached.logoVersion === CURRENT_LOGO_ALGO_VERSION) {
+          this.enrichmentUpdated$.next(cached);
+          return;
+        }
+      }
+    }
 
     // 1. Check for IMDb ID in channel fields
     const externalImdb =
@@ -235,8 +264,8 @@ export class TmdbEnrichmentService {
 
     const searchKey = `${mediaType}:${query.toLowerCase()}:${year || ''}`;
 
-    // 3. Check negative cache (bypass on high priority to allow user detail requests to retry)
-    if (priority !== 'high') {
+    // 3. Check negative cache (bypass on high/urgent priority to allow user detail requests to retry)
+    if (priority !== 'urgent' && priority !== 'high') {
       const isFailed = await this.cacheService.isFailedMatch(searchKey);
       if (isFailed) return;
     }

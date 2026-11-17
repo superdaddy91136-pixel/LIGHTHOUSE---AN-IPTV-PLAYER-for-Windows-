@@ -34,14 +34,14 @@ import {
   calculateTokenSimilarity,
   normalizeForComparison,
 } from "../../utils/tmdb-matcher";
-import { TmdbEnrichmentService } from "../../services/tmdb-enrichment.service";
+import { TmdbEnrichmentService, EnrichmentPriority } from "../../services/tmdb-enrichment.service";
 import { TmdbConfigService } from "../../services/tmdb-config.service";
 import { getTmdbBackdropUrl, getTmdbPosterUrl, getTmdbLogoUrl, getTmdbStillUrl } from "../../utils/tmdb-image";
 import { TmdbMediaEnrichment } from "../../models/tmdb";
 import { MovieDetailService } from "../../services/movie-detail.service";
 import { TvDetailService } from "../../services/tv-detail.service";
 import { VersionMatchingService } from "../../services/version-matching.service";
-import { TmdbCacheService } from "../../services/tmdb-cache.service";
+import { TmdbCacheService, CURRENT_LOGO_ALGO_VERSION } from "../../services/tmdb-cache.service";
 import {
   HomeDiscoverySnapshot,
   HomeDiscoveryStateService,
@@ -167,6 +167,7 @@ export class HomeDiscoveryComponent implements OnInit, AfterViewInit, OnDestroy 
   allRecommended: Channel[] = [];
   private transitionTimeout?: any;
   private preloadedImages = new Set<HTMLImageElement>();
+  private preloadedImageUrls = new Set<string>();
   private cachedPaginationKey = '';
   private cachedPaginationIndicators: { targetIndex: number; isActive: boolean }[] = [];
 
@@ -712,6 +713,9 @@ export class HomeDiscoveryComponent implements OnInit, AfterViewInit, OnDestroy 
       cancelAnimationFrame(rafId);
     }
     this.rafScrollChecks.clear();
+    this.preloadedImageUrls.clear();
+    this.preloadedImages.clear();
+    this.discoveryState.persistSnapshot();
     this.subs.forEach((s) => s.unsubscribe());
     this.splashScreen.dismiss('destroyed');
   }
@@ -789,47 +793,81 @@ export class HomeDiscoveryComponent implements OnInit, AfterViewInit, OnDestroy 
 
   private preloadImage(url?: string): void {
     if (!url || typeof Image === "undefined") return;
+    if (this.preloadedImageUrls.has(url)) return;
+    this.preloadedImageUrls.add(url);
+
     const img = new Image();
     this.preloadedImages.add(img);
-    img.onload = () => this.preloadedImages.delete(img);
-    img.onerror = () => this.preloadedImages.delete(img);
+    img.onload = () => {
+      this.preloadedImages.delete(img);
+    };
+    img.onerror = () => {
+      this.preloadedImages.delete(img);
+      this.preloadedImageUrls.delete(url);
+    };
     img.src = url;
   }
 
   private preloadVisibleHeroImages(): void {
-    if (typeof Image === "undefined" || this.heroItems.length === 0) return;
+    if (this.heroItems.length === 0) return;
     const len = this.heroItems.length;
-    const indices = [
-      this.currentHeroIndex,
-      (this.currentHeroIndex + 1) % len,
-      (this.currentHeroIndex + 2) % len,
-      (this.currentHeroIndex - 1 + len) % len,
-    ];
-    const seen = new Set<number>();
 
-    for (const idx of indices) {
-      if (seen.has(idx) || idx < 0 || idx >= len) continue;
-      seen.add(idx);
+    // Window: 1 currently displayed (k=0) + 5 upcoming candidates (k=1..5)
+    const windowCount = Math.min(6, len);
+    const seenIndices = new Set<number>();
+
+    for (let k = 0; k < windowCount; k++) {
+      const idx = (this.currentHeroIndex + k) % len;
+      if (seenIndices.has(idx)) continue;
+      seenIndices.add(idx);
+
       const hero = this.heroItems[idx];
-      if (!hero) continue;
+      if (!hero?.channel) continue;
 
-      if (hero.channel) {
-        const cached = this.tmdbEnrichment.getEnrichmentSync(hero.channel);
-        if (cached) {
-          if (!hero.logoUrl && cached.logoPath && cached.logoVersion === 2) {
-            hero.logoUrl = getTmdbLogoUrl(cached.logoPath, 'w500');
+      // Priority ordering:
+      // k=0: currently displayed hero (highest priority) -> 'urgent'
+      // k=1: next upcoming hero -> 'high'
+      // k>=2: remaining upcoming candidates in order -> 'upcoming'
+      const priority: EnrichmentPriority = k === 0 ? 'urgent' : (k === 1 ? 'high' : 'upcoming');
+
+      // 1. Check synchronous in-memory cache first to see if metadata is already present
+      const cached = this.tmdbEnrichment.getEnrichmentSync(hero.channel);
+      if (cached) {
+        if (!hero.logoUrl && cached.logoPath && cached.logoVersion === CURRENT_LOGO_ALGO_VERSION) {
+          hero.logoUrl = getTmdbLogoUrl(cached.logoPath, 'w500');
+          if (hero.channel.id) {
+            this.discoveryState.updateHeroItemMetadata(hero.channel.id, { logoUrl: hero.logoUrl });
           }
-          if (cached.backdropPath) {
-            const bd = getTmdbBackdropUrl(cached.backdropPath, 'original') || getTmdbBackdropUrl(cached.backdropPath, 'w1280');
-            if (bd) hero.imageUrl = bd;
+        }
+        if (cached.backdropPath && !hero.imageUrl) {
+          const bd = getTmdbBackdropUrl(cached.backdropPath, 'original') || getTmdbBackdropUrl(cached.backdropPath, 'w1280');
+          if (bd) {
+            hero.imageUrl = bd;
+            if (hero.channel.id) {
+              this.discoveryState.updateHeroItemMetadata(hero.channel.id, { imageUrl: hero.imageUrl });
+            }
           }
-        } else if (this.tmdbConfig.isEnabled()) {
-          this.tmdbEnrichment.enqueue(hero.channel, 'high');
         }
       }
 
+      // 2. Preload actual images if URLs are available
       this.preloadImage(hero.imageUrl);
       this.preloadImage(hero.logoUrl);
+
+      // 3. If logoUrl is already resolved, candidate is prepared!
+      if (hero.logoUrl) {
+        continue;
+      }
+
+      // 4. If memory cache confirms title was fully enriched and has no TMDB logo, skip queuing
+      if (cached && cached.logoVersion === CURRENT_LOGO_ALGO_VERSION && !cached.logoPath) {
+        continue;
+      }
+
+      // 5. Otherwise queue for advance preparation via the bounded queue
+      if (this.tmdbConfig.isEnabled()) {
+        this.tmdbEnrichment.enqueue(hero.channel, priority);
+      }
     }
   }
 
@@ -879,11 +917,6 @@ export class HomeDiscoveryComponent implements OnInit, AfterViewInit, OnDestroy 
         this.updateAmbientBackground();
         this.preloadVisibleHeroImages();
         this.cdr.markForCheck();
-
-        const active = this.currentHero;
-        if (active?.channel && this.tmdbConfig.isEnabled()) {
-          this.tmdbEnrichment.enqueue(active.channel, 'high');
-        }
 
         setTimeout(() => {
           this.isTransitioning = false;
@@ -976,12 +1009,6 @@ export class HomeDiscoveryComponent implements OnInit, AfterViewInit, OnDestroy 
       this.preloadVisibleHeroImages();
       this.cdr.markForCheck();
 
-      // Prioritize background TMDB enrichment for the newly active hero
-      const active = this.currentHero;
-      if (active?.channel && this.tmdbConfig.isEnabled()) {
-        this.tmdbEnrichment.enqueue(active.channel, 'high');
-      }
-
       setTimeout(() => {
         this.isTransitioning = false;
         this.cdr.markForCheck();
@@ -1006,11 +1033,6 @@ export class HomeDiscoveryComponent implements OnInit, AfterViewInit, OnDestroy 
       this.updateAmbientBackground();
       this.preloadVisibleHeroImages();
       this.cdr.markForCheck();
-
-      const active = this.currentHero;
-      if (active?.channel && this.tmdbConfig.isEnabled()) {
-        this.tmdbEnrichment.enqueue(active.channel, 'high');
-      }
 
       setTimeout(() => {
         this.isTransitioning = false;
@@ -1063,6 +1085,8 @@ export class HomeDiscoveryComponent implements OnInit, AfterViewInit, OnDestroy 
     this.cachedWatchProgressStore = null;
     this.seasonNumCache.clear();
     this.failedStillFetches.clear();
+    this.preloadedImageUrls.clear();
+    this.preloadedImages.clear();
   }
 
   scrollRow(rowId: string, direction: "left" | "right") {
@@ -1180,6 +1204,7 @@ export class HomeDiscoveryComponent implements OnInit, AfterViewInit, OnDestroy 
       // Preload persistent TMDB cache for candidate channels so initial synchronous build can reuse cached artwork
       const initialCandidateIds = [
         ...Array.from(this.getLastFeaturedIds()),
+        ...(this.heroItems || []).map((h) => h.channel?.id).filter(Boolean) as number[],
         ...(moviesRes || []).map((m) => m.id!).filter(Boolean),
         ...(seriesRes || []).map((s) => s.id!).filter(Boolean),
         ...(historyRes || []).map((h) => h.id!).filter(Boolean),
@@ -4597,7 +4622,7 @@ export class HomeDiscoveryComponent implements OnInit, AfterViewInit, OnDestroy 
         const bd = getTmdbBackdropUrl(enrichment.backdropPath, 'original') || getTmdbBackdropUrl(enrichment.backdropPath, 'w1280');
         if (bd) heroMatch.imageUrl = bd;
       }
-      if (enrichment.logoPath && enrichment.logoVersion === 2) {
+      if (enrichment.logoPath && enrichment.logoVersion === CURRENT_LOGO_ALGO_VERSION) {
         heroMatch.logoUrl = getTmdbLogoUrl(enrichment.logoPath, 'w500');
         this.preloadImage(heroMatch.logoUrl);
       } else {
@@ -4615,6 +4640,14 @@ export class HomeDiscoveryComponent implements OnInit, AfterViewInit, OnDestroy 
       if (enrichment.rating) {
         heroMatch.rating = enrichment.rating;
       }
+
+      if (heroMatch.channel?.id) {
+        this.discoveryState.updateHeroItemMetadata(heroMatch.channel.id, {
+          logoUrl: heroMatch.logoUrl,
+          imageUrl: heroMatch.imageUrl,
+          description: heroMatch.description,
+        });
+      }
     }
 
     if (this.currentHero && matches.some((h) => h.channel.id === this.currentHero?.channel.id)) {
@@ -4628,6 +4661,9 @@ export class HomeDiscoveryComponent implements OnInit, AfterViewInit, OnDestroy 
   onHeroLogoError(hero?: HeroItem): void {
     if (!hero) return;
     hero.logoUrl = undefined;
+    if (hero.channel?.id) {
+      this.discoveryState.updateHeroItemMetadata(hero.channel.id, { logoUrl: undefined });
+    }
     if (this.isBollywood(hero.channel)) {
       this.masterHeroItems = this.masterHeroItems.filter((h) => h.channel.id !== hero.channel.id);
       this.heroItems = this.heroItems.filter((h) => h.channel.id !== hero.channel.id);

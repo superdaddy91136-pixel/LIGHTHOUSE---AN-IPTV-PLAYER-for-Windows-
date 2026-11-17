@@ -203,9 +203,11 @@ export class HomeDiscoveryStateService {
         timestamp: Date.now(),
         status: 'refreshing',
       };
+      this.debouncePersistSnapshot(800);
       return;
     }
     this.snapshot.masterHeroItems = [...heroItems];
+    this.debouncePersistSnapshot(800);
   }
 
   public setLoadedPools(
@@ -264,13 +266,61 @@ export class HomeDiscoveryStateService {
     this.discoveryUpdated$.next(this.snapshot);
   }
 
-  private persistSnapshot(): void {
+  private persistDebounceTimer?: any;
+
+  public persistSnapshot(): void {
+    if (this.persistDebounceTimer) {
+      clearTimeout(this.persistDebounceTimer);
+      this.persistDebounceTimer = undefined;
+    }
     if (!this.snapshot) return;
     try {
       localStorage.setItem('lighthouse_home_discovery_snapshot', JSON.stringify(this.snapshot));
     } catch {
       // ignore storage errors
     }
+  }
+
+  /**
+   * Persists snapshot with debouncing to prevent excessive localStorage writes.
+   */
+  public debouncePersistSnapshot(delayMs: number = 800): void {
+    if (this.persistDebounceTimer) {
+      clearTimeout(this.persistDebounceTimer);
+    }
+    this.persistDebounceTimer = setTimeout(() => {
+      this.persistSnapshot();
+      this.persistDebounceTimer = undefined;
+    }, delayMs);
+  }
+
+  /**
+   * Updates hero item metadata (such as resolved logoUrl/imageUrl) in the cached snapshot
+   * and debounces persistence to localStorage without restarting the pipeline.
+   */
+  public updateHeroItemMetadata(channelId: number, updates: Partial<HeroItem>): boolean {
+    if (!this.snapshot?.masterHeroItems || !channelId) return false;
+    let changed = false;
+    for (const item of this.snapshot.masterHeroItems) {
+      if (item.channel?.id === channelId) {
+        if (updates.logoUrl !== undefined && item.logoUrl !== updates.logoUrl) {
+          item.logoUrl = updates.logoUrl;
+          changed = true;
+        }
+        if (updates.imageUrl !== undefined && item.imageUrl !== updates.imageUrl) {
+          item.imageUrl = updates.imageUrl;
+          changed = true;
+        }
+        if (updates.description !== undefined && item.description !== updates.description) {
+          item.description = updates.description;
+          changed = true;
+        }
+      }
+    }
+    if (changed) {
+      this.debouncePersistSnapshot(800);
+    }
+    return changed;
   }
 
   /**
@@ -326,6 +376,10 @@ export class HomeDiscoveryStateService {
    * Clears state on full catalog reload / source changes.
    */
   public clearCache(): void {
+    if (this.persistDebounceTimer) {
+      clearTimeout(this.persistDebounceTimer);
+      this.persistDebounceTimer = undefined;
+    }
     this.snapshot = null;
     this.activeHeroChannelId = undefined;
     this.resolvedCatalogMatches.clear();
