@@ -2475,6 +2475,18 @@
       transform: scale(0.97);
     }
 
+    .skip-segment-btn.contextual-selected {
+      outline: 2px solid rgba(255, 255, 255, 0.65);
+      outline-offset: 2px;
+      box-shadow: 0 8px 24px rgba(0, 0, 0, 0.6), 0 0 0 1px rgba(255, 255, 255, 0.15);
+    }
+
+    .up-next-btn-play.contextual-selected {
+      outline: 2px solid rgba(255, 255, 255, 0.65);
+      outline-offset: 2px;
+      box-shadow: 0 0 0 1px rgba(255, 255, 255, 0.15);
+    }
+
     .up-next-card:not([style*="display: none"]) ~ .skip-segment-btn,
     .movie-recs-card:not([style*="display: none"]) ~ .skip-segment-btn {
       right: 404px;
@@ -3573,6 +3585,11 @@
       let currentActiveSegment = null;
       let lastSkippedSegment = null;
 
+      // CONTEXTUAL ACTION SELECTION STATE (for Spacebar priority)
+      // Possible values: null, 'skip-segment', 'next-episode', 'next-movie'
+      let contextualSelection = null;
+      let contextualSpaceHandled = false; // prevent key-repeat from firing action multiple times
+
       let detectedCreditStartTime = null;
 
       let upNextState = {
@@ -3977,6 +3994,7 @@
         maybeSaveProgress();
         checkUpNextTrigger();
         checkSegmentBoundaries();
+        updateContextualSelection();
       }
 
       function updateVolumeIconElements(iconEls, volPct, isZeroOrMuted) {
@@ -5536,7 +5554,7 @@
         }
       }
 
-      function playNextEpisode() {
+      function playNextEpisode(revealControls = true) {
         hideNextEpisodePreview(true);
         if (!episodesData.episodes || episodesData.episodes.length === 0) return;
         const curId = episodesData.currentEpisodeId != null ? episodesData.currentEpisodeId : currentActiveChannelId;
@@ -5564,7 +5582,9 @@
             channel: nextEp.channel,
           });
           closeAllPanels();
-          showControls();
+          if (revealControls) {
+            showControls();
+          }
         } else if (upNextState.nextEpisode && upNextState.nextEpisode.id) {
           // Cross-season next episode already resolved!
           flushSaveProgress();
@@ -5583,7 +5603,9 @@
             channel: nextEp.channel,
           });
           closeAllPanels();
-          showControls();
+          if (revealControls) {
+            showControls();
+          }
         } else if (episodesData.seasons && episodesData.seasons.length > 0) {
           const curSeasonNum = episodesData.currentSeasonNum != null ? Number(episodesData.currentSeasonNum) : 1;
           const sortedSeasons = [...episodesData.seasons].sort((a, b) => Number(a.seasonNum) - Number(b.seasonNum));
@@ -5594,7 +5616,9 @@
               seasonNum: nextSeason.seasonNum,
             });
             closeAllPanels();
-            showControls();
+            if (revealControls) {
+              showControls();
+            }
           }
         }
       }
@@ -5649,9 +5673,10 @@
             upNextState.cancelledForMediaId = currentActiveChannelId;
           }
         }
+        updateContextualSelection();
       }
 
-      function executePlayNextEpisode() {
+      function executePlayNextEpisode(revealControls = true) {
         clearUpNextTimer();
         hideUpNextCard(false);
         hideNextEpisodePreview(true);
@@ -5673,9 +5698,11 @@
             channel: nextEp.channel,
           });
           closeAllPanels();
-          showControls();
+          if (revealControls) {
+            showControls();
+          }
         } else {
-          playNextEpisode();
+          playNextEpisode(revealControls);
         }
       }
 
@@ -5782,6 +5809,7 @@
 
         upNextCard.style.display = 'flex';
         clearUpNextTimer();
+        updateContextualSelection();
 
         upNextState.timerId = setInterval(() => {
           upNextState.countdown -= 1;
@@ -5866,6 +5894,7 @@
             movieRecsState.cancelledForMediaId = currentActiveChannelId;
           }
         }
+        updateContextualSelection();
       }
 
       function executePlayMovieRec(rec) {
@@ -5951,6 +5980,7 @@
 
         movieRecsCard.style.display = 'flex';
         clearMovieRecsTimer();
+        updateContextualSelection();
 
         movieRecsState.timerId = setInterval(() => {
           movieRecsState.countdown -= 1;
@@ -6052,11 +6082,13 @@
         btnSkipSegment.setAttribute('title', `${label} (S)`);
         btnSkipSegment.setAttribute('aria-label', label);
         btnSkipSegment.style.display = 'flex';
+        updateContextualSelection();
       }
 
       function hideSkipSegmentBtn() {
         if (!btnSkipSegment) return;
         btnSkipSegment.style.display = 'none';
+        updateContextualSelection();
       }
 
       function checkSegmentBoundaries() {
@@ -6108,7 +6140,69 @@
         showSkipSegmentBtn(active);
       }
 
-      function executeSkipSegment() {
+      // CONTEXTUAL ACTION SELECTION — determines which action (if any) Space activates
+      function updateContextualSelection() {
+        let newSelection = null;
+
+        // Priority 1: Skip segment (intro/recap/preview/post-credits) visible
+        if (currentActiveSegment && btnSkipSegment && btnSkipSegment.style.display !== 'none') {
+          newSelection = 'skip-segment';
+        }
+        // Priority 2: Up Next (next episode) card visible and showing play button
+        else if (upNextState.isShowing && upNextCard && upNextCard.style.display !== 'none' && !upNextState.watchCreditsSelected) {
+          newSelection = 'next-episode';
+        }
+        // Priority 3: Movie recommendations card visible (next movie)
+        else if (movieRecsState.isShowing && movieRecsCard && movieRecsCard.style.display !== 'none' && !movieRecsState.watchCreditsSelected) {
+          newSelection = 'next-movie';
+        }
+
+        if (newSelection !== contextualSelection) {
+          // Remove old selection styling
+          applyContextualSelectionUI(contextualSelection, false);
+          contextualSelection = newSelection;
+          // Apply new selection styling
+          applyContextualSelectionUI(contextualSelection, true);
+          // Reset key-repeat guard on selection change
+          contextualSpaceHandled = false;
+          // Notify main window of contextual action state
+          tauriEmit('overlay-contextual-action', { active: contextualSelection !== null, action: contextualSelection });
+        }
+      }
+
+      function applyContextualSelectionUI(action, selected) {
+        if (!action) return;
+        if (action === 'skip-segment' && btnSkipSegment) {
+          btnSkipSegment.classList.toggle('contextual-selected', selected);
+        } else if (action === 'next-episode') {
+          const btn = document.getElementById('btnPlayNextEp');
+          if (btn) btn.classList.toggle('contextual-selected', selected);
+        } else if (action === 'next-movie') {
+          const btn = document.getElementById('btnPlayMovieRec');
+          if (btn) btn.classList.toggle('contextual-selected', selected);
+        }
+      }
+
+      function executeContextualAction() {
+        if (!contextualSelection) return false;
+        const actionToExecute = contextualSelection;
+        // Clear selection state before/during execution
+        applyContextualSelectionUI(actionToExecute, false);
+        contextualSelection = null;
+        contextualSpaceHandled = true;
+        tauriEmit('overlay-contextual-action', { active: false, action: null });
+
+        if (actionToExecute === 'skip-segment') {
+          executeSkipSegment(false);
+        } else if (actionToExecute === 'next-episode') {
+          executePlayNextEpisode(false);
+        } else if (actionToExecute === 'next-movie') {
+          executePlayMovieRec(movieRecsState.items[movieRecsState.selectedIndex]);
+        }
+        return true;
+      }
+
+      function executeSkipSegment(revealControls = true) {
         if (!currentActiveSegment || currentActiveSegment.type === 'credits') return;
         const effDuration = duration > 0 ? duration : (cachedDuration > 0 ? cachedDuration : 0);
         let targetTime = currentActiveSegment.endTime;
@@ -6120,13 +6214,15 @@
         hideSkipSegmentBtn();
 
         sendMpv(['seek', targetTime, 'absolute']);
-        showControls();
+        if (revealControls) {
+          showControls();
+        }
       }
 
       if (btnSkipSegment) {
         btnSkipSegment.addEventListener('click', (e) => {
           e.stopPropagation();
-          executeSkipSegment();
+          executeSkipSegment(true);
         });
       }
 
@@ -7230,9 +7326,19 @@
           return;
         }
 
+        if (isTextInput) return;
+
         if (e.key === ' ' || e.code === 'Space') {
-          togglePlayPause();
           e.preventDefault();
+          e.stopPropagation();
+          if (contextualSelection) {
+            // Prevent key-repeat from firing action multiple times
+            if (e.repeat || contextualSpaceHandled) return;
+            contextualSpaceHandled = true;
+            executeContextualAction();
+          } else {
+            togglePlayPause();
+          }
         } else if (e.key === 'ArrowLeft') {
           handleArrowSeek(-10);
           e.preventDefault();
@@ -7278,6 +7384,17 @@
             e.preventDefault();
           }
         }
+      });
+
+      // Reset key-repeat guard on Space release
+      document.addEventListener('keyup', (e) => {
+        if (e.key === ' ' || e.code === 'Space') {
+          contextualSpaceHandled = false;
+        }
+      });
+
+      tauriListen('execute-contextual-action', () => {
+        executeContextualAction();
       });
 
       // LISTEN FOR FULLSCREEN CHANGES FROM BACKEND
@@ -7918,6 +8035,12 @@
       tauriListen('embedded-player-started', (event) => {
         hideUpNextCard(false);
         hideMovieRecsCard(false);
+        if (contextualSelection) {
+          applyContextualSelectionUI(contextualSelection, false);
+          contextualSelection = null;
+          contextualSpaceHandled = false;
+          tauriEmit('overlay-contextual-action', { active: false, action: null });
+        }
         upNextState.nextEpisode = null;
         upNextState.cancelledForMediaId = null;
         movieRecsState.cancelledForMediaId = null;
@@ -8031,6 +8154,12 @@
       tauriListen('embedded-poc-stopped', () => {
         hideUpNextCard(false);
         hideMovieRecsCard(false);
+        if (contextualSelection) {
+          applyContextualSelectionUI(contextualSelection, false);
+          contextualSelection = null;
+          contextualSpaceHandled = false;
+          tauriEmit('overlay-contextual-action', { active: false, action: null });
+        }
         upNextState.nextEpisode = null;
         upNextState.cancelledForMediaId = null;
         movieRecsState.cancelledForMediaId = null;

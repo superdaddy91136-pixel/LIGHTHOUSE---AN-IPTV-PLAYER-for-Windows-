@@ -149,7 +149,11 @@ export class EmbeddedPlayerService implements OnDestroy {
   private unlistenRequestRecommendations?: UnlistenFn;
   private unlistenPlayRecommendedMovie?: UnlistenFn;
   private unlistenRequestSegments?: UnlistenFn;
+  private unlistenContextualAction?: UnlistenFn;
   private unlistenPocEvent?: UnlistenFn;
+
+  private hasContextualAction: boolean = false;
+  private currentContextualAction: string | null = null;
 
   private routerSubscription?: Subscription;
 
@@ -382,6 +386,12 @@ export class EmbeddedPlayerService implements OnDestroy {
       }
     });
 
+    // Listen for contextual action selection state from overlay (Spacebar priority)
+    this.unlistenContextualAction = await listen('overlay-contextual-action', (event: any) => {
+      this.hasContextualAction = !!event?.payload?.active;
+      this.currentContextualAction = event?.payload?.action || null;
+    });
+
     // Listen for raw MPV IPC events to track playback progress outside Angular zone
     // to prevent high-frequency IPC events from triggering application-wide change detection.
     let lastProgressEmitTime = 0;
@@ -556,11 +566,17 @@ export class EmbeddedPlayerService implements OnDestroy {
     }
 
     if (event.key === ' ' || event.code === 'Space') {
-      invoke('send_embedded_poc_ipc', {
-        command: JSON.stringify({ command: ['cycle', 'pause'] }),
-      }).catch(console.warn);
+      if (isInputFocused()) return;
       event.preventDefault();
       event.stopPropagation();
+      if (this.hasContextualAction) {
+        if (event.repeat) return;
+        emit('execute-contextual-action').catch(console.warn);
+      } else {
+        invoke('send_embedded_poc_ipc', {
+          command: JSON.stringify({ command: ['cycle', 'pause'] }),
+        }).catch(console.warn);
+      }
       return;
     }
 
@@ -760,6 +776,8 @@ export class EmbeddedPlayerService implements OnDestroy {
     emit('embedded-player-mode', { mode: 'movie' }).catch(console.warn);
     emit('overlay-top-crop', { crop: 32 }).catch(console.warn);
     this.playbackProgress$.next({ channelId: undefined, time: 0, duration: 0, percent: 0 });
+    this.hasContextualAction = false;
+    this.currentContextualAction = null;
 
     this.currentChannel = undefined;
     this.activeFallbackChannel = undefined;
@@ -792,6 +810,8 @@ export class EmbeddedPlayerService implements OnDestroy {
     emit('embedded-player-mode', { mode: 'movie' }).catch(console.warn);
     emit('overlay-top-crop', { crop: 32 }).catch(console.warn);
     this.playbackProgress$.next({ channelId: undefined, time: 0, duration: 0, percent: 0 });
+    this.hasContextualAction = false;
+    this.currentContextualAction = null;
 
     if (this.isFullscreen) {
       this.isFullscreenSubject.next(false);
@@ -2602,6 +2622,7 @@ export class EmbeddedPlayerService implements OnDestroy {
     if (this.unlistenRequestRecommendations) this.unlistenRequestRecommendations();
     if (this.unlistenPlayRecommendedMovie) this.unlistenPlayRecommendedMovie();
     if (this.unlistenRequestSegments) this.unlistenRequestSegments();
+    if (this.unlistenContextualAction) this.unlistenContextualAction();
     if (this.unlistenPocEvent) this.unlistenPocEvent();
   }
 }
