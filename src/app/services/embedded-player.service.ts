@@ -997,21 +997,15 @@ export class EmbeddedPlayerService implements OnDestroy {
       emit('embedded-player-mode', { mode: this.currentMode, channelId: channel.id }).catch(console.warn);
       emit('overlay-top-crop', { crop: 32 }).catch(console.warn);
 
+      // Safe fallback seek only if overlay hasn't already resumed after file-loaded
       if (startPos > 5 && this.currentMode !== 'live') {
         setTimeout(() => {
-          if (this.isPlayingEmbedded && this.currentMode !== 'live') {
+          if (this.isPlayingEmbedded && this.currentMode !== 'live' && !this.playbackProgress$.value?.time) {
             invoke('send_embedded_poc_ipc', {
               command: JSON.stringify({ command: ['seek', startPos, 'absolute'] }),
             }).catch(console.warn);
           }
-        }, 400);
-        setTimeout(() => {
-          if (this.isPlayingEmbedded && this.currentMode !== 'live') {
-            invoke('send_embedded_poc_ipc', {
-              command: JSON.stringify({ command: ['seek', startPos, 'absolute'] }),
-            }).catch(console.warn);
-          }
-        }, 1200);
+        }, 1500);
       }
 
       if (this.currentMode === 'episode') {

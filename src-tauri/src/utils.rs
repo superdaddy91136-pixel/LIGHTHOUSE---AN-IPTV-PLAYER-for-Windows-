@@ -38,7 +38,7 @@ const MACOS_POTENTIAL_PATHS: [&str; 3] = [
     "/usr/local/bin",    // Homebrew on AMD64 Mac
 ];
 
-const DEFAULT_USER_AGENT: &str = "Fred TV";
+pub const DEFAULT_USER_AGENT: &str = "Fred TV";
 
 static ILLEGAL_CHARS_REGEX: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r#"[<>:"/\\|?*\x00-\x1F]"#).unwrap());

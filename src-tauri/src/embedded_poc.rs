@@ -1338,7 +1338,9 @@ pub fn build_stream_info(
     let headers = crate::sql::get_channel_headers_by_id(channel_id).ok().flatten();
     let source = source_id.and_then(|id| crate::sql::get_source_from_id(id).ok());
     let user_agent = headers.as_ref().and_then(|h| h.user_agent.clone())
-        .or_else(|| source.as_ref().and_then(|s| s.stream_user_agent.clone()));
+        .or_else(|| source.as_ref().and_then(|s| s.stream_user_agent.clone()))
+        .or_else(|| source.as_ref().and_then(|s| s.user_agent.clone()))
+        .or_else(|| Some(crate::utils::DEFAULT_USER_AGENT.to_string()));
     let referrer = headers.as_ref().and_then(|h| h.referrer.clone());
     let origin = headers.as_ref().and_then(|h| h.http_origin.clone());
     let ignore_ssl = headers.as_ref().and_then(|h| h.ignore_ssl);
@@ -1415,6 +1417,16 @@ pub fn build_embedded_mpv_args(
     args.push("--no-terminal".to_string());
     args.push("--osc=no".to_string());
 
+    // Robust stream caching & WAN buffer settings
+    args.push("--cache=yes".to_string());
+    args.push("--demuxer-max-bytes=256MiB".to_string());
+    args.push("--demuxer-max-back-bytes=64MiB".to_string());
+    args.push("--stream-buffer-size=2MiB".to_string());
+    // Prevent MPV from attempting multi-gigabyte remote seeks over HTTP for subtitle cues
+    args.push("--demuxer-mkv-subtitle-preroll=no".to_string());
+    args.push("--demuxer-mkv-subtitle-preroll-secs=0".to_string());
+    args.push("--demuxer-mkv-subtitle-preroll-secs-index=0".to_string());
+
     let is_live = stream
         .media_type
         .map(|m| m == crate::media_type::LIVESTREAM)
@@ -1422,11 +1434,10 @@ pub fn build_embedded_mpv_args(
 
     if is_live {
         args.push("--prefetch-playlist=yes".to_string());
-        args.push("--demuxer-lavf-analyzeduration=0.5".to_string());
-        args.push("--demuxer-lavf-probesize=32768".to_string());
-        args.push("--demuxer-readahead-secs=5".to_string());
+        args.push("--demuxer-readahead-secs=15".to_string());
         args.push("--force-seekable=no".to_string());
     } else {
+        args.push("--demuxer-readahead-secs=30".to_string());
         args.push("--save-position-on-quit".to_string());
     }
 

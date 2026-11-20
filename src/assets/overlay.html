@@ -3340,6 +3340,7 @@
       let currentTime = 0;
       let duration = 0;
       let cachedDuration = 0;
+      let demuxerCacheDuration = 0;
       let cachedEnd = null;
       let currentActiveChannelId = null;
       let currentPlaybackSessionId = 0;
@@ -3809,8 +3810,8 @@
         if (typeof cachedEnd === 'number' && cachedEnd > targetBufferedEnd) {
           targetBufferedEnd = cachedEnd;
         }
-        if (typeof cachedDuration === 'number' && cachedDuration > 0) {
-          const fromDuration = currentTime + cachedDuration;
+        if (typeof demuxerCacheDuration === 'number' && demuxerCacheDuration > 0) {
+          const fromDuration = currentTime + demuxerCacheDuration;
           if (fromDuration > targetBufferedEnd) {
             targetBufferedEnd = fromDuration;
           }
@@ -7660,7 +7661,7 @@
               case 'demuxer-cache-duration':
                 if (typeof parsed.data === 'number') {
                   nerdStats.cacheDuration = parsed.data;
-                  cachedDuration = parsed.data;
+                  demuxerCacheDuration = parsed.data;
                   updateBufferedUI();
                   renderNerdStats();
                 }
