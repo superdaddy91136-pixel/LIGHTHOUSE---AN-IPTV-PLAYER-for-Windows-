@@ -214,6 +214,12 @@ export class HomeComponent implements AfterViewInit, OnDestroy {
   liveFolderSearchQuery = '';
   isFolderFilterMenuOpen = false;
   liveSearchSubject = new Subject<string>();
+  liveSearchSourceId: number | 'all' = 'all';
+  liveSearchPage: number = 1;
+  liveSearchReachedMax: boolean = false;
+  highlightedChannelId?: number;
+  categoryByIdMap: Map<number, CategoryOption> = new Map();
+  startingPlayChannelId?: number;
   liveSidebarSelection: {
     type: 'favorites' | 'category';
     id?: number;
@@ -484,7 +490,9 @@ export class HomeComponent implements AfterViewInit, OnDestroy {
     }
 
     // Filter by content type (Movies / TV / Live)
-    if (this.searchTypeFilter === 'movies') {
+    if (currentTab === NavTab.LiveTV) {
+      list = list.filter((c) => c.media_type === MediaType.livestream);
+    } else if (this.searchTypeFilter === 'movies') {
       list = list.filter((c) => c.media_type === MediaType.movie);
     } else if (this.searchTypeFilter === 'tv') {
       list = list.filter((c) => c.media_type === MediaType.serie);
@@ -810,6 +818,10 @@ export class HomeComponent implements AfterViewInit, OnDestroy {
     return cleanMediaTitle(name || '');
   }
 
+  cleanChannelTitle(name: string): string {
+    return cleanMediaTitle(name || '');
+  }
+
   onLiveFolderSearchInput(event: Event): void {
     const val = (event.target as HTMLInputElement).value;
     this.liveFolderSearchQuery = val;
@@ -837,6 +849,209 @@ export class HomeComponent implements AfterViewInit, OnDestroy {
     this.liveCategoryRenderLimit = 60;
     this.updateDisplayedLiveCategories();
     this.cdr.markForCheck();
+  }
+
+  getChannelFolderName(channel: Channel): string {
+    if (channel.group_id == null) return 'Uncategorized';
+    const cat = this.categoryByIdMap.get(channel.group_id) ||
+      this.availableCategories.find((c) => c.id === channel.group_id);
+    return cat?.cleanName || cat?.name || 'Folder ' + channel.group_id;
+  }
+
+  getChannelSourceName(channel: Channel): string {
+    if (channel.source_id == null) return '';
+    return this.memory.Sources.get(channel.source_id)?.name || `Source ${channel.source_id}`;
+  }
+
+  selectLiveSearchSource(sourceId: number | 'all'): void {
+    if (this.liveSearchSourceId === sourceId) return;
+    this.liveSearchSourceId = sourceId;
+    this.liveSearchPage = 1;
+    this.liveSearchReachedMax = false;
+    if (this.searchKeyword) {
+      this.loading = true;
+      this.performUniversalSearch(this.searchKeyword);
+    }
+  }
+
+  async loadMoreLiveSearch(): Promise<void> {
+    if (!this.isSearching || this.liveSearchReachedMax || this.loading) return;
+    const query = this.searchKeyword || this.filters?.query;
+    if (!query) return;
+
+    this.loading = true;
+    const nextPage = this.liveSearchPage + 1;
+    const sourceIds = this.liveSearchSourceId === 'all'
+      ? Array.from(this.memory.Sources.keys())
+      : [this.liveSearchSourceId];
+
+    const filters: Filters = {
+      source_ids: sourceIds,
+      view_type: ViewMode.All,
+      media_types: [MediaType.livestream],
+      query: query,
+      use_keywords: true,
+      page: nextPage,
+      sort: SortType.provider,
+    };
+
+    try {
+      const moreChannels = (await invoke("search", { filters })) as Channel[];
+      if (moreChannels && moreChannels.length > 0) {
+        this.liveSearchPage = nextPage;
+        this.rawSearchResults.channels = [
+          ...this.rawSearchResults.channels,
+          ...moreChannels,
+        ];
+        this.updateCombinedSearchResults();
+        if (moreChannels.length < this.PAGE_SIZE) {
+          this.liveSearchReachedMax = true;
+        }
+      } else {
+        this.liveSearchReachedMax = true;
+      }
+    } catch (e) {
+      console.error("Failed to load more live search channels:", e);
+    } finally {
+      this.loading = false;
+      this.cdr.markForCheck();
+    }
+  }
+
+  async playLiveChannel(channel: Channel, event?: Event): Promise<void> {
+    if (event) {
+      event.stopPropagation();
+    }
+    this.startingPlayChannelId = channel.id;
+    this.cdr.markForCheck();
+
+    const playChannel = {
+      ...channel,
+      media_type: MediaType.livestream,
+      favorite: !!channel.favorite,
+    };
+    invoke("add_last_watched", { id: channel.id }).catch((e) => {
+      console.error(e);
+    });
+
+    try {
+      const canvas = this.embeddedPlayer.resolveVideoCanvasId();
+      await this.embeddedPlayer.playMediaDirectly(playChannel, canvas);
+    } catch (err) {
+      console.warn("Failed to play channel from search:", err);
+      this.error.handleError(err);
+    } finally {
+      this.startingPlayChannelId = undefined;
+      this.cdr.markForCheck();
+    }
+  }
+
+  goToFolder(channel: Channel, event?: Event): void {
+    if (event) {
+      event.stopPropagation();
+    }
+    if (channel.group_id == null) return;
+    const cat = this.availableCategories.find((c) => c.id === channel.group_id);
+    if (!cat) return;
+
+    this.clearSearch();
+    if (this.search?.nativeElement) {
+      this.search.nativeElement.blur();
+    }
+    this.isSearchExpanded = false;
+    this.selectLiveSidebarCategory(cat);
+    this.scrollSidebarToCategory(cat.id);
+  }
+
+  async goToChannel(channel: Channel, event?: Event): Promise<void> {
+    if (event) {
+      event.stopPropagation();
+    }
+    if (!channel || channel.id == null) return;
+    const targetChannelId = channel.id;
+    const cat = channel.group_id != null
+      ? this.availableCategories.find((c) => c.id === channel.group_id)
+      : undefined;
+
+    this.clearSearch();
+    if (this.search?.nativeElement) {
+      this.search.nativeElement.blur();
+    }
+    this.isSearchExpanded = false;
+
+    if (cat) {
+      EpgQueueManager.clearQueue();
+      this.liveSidebarSelection = {
+        type: 'category',
+        id: cat.id,
+        name: cat.name,
+        sourceId: cat.sourceId,
+      };
+      this.selectedCategoryId = cat.id;
+      if (this.filters) {
+        this.filters.group_id = cat.id;
+        this.filters.view_type = ViewMode.All;
+        this.filters.page = 1;
+      }
+      this.nodeStack.clear();
+      this.saveTabFilterState();
+      this.updatePinnedItems();
+      this.scrollSidebarToCategory(cat.id);
+    }
+
+    // Load initial page of the folder
+    await this.load();
+
+    // Look for targetChannelId in regularChannels
+    let foundIndex = this.regularChannels.findIndex((c) => c.id === targetChannelId);
+
+    // If not in first page, fetch subsequent pages until found or reachedMax
+    while (foundIndex === -1 && !this.reachedMax) {
+      await this.load(true);
+      foundIndex = this.regularChannels.findIndex((c) => c.id === targetChannelId);
+    }
+
+    if (foundIndex !== -1) {
+      if (foundIndex >= this.renderLimit) {
+        this.renderLimit = Math.max(this.renderLimit, foundIndex + 12);
+        this.renderedRegularChannels = this.regularChannels.slice(0, this.renderLimit);
+        this.cdr.markForCheck();
+      }
+
+      this.highlightedChannelId = targetChannelId;
+      this.cdr.markForCheck();
+
+      setTimeout(() => {
+        const tileEl = (document.querySelector(`[data-channel-id="${targetChannelId}"]`) as HTMLElement) ||
+          document.getElementById(`tile-${foundIndex}`);
+        if (tileEl) {
+          tileEl.scrollIntoView({ behavior: 'smooth', block: 'center' });
+        }
+      }, 100);
+
+      setTimeout(() => {
+        if (this.highlightedChannelId === targetChannelId) {
+          this.highlightedChannelId = undefined;
+          this.cdr.markForCheck();
+        }
+      }, 3000);
+    }
+  }
+
+  scrollSidebarToCategory(categoryId: number): void {
+    setTimeout(() => {
+      const sidebarEl = document.querySelector('.live-sidebar-categories-scroll');
+      const catEl = sidebarEl?.querySelector(`[data-cat-id="${categoryId}"]`) as HTMLElement;
+      if (catEl) {
+        catEl.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+      }
+    }, 60);
+  }
+
+  onImageError(event: any): void {
+    if (event?.target) {
+      (event.target as HTMLElement).style.display = 'none';
+    }
   }
 
   private setupLiveContentScroll(): void {
@@ -1001,10 +1216,15 @@ export class HomeComponent implements AfterViewInit, OnDestroy {
     }
   }
 
+  setAvailableCategories(cats: CategoryOption[]): void {
+    this.availableCategories = cats;
+    this.categoryByIdMap = new Map(cats.map((c) => [c.id, c]));
+  }
+
   async loadAvailableCategories(forceReload = false): Promise<void> {
     const tab = this.memory.activeNavTab.value;
     if (tab !== NavTab.LiveTV && tab !== NavTab.Movies && tab !== NavTab.TVShows) {
-      this.availableCategories = [];
+      this.setAvailableCategories([]);
       this.updateDisplayedLiveCategories();
       return;
     }
@@ -1019,14 +1239,14 @@ export class HomeComponent implements AfterViewInit, OnDestroy {
       : [this.selectedSourceId];
 
     if (sourceIds.length === 0) {
-      this.availableCategories = [];
+      this.setAvailableCategories([]);
       this.updateDisplayedLiveCategories();
       return;
     }
 
     const cacheKey = `${tab}_${sourceIds.slice().sort().join(',')}`;
     if (!forceReload && this.categoryCache.has(cacheKey)) {
-      this.availableCategories = this.categoryCache.get(cacheKey)!;
+      this.setAvailableCategories(this.categoryCache.get(cacheKey)!);
       this.updateDisplayedLiveCategories();
       return;
     }
@@ -1072,7 +1292,7 @@ export class HomeComponent implements AfterViewInit, OnDestroy {
           }
 
           if (page === 1 && collected.length > 0 && this.memory.activeNavTab.value === tab) {
-            this.availableCategories = [...collected];
+            this.setAvailableCategories([...collected]);
             this.updateDisplayedLiveCategories();
             this.categoryLoading = false;
             this.cdr.markForCheck();
@@ -1092,7 +1312,7 @@ export class HomeComponent implements AfterViewInit, OnDestroy {
         this.categoryCache.set(cacheKey, collected);
       }
       if (this.memory.activeNavTab.value === tab) {
-        this.availableCategories = collected;
+        this.setAvailableCategories(collected);
         this.updateDisplayedLiveCategories();
         this.cdr.markForCheck();
       }
@@ -1160,7 +1380,7 @@ export class HomeComponent implements AfterViewInit, OnDestroy {
           }
           if (this.memory.activeNavTab.value === NavTab.LiveTV && this.availableCategories.length === 0) {
             this.ngZone.run(() => {
-              this.availableCategories = collected;
+              this.setAvailableCategories(collected);
               this.updateDisplayedLiveCategories();
               this.cdr.markForCheck();
             });
@@ -1958,6 +2178,22 @@ export class HomeComponent implements AfterViewInit, OnDestroy {
             }
           }
         }
+        if (this.displayedSearchResults) {
+          for (const ch of this.displayedSearchResults) {
+            if (Number(ch.id) === Number(channelId)) {
+              ch.favorite = isFav;
+              changed = true;
+            }
+          }
+        }
+        if (this.allSearchResultsList) {
+          for (const ch of this.allSearchResultsList) {
+            if (Number(ch.id) === Number(channelId)) {
+              ch.favorite = isFav;
+              changed = true;
+            }
+          }
+        }
 
         if (this.filters?.view_type === ViewMode.Favorites) {
           if (!isFav) {
@@ -1996,9 +2232,6 @@ export class HomeComponent implements AfterViewInit, OnDestroy {
     invoke("cancel_search").catch(() => {});
     if (this.search?.nativeElement) {
       this.search.nativeElement.value = "";
-    }
-    if (this.liveSearchInput?.nativeElement) {
-      this.liveSearchInput.nativeElement.value = "";
     }
     this.prevSearchValue = "";
     if (this.filters) {
@@ -2152,16 +2385,22 @@ export class HomeComponent implements AfterViewInit, OnDestroy {
     } else {
       // Scoped search for specific tab (Movies, TV Shows, or Live TV)
       let mediaTypes: MediaType[];
+      let effectiveSourceIds = sourceIds;
       if (currentTab === NavTab.Movies) {
         mediaTypes = [MediaType.movie];
       } else if (currentTab === NavTab.TVShows) {
         mediaTypes = [MediaType.serie];
       } else {
         mediaTypes = [MediaType.livestream];
+        effectiveSourceIds = this.liveSearchSourceId === 'all'
+          ? Array.from(this.memory.Sources.keys())
+          : [this.liveSearchSourceId];
+        this.liveSearchPage = 1;
+        this.liveSearchReachedMax = false;
       }
 
       const p1: Filters = {
-        source_ids: sourceIds,
+        source_ids: effectiveSourceIds,
         view_type: ViewMode.All,
         media_types: mediaTypes,
         query: query,
@@ -2171,19 +2410,45 @@ export class HomeComponent implements AfterViewInit, OnDestroy {
       };
       const p2: Filters = { ...p1, page: 2 };
 
-      const channelResults = await Promise.all([
-        invoke("search", { filters: p1 }) as Promise<Channel[]>,
-        invoke("search", { filters: p2 }) as Promise<Channel[]>,
-      ]).then(([r1, r2]) => [...(r1 || []), ...(r2 || [])])
-        .catch(() => [] as Channel[]);
+      let channelResults: Channel[] = [];
+      if (currentTab === NavTab.LiveTV) {
+        const r1 = (await invoke("search", { filters: p1 }).catch(() => [])) as Channel[];
+        channelResults = r1 || [];
+        if (channelResults.length < this.PAGE_SIZE) {
+          this.liveSearchReachedMax = true;
+        } else {
+          const r2 = (await invoke("search", { filters: p2 }).catch(() => [])) as Channel[];
+          if (r2 && r2.length > 0) {
+            channelResults.push(...r2);
+            this.liveSearchPage = 2;
+            if (r2.length < this.PAGE_SIZE) {
+              this.liveSearchReachedMax = true;
+            }
+          } else {
+            this.liveSearchReachedMax = true;
+          }
+        }
+      } else {
+        channelResults = await Promise.all([
+          invoke("search", { filters: p1 }) as Promise<Channel[]>,
+          invoke("search", { filters: p2 }) as Promise<Channel[]>,
+        ]).then(([r1, r2]) => [...(r1 || []), ...(r2 || [])])
+          .catch(() => [] as Channel[]);
+      }
 
       if (searchId !== this.searchRequestId || currentTab !== this.memory.activeNavTab.value) return;
 
-      const cleanChannels = (channelResults || []).filter((m) => {
-        if (m.media_type === MediaType.movie && isEpisodicOrTvContent(m)) return false;
-        return true;
-      });
-      const deduped = this.dedupeSearchResults(cleanChannels);
+      let deduped: Channel[];
+      if (currentTab === NavTab.LiveTV) {
+        // Live TV: preserve duplicate channel names as separate results
+        deduped = channelResults || [];
+      } else {
+        const cleanChannels = (channelResults || []).filter((m) => {
+          if (m.media_type === MediaType.movie && isEpisodicOrTvContent(m)) return false;
+          return true;
+        });
+        deduped = this.dedupeSearchResults(cleanChannels);
+      }
 
       this.rawSearchResults = {
         movies: deduped.filter((c) => c.media_type === MediaType.movie),
@@ -2612,10 +2877,6 @@ export class HomeComponent implements AfterViewInit, OnDestroy {
   }
 
   focusSearch() {
-    if (this.isLiveTvTab && this.liveSearchInput?.nativeElement) {
-      this.liveSearchInput.nativeElement.focus();
-      return;
-    }
     this.isSearchExpanded = true;
     if (this.searchFocused()) {
       this.selectFirstChannel();

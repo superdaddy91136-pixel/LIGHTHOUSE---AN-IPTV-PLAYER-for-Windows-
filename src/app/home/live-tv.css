@@ -584,3 +584,236 @@ app-home .live-content-title{
     padding-bottom: 2rem;
   }
 }
+
+
+/* ==========================================================================
+   LIVE TV ADVANCED CHANNEL SEARCH STYLES
+   ========================================================================== */
+
+app-home .live-search-results-wrapper {
+  animation: fadeIn 0.25s ease;
+}
+
+app-home .btn-clear-search-link {
+  background: rgba(255, 255, 255, 0.08);
+  color: rgba(255, 255, 255, 0.75);
+  border: 1px solid rgba(255, 255, 255, 0.14);
+  border-radius: 8px;
+  padding: 0.35rem 0.85rem;
+  font-size: 0.8125rem;
+  font-weight: 500;
+  cursor: pointer;
+  transition: all 0.18s ease;
+}
+
+app-home .btn-clear-search-link:hover {
+  background: rgba(239, 68, 68, 0.2);
+  color: #fca5a5;
+  border-color: rgba(239, 68, 68, 0.4);
+}
+
+/* Source Filter Pills Bar */
+app-home .live-search-source-bar {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+  padding: 0.5rem 0.85rem;
+  background: rgba(20, 24, 32, 0.65);
+  backdrop-filter: blur(16px);
+  -webkit-backdrop-filter: blur(16px);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-radius: 12px;
+}
+
+app-home .live-search-source-label {
+  font-size: 0.75rem;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: rgba(255, 255, 255, 0.5);
+  margin-right: 0.25rem;
+}
+
+app-home .live-search-source-bar .filter-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+  padding: 0.3rem 0.75rem;
+  border-radius: 20px;
+  font-size: 0.8125rem;
+  font-weight: 500;
+  color: rgba(255, 255, 255, 0.75);
+  background: rgba(255, 255, 255, 0.06);
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  cursor: pointer;
+  transition: all 0.18s ease;
+}
+
+app-home .live-search-source-bar .filter-pill:hover {
+  background: rgba(255, 255, 255, 0.12);
+  color: #fff;
+  border-color: rgba(255, 255, 255, 0.2);
+}
+
+app-home .live-search-source-bar .filter-pill.active {
+  background: rgba(59, 130, 246, 0.25);
+  color: #93c5fd;
+  border-color: rgba(59, 130, 246, 0.5);
+  box-shadow: 0 0 12px rgba(59, 130, 246, 0.2);
+}
+
+app-home .live-search-source-bar .filter-pill .pill-badge {
+  background: rgba(255, 255, 255, 0.15);
+  border-radius: 10px;
+  padding: 0.1rem 0.4rem;
+  font-size: 0.7rem;
+}
+
+/* Live TV Search Item & Sub-Bar */
+app-home .live-search-item {
+  display: flex;
+  flex-direction: column;
+  transition: transform 0.25s cubic-bezier(0.2, 0, 0.2, 1);
+}
+
+app-home .live-search-item:hover {
+  transform: translateY(-5px);
+}
+
+app-home .live-search-item app-channel-tile .lh-card:hover {
+  transform: none;
+}
+
+app-home .live-search-subbar {
+  width: 100%;
+  max-width: 220px;
+  margin: 6px auto 0 auto;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+app-home .live-search-folder-row {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 2px 7px;
+  background: rgba(255, 255, 255, 0.05);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-radius: 6px;
+  font-size: 0.6875rem;
+  color: rgba(255, 255, 255, 0.65);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+app-home .live-search-folder-row .subbar-icon {
+  width: 11px;
+  height: 11px;
+  flex-shrink: 0;
+  color: rgba(255, 255, 255, 0.5);
+}
+
+app-home .live-search-folder-row .subbar-folder-text {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+app-home .live-search-actions-row {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
+app-home .btn-search-subbar {
+  flex: 1;
+  min-width: 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 3px;
+  padding: 3px 4px;
+  border-radius: 6px;
+  font-size: 0.6875rem;
+  font-weight: 500;
+  cursor: pointer;
+  border: 1px solid transparent;
+  transition: all 0.15s ease;
+  white-space: nowrap;
+}
+
+app-home .btn-search-subbar .subbar-icon {
+  width: 11px;
+  height: 11px;
+  flex-shrink: 0;
+}
+
+app-home .btn-subbar-play {
+  background: rgba(34, 197, 94, 0.14);
+  color: #86efac;
+  border-color: rgba(34, 197, 94, 0.28);
+}
+
+app-home .btn-subbar-play:hover {
+  background: rgba(34, 197, 94, 0.28);
+  color: #bbf7d0;
+  border-color: rgba(34, 197, 94, 0.5);
+  transform: translateY(-1px);
+}
+
+app-home .btn-subbar-channel {
+  background: rgba(59, 130, 246, 0.14);
+  color: #93c5fd;
+  border-color: rgba(59, 130, 246, 0.28);
+}
+
+app-home .btn-subbar-channel:hover {
+  background: rgba(59, 130, 246, 0.28);
+  color: #bfdbfe;
+  border-color: rgba(59, 130, 246, 0.5);
+  transform: translateY(-1px);
+}
+
+app-home .btn-subbar-folder {
+  background: rgba(245, 158, 11, 0.14);
+  color: #fcd34d;
+  border-color: rgba(245, 158, 11, 0.28);
+}
+
+app-home .btn-subbar-folder:hover {
+  background: rgba(245, 158, 11, 0.28);
+  color: #fde68a;
+  border-color: rgba(245, 158, 11, 0.5);
+  transform: translateY(-1px);
+}
+
+/* Channel Highlight Pulse Animation */
+app-home .live-tv-content .channel-highlight-pulse .lh-card,
+app-home .live-tv-content .channel-highlight-pulse {
+  outline: 2px solid #3b82f6 !important;
+  box-shadow: 0 0 24px rgba(59, 130, 246, 0.8), inset 0 0 12px rgba(59, 130, 246, 0.4) !important;
+  border-radius: 12px;
+  animation: liveChannelPulse 2.5s ease-in-out !important;
+}
+
+@keyframes liveChannelPulse {
+  0% {
+    transform: scale(1);
+    box-shadow: 0 0 0 0 rgba(59, 130, 246, 0.9);
+  }
+  30% {
+    transform: scale(1.03);
+    box-shadow: 0 0 28px 8px rgba(59, 130, 246, 0.85);
+  }
+  60% {
+    transform: scale(1);
+    box-shadow: 0 0 16px 4px rgba(59, 130, 246, 0.6);
+  }
+  100% {
+    transform: scale(1);
+    box-shadow: 0 0 0 0 rgba(59, 130, 246, 0);
+  }
+}

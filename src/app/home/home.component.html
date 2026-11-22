@@ -15,7 +15,7 @@
        [class.reserve-settings-space]="!isHomeDiscoveryMode && !isLiveTvTab" 
        [class.home-discovery-layout]="isHomeDiscoveryMode">
     <!-- EXPANDABLE FROSTED GLASS SEARCH CONTROL -->
-    <div class="home-search-control-wrap" [class.expanded]="isSearchExpanded || isSearching" [class.d-none]="isLiveTvTab">
+    <div class="home-search-control-wrap" [class.expanded]="isSearchExpanded || isSearching">
       <div class="search-glass-pill" (click)="expandSearch($event)">
         <button 
           type="button" 
@@ -35,7 +35,7 @@
           type="text" 
           autocomplete="off" 
           class="search-glass-input" 
-          placeholder="Search movies, shows & channels..." 
+          [placeholder]="isLiveTvTab ? 'Search channels...' : 'Search movies, shows & channels...'" 
           (keydown)="onSearchKeydown($event)" 
           (blur)="onSearchBlur()" />
 
@@ -708,6 +708,7 @@
             <div 
               class="sidebar-category-item" 
               *ngFor="let cat of renderedLiveCategories; trackBy: trackCategoryById" 
+              [attr.data-cat-id]="cat.id"
               [class.pinned]="cat.isPinned"
               [class.active]="liveSidebarSelection?.type === 'category' && liveSidebarSelection?.id === cat.id"
               (click)="selectLiveSidebarCategory(cat)">
@@ -743,8 +744,149 @@
 
       <!-- RIGHT COLUMN: CHANNEL CONTENT (~75%) -->
       <main class="live-tv-content" #liveTvContent aria-label="Channel content">
-        <!-- NORMAL CHANNEL BROWSING IN RIGHT COLUMN -->
-        <ng-container *ngIf="liveSidebarSelection">
+        <!-- 1. LIVE TV ADVANCED CHANNEL SEARCH RESULTS -->
+        <ng-container *ngIf="isSearching">
+          <div class="live-search-results-wrapper">
+            <!-- Search Header: Query Title, Result Count & Exit Search Button -->
+            <div class="live-content-header d-flex flex-wrap align-items-center justify-content-between gap-2 mb-3">
+              <div class="d-flex align-items-center gap-2">
+                <button 
+                  type="button" 
+                  class="lh-back-btn detail-back-btn" 
+                  (click)="collapseAndClearSearch($event)" 
+                  title="Exit search (Esc)"
+                  aria-label="Exit search">
+                  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round">
+                    <path d="M15 18l-6-6 6-6" />
+                  </svg>
+                </button>
+                <h3 class="live-content-title mb-0">Search: &ldquo;{{ searchKeyword }}&rdquo;</h3>
+                <span class="live-content-badge" *ngIf="displayedSearchResults.length > 0">
+                  {{ displayedSearchResults.length }}<span *ngIf="!liveSearchReachedMax">+</span>
+                </span>
+              </div>
+              <button 
+                type="button" 
+                class="btn-clear-search-link" 
+                (click)="collapseAndClearSearch($event)">
+                Exit Search
+              </button>
+            </div>
+
+            <!-- Source Filter Pills Bar -->
+            <div class="live-search-source-bar mb-3" *ngIf="enabledSourcesList.length > 1">
+              <span class="live-search-source-label">Source:</span>
+              <button 
+                type="button" 
+                class="filter-pill" 
+                [class.active]="liveSearchSourceId === 'all'" 
+                (click)="selectLiveSearchSource('all')">
+                <span>All Sources</span>
+                <span class="pill-badge">{{ enabledSourcesList.length }}</span>
+              </button>
+              <button 
+                *ngFor="let s of enabledSourcesList" 
+                type="button" 
+                class="filter-pill" 
+                [class.active]="liveSearchSourceId === s.id" 
+                (click)="selectLiveSearchSource(s.id!)">
+                <span>{{ s.name || ('Source ' + s.id) }}</span>
+              </button>
+            </div>
+
+            <!-- Search Results Channels Grid -->
+            <div class="row g-2 g-md-3" *ngIf="displayedSearchResults.length > 0">
+              <div 
+                *ngFor="let channel of displayedSearchResults; let i = index; trackBy: trackChannelById"
+                class="col-compact-card live-search-item">
+                <app-channel-tile 
+                  [id]="i + 20000" 
+                  [channel]="channel" 
+                  [viewMode]="viewType" 
+                  [isLiveTvCard]="true">
+                </app-channel-tile>
+
+                <!-- Search Card Sub-Bar: Folder Badge & Navigation Actions -->
+                <div class="live-search-subbar">
+                  <div class="live-search-folder-row text-truncate" [title]="'Folder: ' + getChannelFolderName(channel)">
+                    <svg viewBox="0 0 24 24" fill="currentColor" class="subbar-icon">
+                      <path d="M10,4H4C2.89,4 2,4.89 2,6V18A2,2 0 0,0 4,20H20A2,2 0 0,0 22,18V8C22,6.89 21.1,6 20,6H12L10,4Z" />
+                    </svg>
+                    <span class="subbar-folder-text">{{ getChannelFolderName(channel) }}</span>
+                  </div>
+                  <div class="live-search-actions-row">
+                    <button 
+                      type="button" 
+                      class="btn-search-subbar btn-subbar-play" 
+                      [disabled]="channel.id === startingPlayChannelId"
+                      (click)="playLiveChannel(channel, $event)" 
+                      title="Play channel">
+                      <svg *ngIf="channel.id !== startingPlayChannelId" viewBox="0 0 24 24" fill="currentColor" class="subbar-icon">
+                        <path d="M8,5.14V19.14L19,12.14L8,5.14Z" />
+                      </svg>
+                      <span *ngIf="channel.id === startingPlayChannelId" class="spinner-border spinner-border-sm" role="status"></span>
+                      <span>Play</span>
+                    </button>
+                    <button 
+                      type="button" 
+                      class="btn-search-subbar btn-subbar-channel" 
+                      (click)="goToChannel(channel, $event)" 
+                      title="Navigate to channel in folder and highlight it">
+                      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" class="subbar-icon">
+                        <circle cx="12" cy="12" r="7" />
+                        <circle cx="12" cy="12" r="2" />
+                        <line x1="12" y1="2" x2="12" y2="5" />
+                        <line x1="12" y1="19" x2="12" y2="22" />
+                        <line x1="2" y1="12" x2="5" y2="12" />
+                        <line x1="19" y1="12" x2="22" y2="12" />
+                      </svg>
+                      <span>Channel</span>
+                    </button>
+                    <button 
+                      type="button" 
+                      class="btn-search-subbar btn-subbar-folder" 
+                      (click)="goToFolder(channel, $event)" 
+                      title="Open containing folder">
+                      <svg viewBox="0 0 24 24" fill="currentColor" class="subbar-icon">
+                        <path d="M10,4H4C2.89,4 2,4.89 2,6V18A2,2 0 0,0 4,20H20A2,2 0 0,0 22,18V8C22,6.89 21.1,6 20,6H12L10,4Z" />
+                      </svg>
+                      <span>Folder</span>
+                    </button>
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            <!-- Empty State -->
+            <div *ngIf="!loading && displayedSearchResults.length === 0" class="text-center py-5 text-muted">
+              <p class="fs-5">No channels found for &ldquo;{{ searchKeyword }}&rdquo;</p>
+              <button 
+                *ngIf="liveSearchSourceId !== 'all'" 
+                type="button" 
+                class="btn btn-sm btn-outline-light mt-2" 
+                (click)="selectLiveSearchSource('all')">
+                Search all sources
+              </button>
+            </div>
+
+            <!-- Loading Spinner -->
+            <div *ngIf="loading" class="text-center py-4">
+              <div class="spinner-border spinner-border-sm text-primary" role="status"></div>
+              <span class="ms-2 text-muted">Searching channels...</span>
+            </div>
+
+            <!-- Load More Button -->
+            <button 
+              *ngIf="!loading && !liveSearchReachedMax && displayedSearchResults.length >= PAGE_SIZE" 
+              (click)="loadMoreLiveSearch()" 
+              class="btn btn-outline-primary mx-auto d-block mt-3 mb-4">
+              Load More Channels
+            </button>
+          </div>
+        </ng-container>
+
+        <!-- 2. NORMAL CHANNEL BROWSING IN RIGHT COLUMN -->
+        <ng-container *ngIf="!isSearching && liveSidebarSelection">
           <!-- Content Header: Title and Channel Count -->
           <div class="live-content-header d-flex flex-wrap align-items-center justify-content-between gap-2 mb-3">
             <div class="d-flex align-items-center gap-2">
@@ -780,6 +922,8 @@
           <div class="row g-2 g-md-3" [@fade]="channelsVisible ? 'visible' : 'hidden'">
             <app-channel-tile 
               [attr.id]="i == 0 ? 'first' : null" 
+              [attr.data-channel-id]="channel.id"
+              [class.channel-highlight-pulse]="channel.id === highlightedChannelId"
               *ngFor="let channel of renderedRegularChannels; let i = index; trackBy: trackChannelById"
               class="col-compact-card" 
               [id]="i" 
