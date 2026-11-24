@@ -219,6 +219,7 @@ export class HomeComponent implements AfterViewInit, OnDestroy {
   liveSearchReachedMax: boolean = false;
   highlightedChannelId?: number;
   categoryByIdMap: Map<number, CategoryOption> = new Map();
+  liveCategoryByIdMap: Map<number, CategoryOption> = new Map();
   startingPlayChannelId?: number;
   liveSidebarSelection: {
     type: 'favorites' | 'category';
@@ -851,11 +852,58 @@ export class HomeComponent implements AfterViewInit, OnDestroy {
     this.cdr.markForCheck();
   }
 
+  resolveLiveCategory(groupId?: number, sourceId?: number): CategoryOption | undefined {
+    if (groupId == null) return undefined;
+    let cat = this.liveCategoryByIdMap.get(groupId) ||
+      this.categoryByIdMap.get(groupId) ||
+      this.availableCategories.find((c) => c.id === groupId);
+    if (!cat) {
+      for (const list of this.categoryCache.values()) {
+        const found = list.find((c) => c.id === groupId);
+        if (found) {
+          cat = found;
+          this.liveCategoryByIdMap.set(found.id, found);
+          break;
+        }
+      }
+    }
+    if (!cat && this.rawSearchResults?.categories?.length > 0) {
+      const foundGroup = this.rawSearchResults.categories.find((c) => c.id === groupId);
+      if (foundGroup && foundGroup.name) {
+        const clean = cleanMediaTitle(foundGroup.name);
+        cat = {
+          id: foundGroup.id!,
+          name: foundGroup.name,
+          cleanName: clean,
+          cleanNameLower: clean.toLowerCase(),
+          sourceId: foundGroup.source_id ?? 0,
+          sourceName: foundGroup.source_id ? this.memory.Sources.get(foundGroup.source_id)?.name : undefined,
+        };
+        this.liveCategoryByIdMap.set(cat.id, cat);
+      }
+    }
+    return cat;
+  }
+
   getChannelFolderName(channel: Channel): string {
     if (channel.group_id == null) return 'Uncategorized';
-    const cat = this.categoryByIdMap.get(channel.group_id) ||
-      this.availableCategories.find((c) => c.id === channel.group_id);
+    const cat = this.resolveLiveCategory(channel.group_id, channel.source_id);
     return cat?.cleanName || cat?.name || 'Folder ' + channel.group_id;
+  }
+
+  syncLiveAvailableCategories(): void {
+    const sourceIds = Array.from(this.memory.Sources.keys());
+    const cacheKey = `${NavTab.LiveTV}_${sourceIds.slice().sort().join(',')}`;
+    const cached = this.categoryCache.get(cacheKey);
+    if (cached && cached.length > 0) {
+      this.setAvailableCategories(cached);
+      this.updateDisplayedLiveCategories();
+    } else if (this.liveCategoryByIdMap.size > 0) {
+      this.setAvailableCategories(Array.from(this.liveCategoryByIdMap.values()));
+      this.updateDisplayedLiveCategories();
+    } else {
+      this.loadAvailableCategories();
+    }
   }
 
   getChannelSourceName(channel: Channel): string {
@@ -951,16 +999,40 @@ export class HomeComponent implements AfterViewInit, OnDestroy {
       event.stopPropagation();
     }
     if (channel.group_id == null) return;
-    const cat = this.availableCategories.find((c) => c.id === channel.group_id);
-    if (!cat) return;
+    const cat = this.resolveLiveCategory(channel.group_id, channel.source_id) || {
+      id: channel.group_id,
+      name: `Folder ${channel.group_id}`,
+      cleanName: `Folder ${channel.group_id}`,
+      sourceId: channel.source_id ?? 0,
+    };
 
     this.clearSearch();
     if (this.search?.nativeElement) {
       this.search.nativeElement.blur();
     }
     this.isSearchExpanded = false;
+
+    if (this.memory.activeNavTab.value !== NavTab.LiveTV) {
+      this.memory.activeNavTab.next(NavTab.LiveTV);
+      this.chkLiveStream = true;
+      this.chkMovie = false;
+      this.chkSerie = false;
+      if (this.filters) {
+        this.filters.media_types = [MediaType.livestream];
+        this.filters.source_ids = Array.from(this.memory.Sources.keys());
+      }
+      this.syncLiveAvailableCategories();
+      this.cdr.detectChanges();
+    }
+
+    if (channel.source_id && this.filters && !this.filters.source_ids.includes(channel.source_id)) {
+      this.selectedSourceId = 'all';
+      this.filters.source_ids = Array.from(this.memory.Sources.keys());
+    }
+
     this.selectLiveSidebarCategory(cat);
     this.scrollSidebarToCategory(cat.id);
+    this.cdr.markForCheck();
   }
 
   async goToChannel(channel: Channel, event?: Event): Promise<void> {
@@ -970,7 +1042,12 @@ export class HomeComponent implements AfterViewInit, OnDestroy {
     if (!channel || channel.id == null) return;
     const targetChannelId = channel.id;
     const cat = channel.group_id != null
-      ? this.availableCategories.find((c) => c.id === channel.group_id)
+      ? (this.resolveLiveCategory(channel.group_id, channel.source_id) || {
+          id: channel.group_id,
+          name: `Folder ${channel.group_id}`,
+          cleanName: `Folder ${channel.group_id}`,
+          sourceId: channel.source_id ?? 0,
+        })
       : undefined;
 
     this.clearSearch();
@@ -978,6 +1055,24 @@ export class HomeComponent implements AfterViewInit, OnDestroy {
       this.search.nativeElement.blur();
     }
     this.isSearchExpanded = false;
+
+    if (this.memory.activeNavTab.value !== NavTab.LiveTV) {
+      this.memory.activeNavTab.next(NavTab.LiveTV);
+      this.chkLiveStream = true;
+      this.chkMovie = false;
+      this.chkSerie = false;
+      if (this.filters) {
+        this.filters.media_types = [MediaType.livestream];
+        this.filters.source_ids = Array.from(this.memory.Sources.keys());
+      }
+      this.syncLiveAvailableCategories();
+      this.cdr.detectChanges();
+    }
+
+    if (channel.source_id && this.filters && !this.filters.source_ids.includes(channel.source_id)) {
+      this.selectedSourceId = 'all';
+      this.filters.source_ids = Array.from(this.memory.Sources.keys());
+    }
 
     if (cat) {
       EpgQueueManager.clearQueue();
@@ -1011,8 +1106,9 @@ export class HomeComponent implements AfterViewInit, OnDestroy {
       foundIndex = this.regularChannels.findIndex((c) => c.id === targetChannelId);
     }
 
-    if (foundIndex !== -1) {
-      if (foundIndex >= this.renderLimit) {
+    const isPinnedMatch = this.liveContentPinnedItems.some((c) => c.id === targetChannelId);
+    if (foundIndex !== -1 || isPinnedMatch) {
+      if (foundIndex !== -1 && foundIndex >= this.renderLimit) {
         this.renderLimit = Math.max(this.renderLimit, foundIndex + 12);
         this.renderedRegularChannels = this.regularChannels.slice(0, this.renderLimit);
         this.cdr.markForCheck();
@@ -1023,11 +1119,11 @@ export class HomeComponent implements AfterViewInit, OnDestroy {
 
       setTimeout(() => {
         const tileEl = (document.querySelector(`[data-channel-id="${targetChannelId}"]`) as HTMLElement) ||
-          document.getElementById(`tile-${foundIndex}`);
+          (foundIndex !== -1 ? document.getElementById(`tile-${foundIndex}`) : null);
         if (tileEl) {
           tileEl.scrollIntoView({ behavior: 'smooth', block: 'center' });
         }
-      }, 100);
+      }, 120);
 
       setTimeout(() => {
         if (this.highlightedChannelId === targetChannelId) {
@@ -1039,13 +1135,19 @@ export class HomeComponent implements AfterViewInit, OnDestroy {
   }
 
   scrollSidebarToCategory(categoryId: number): void {
+    const catIndex = this.displayedLiveCategories.findIndex((c) => c.id === categoryId);
+    if (catIndex >= this.liveCategoryRenderLimit) {
+      this.liveCategoryRenderLimit = Math.max(this.liveCategoryRenderLimit, catIndex + 20);
+      this.renderedLiveCategories = this.displayedLiveCategories.slice(0, this.liveCategoryRenderLimit);
+      this.cdr.markForCheck();
+    }
     setTimeout(() => {
       const sidebarEl = document.querySelector('.live-sidebar-categories-scroll');
       const catEl = sidebarEl?.querySelector(`[data-cat-id="${categoryId}"]`) as HTMLElement;
       if (catEl) {
         catEl.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
       }
-    }, 60);
+    }, 80);
   }
 
   onImageError(event: any): void {
@@ -1279,7 +1381,7 @@ export class HomeComponent implements AfterViewInit, OnDestroy {
           for (const g of groups) {
             if (g.media_type === MediaType.group && g.id != null && g.name) {
               const clean = cleanMediaTitle(g.name);
-              collected.push({
+              const opt: CategoryOption = {
                 id: g.id,
                 name: g.name,
                 cleanName: clean,
@@ -1287,7 +1389,11 @@ export class HomeComponent implements AfterViewInit, OnDestroy {
                 sourceId: g.source_id ?? 0,
                 sourceName: g.source_id ? this.memory.Sources.get(g.source_id)?.name : undefined,
                 channelCount: g.stream_id ?? 0,
-              });
+              };
+              collected.push(opt);
+              if (tab === NavTab.LiveTV) {
+                this.liveCategoryByIdMap.set(opt.id, opt);
+              }
             }
           }
 
@@ -1354,7 +1460,7 @@ export class HomeComponent implements AfterViewInit, OnDestroy {
               for (const g of groups) {
                 if (g.media_type === MediaType.group && g.id != null && g.name) {
                   const clean = cleanMediaTitle(g.name);
-                  collected.push({
+                  const opt: CategoryOption = {
                     id: g.id,
                     name: g.name,
                     cleanName: clean,
@@ -1362,7 +1468,9 @@ export class HomeComponent implements AfterViewInit, OnDestroy {
                     sourceId: g.source_id ?? 0,
                     sourceName: g.source_id ? this.memory.Sources.get(g.source_id)?.name : undefined,
                     channelCount: g.stream_id ?? 0,
-                  });
+                  };
+                  collected.push(opt);
+                  this.liveCategoryByIdMap.set(opt.id, opt);
                 }
               }
               if (groups.length < this.PAGE_SIZE) {
@@ -1378,13 +1486,13 @@ export class HomeComponent implements AfterViewInit, OnDestroy {
           if (!hasMore) {
             this.categoryCache.set(cacheKey, collected);
           }
-          if (this.memory.activeNavTab.value === NavTab.LiveTV && this.availableCategories.length === 0) {
-            this.ngZone.run(() => {
+          this.ngZone.run(() => {
+            if (this.memory.activeNavTab.value === NavTab.LiveTV && this.availableCategories.length === 0) {
               this.setAvailableCategories(collected);
               this.updateDisplayedLiveCategories();
-              this.cdr.markForCheck();
-            });
-          }
+            }
+            this.cdr.markForCheck();
+          });
         } catch (err) {
           console.error('Failed to preload live categories:', err);
         } finally {
@@ -2280,7 +2388,10 @@ export class HomeComponent implements AfterViewInit, OnDestroy {
     for (const c of channels) {
       if (!c) continue;
       const clean = cleanMediaTitle(c.name || '').toLowerCase();
-      const key = `${c.media_type}_${clean}`;
+      // For live TV channels, keep duplicate channel names from different sources distinguishable
+      const key = c.media_type === MediaType.livestream
+        ? `${c.media_type}_${c.source_id ?? 0}_${c.id ?? clean}`
+        : `${c.media_type}_${clean}`;
       if (seenKeys.has(key)) continue;
       seenKeys.add(key);
       result.push(c);
@@ -2338,6 +2449,9 @@ export class HomeComponent implements AfterViewInit, OnDestroy {
     }
 
     if (currentTab === NavTab.Home) {
+      if (this.liveCategoryByIdMap.size === 0) {
+        this.preloadLiveCategories();
+      }
       // Balanced candidate retrieval: query Movies, Series, Live TV, and Categories in parallel
       // so no media type starves the others in global search
       const movieFilters: Filters = {
@@ -2391,6 +2505,19 @@ export class HomeComponent implements AfterViewInit, OnDestroy {
       fetchCategories.then((categories) => {
         if (searchId !== this.searchRequestId || currentTab !== this.memory.activeNavTab.value) return;
         this.rawSearchResults.categories = this.dedupeSearchResults(categories || []);
+        for (const cat of this.rawSearchResults.categories) {
+          if (cat && cat.id != null && cat.name && !this.liveCategoryByIdMap.has(cat.id)) {
+            const clean = cleanMediaTitle(cat.name);
+            this.liveCategoryByIdMap.set(cat.id, {
+              id: cat.id,
+              name: cat.name,
+              cleanName: clean,
+              cleanNameLower: clean.toLowerCase(),
+              sourceId: cat.source_id ?? 0,
+              sourceName: cat.source_id ? this.memory.Sources.get(cat.source_id)?.name : undefined,
+            });
+          }
+        }
         this.updateCombinedSearchResults();
       });
 

@@ -324,6 +324,67 @@
       (navigateTab)="navigateToTab($event)">
     </app-home-discovery>
 
+    <!-- REUSABLE LIVE TV CHANNEL SEARCH CARD TEMPLATE -->
+    <ng-template #liveSearchCardTemplate let-channel="channel" let-idx="idx">
+      <div class="col-compact-card live-search-item">
+        <app-channel-tile 
+          [id]="idx" 
+          [channel]="channel" 
+          [viewMode]="viewModeEnum.All" 
+          [isLiveTvCard]="true">
+        </app-channel-tile>
+
+        <!-- Search Card Sub-Bar: Folder Badge & Navigation Actions -->
+        <div class="live-search-subbar">
+          <div class="live-search-folder-row text-truncate" [title]="'Folder: ' + getChannelFolderName(channel)">
+            <svg viewBox="0 0 24 24" fill="currentColor" class="subbar-icon">
+              <path d="M10,4H4C2.89,4 2,4.89 2,6V18A2,2 0 0,0 4,20H20A2,2 0 0,0 22,18V8C22,6.89 21.1,6 20,6H12L10,4Z" />
+            </svg>
+            <span class="subbar-folder-text">{{ getChannelFolderName(channel) }}</span>
+          </div>
+          <div class="live-search-actions-row">
+            <button 
+              type="button" 
+              class="btn-search-subbar btn-subbar-play" 
+              [disabled]="channel.id === startingPlayChannelId"
+              (click)="playLiveChannel(channel, $event)" 
+              title="Play channel">
+              <svg *ngIf="channel.id !== startingPlayChannelId" viewBox="0 0 24 24" fill="currentColor" class="subbar-icon">
+                <path d="M8,5.14V19.14L19,12.14L8,5.14Z" />
+              </svg>
+              <span *ngIf="channel.id === startingPlayChannelId" class="spinner-border spinner-border-sm" role="status"></span>
+              <span>Play</span>
+            </button>
+            <button 
+              type="button" 
+              class="btn-search-subbar btn-subbar-channel" 
+              (click)="goToChannel(channel, $event)" 
+              title="Navigate to channel in folder and highlight it">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" class="subbar-icon">
+                <circle cx="12" cy="12" r="7" />
+                <circle cx="12" cy="12" r="2" />
+                <line x1="12" y1="2" x2="12" y2="5" />
+                <line x1="12" y1="19" x2="12" y2="22" />
+                <line x1="2" y1="12" x2="5" y2="12" />
+                <line x1="19" y1="12" x2="22" y2="12" />
+              </svg>
+              <span>Channel</span>
+            </button>
+            <button 
+              type="button" 
+              class="btn-search-subbar btn-subbar-folder" 
+              (click)="goToFolder(channel, $event)" 
+              title="Open containing folder">
+              <svg viewBox="0 0 24 24" fill="currentColor" class="subbar-icon">
+                <path d="M10,4H4C2.89,4 2,4.89 2,6V18A2,2 0 0,0 4,20H20A2,2 0 0,0 22,18V8C22,6.89 21.1,6 20,6H12L10,4Z" />
+              </svg>
+              <span>Folder</span>
+            </button>
+          </div>
+        </div>
+      </div>
+    </ng-template>
+
     <!-- UNIVERSAL SEARCH RESULTS MODE -->
     <ng-container *ngIf="isSearching && !isLiveTvTab">
       <!-- Back Button to Exit Search -->
@@ -448,14 +509,22 @@
 
         <!-- UNIFIED MIXED RESULTS GRID -->
         <div class="row g-2 g-md-3" *ngIf="displayedSearchResults.length > 0">
-          <app-channel-tile 
-            *ngFor="let item of displayedSearchResults; let i = index; trackBy: trackChannelById"
-            class="col-compact-card" 
-            [id]="i + 1000" 
-            [channel]="item" 
-            [viewMode]="item.media_type === mediaTypeEnum.group ? viewModeEnum.Categories : viewModeEnum.All"
-            [isLiveTvCard]="item.media_type === mediaTypeEnum.livestream">
-          </app-channel-tile>
+          <ng-container *ngFor="let item of displayedSearchResults; let i = index; trackBy: trackChannelById">
+            <!-- LIVE TV CHANNEL RESULT: Reuses the exact same card design, metadata, and subbar as Live TV search -->
+            <ng-container *ngIf="item.media_type === mediaTypeEnum.livestream">
+              <ng-container *ngTemplateOutlet="liveSearchCardTemplate; context: { channel: item, idx: i + 1000 }"></ng-container>
+            </ng-container>
+
+            <!-- MOVIES, TV SHOWS & CATEGORIES: Standard card display unchanged -->
+            <app-channel-tile 
+              *ngIf="item.media_type !== mediaTypeEnum.livestream"
+              class="col-compact-card" 
+              [id]="i + 1000" 
+              [channel]="item" 
+              [viewMode]="item.media_type === mediaTypeEnum.group ? viewModeEnum.Categories : viewModeEnum.All"
+              [isLiveTvCard]="false">
+            </app-channel-tile>
+          </ng-container>
         </div>
 
         <!-- Empty state when no matches in any group -->
@@ -797,65 +866,9 @@
 
             <!-- Search Results Channels Grid -->
             <div class="row g-2 g-md-3" *ngIf="displayedSearchResults.length > 0">
-              <div 
-                *ngFor="let channel of displayedSearchResults; let i = index; trackBy: trackChannelById"
-                class="col-compact-card live-search-item">
-                <app-channel-tile 
-                  [id]="i + 20000" 
-                  [channel]="channel" 
-                  [viewMode]="viewType" 
-                  [isLiveTvCard]="true">
-                </app-channel-tile>
-
-                <!-- Search Card Sub-Bar: Folder Badge & Navigation Actions -->
-                <div class="live-search-subbar">
-                  <div class="live-search-folder-row text-truncate" [title]="'Folder: ' + getChannelFolderName(channel)">
-                    <svg viewBox="0 0 24 24" fill="currentColor" class="subbar-icon">
-                      <path d="M10,4H4C2.89,4 2,4.89 2,6V18A2,2 0 0,0 4,20H20A2,2 0 0,0 22,18V8C22,6.89 21.1,6 20,6H12L10,4Z" />
-                    </svg>
-                    <span class="subbar-folder-text">{{ getChannelFolderName(channel) }}</span>
-                  </div>
-                  <div class="live-search-actions-row">
-                    <button 
-                      type="button" 
-                      class="btn-search-subbar btn-subbar-play" 
-                      [disabled]="channel.id === startingPlayChannelId"
-                      (click)="playLiveChannel(channel, $event)" 
-                      title="Play channel">
-                      <svg *ngIf="channel.id !== startingPlayChannelId" viewBox="0 0 24 24" fill="currentColor" class="subbar-icon">
-                        <path d="M8,5.14V19.14L19,12.14L8,5.14Z" />
-                      </svg>
-                      <span *ngIf="channel.id === startingPlayChannelId" class="spinner-border spinner-border-sm" role="status"></span>
-                      <span>Play</span>
-                    </button>
-                    <button 
-                      type="button" 
-                      class="btn-search-subbar btn-subbar-channel" 
-                      (click)="goToChannel(channel, $event)" 
-                      title="Navigate to channel in folder and highlight it">
-                      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" class="subbar-icon">
-                        <circle cx="12" cy="12" r="7" />
-                        <circle cx="12" cy="12" r="2" />
-                        <line x1="12" y1="2" x2="12" y2="5" />
-                        <line x1="12" y1="19" x2="12" y2="22" />
-                        <line x1="2" y1="12" x2="5" y2="12" />
-                        <line x1="19" y1="12" x2="22" y2="12" />
-                      </svg>
-                      <span>Channel</span>
-                    </button>
-                    <button 
-                      type="button" 
-                      class="btn-search-subbar btn-subbar-folder" 
-                      (click)="goToFolder(channel, $event)" 
-                      title="Open containing folder">
-                      <svg viewBox="0 0 24 24" fill="currentColor" class="subbar-icon">
-                        <path d="M10,4H4C2.89,4 2,4.89 2,6V18A2,2 0 0,0 4,20H20A2,2 0 0,0 22,18V8C22,6.89 21.1,6 20,6H12L10,4Z" />
-                      </svg>
-                      <span>Folder</span>
-                    </button>
-                  </div>
-                </div>
-              </div>
+              <ng-container *ngFor="let channel of displayedSearchResults; let i = index; trackBy: trackChannelById">
+                <ng-container *ngTemplateOutlet="liveSearchCardTemplate; context: { channel: channel, idx: i + 20000 }"></ng-container>
+              </ng-container>
             </div>
 
             <!-- Empty State -->
@@ -911,6 +924,8 @@
               <app-channel-tile 
                 *ngFor="let item of liveContentPinnedItems; let i = index; trackBy: trackPinnedChannelById"
                 class="col-compact-card" 
+                [attr.data-channel-id]="item.id"
+                [class.channel-highlight-pulse]="item.id === highlightedChannelId"
                 [id]="i + 50000" 
                 [channel]="item" 
                 [viewMode]="viewType" 
