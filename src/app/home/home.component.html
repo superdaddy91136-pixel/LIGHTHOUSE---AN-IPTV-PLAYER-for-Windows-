@@ -35,6 +35,7 @@
           type="text" 
           autocomplete="off" 
           class="search-glass-input" 
+          [value]="filters?.query || ''"
           [placeholder]="isLiveTvTab ? 'Search channels...' : 'Search movies, shows & channels...'" 
           (keydown)="onSearchKeydown($event)" 
           (blur)="onSearchBlur()" />

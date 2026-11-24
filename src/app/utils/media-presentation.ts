@@ -15,6 +15,17 @@ export const FULL_LANGUAGE_PREFIX_REGEX = /^(?:ENGLISH|SPANISH|FRENCH|GERMAN|ITA
 
 export const COUNTRY_CODE_PREFIX_REGEX = /^(?:[A-Z]{2,4})\s*[-:|–—\/]\s*/;
 
+/**
+ * Character class matching all leading/trailing noise: ASCII hyphen, Unicode
+ * look-alike dashes (HYPHEN U+2010, NON-BREAKING HYPHEN U+2011, FIGURE DASH
+ * U+2012, EN DASH U+2013, EM DASH U+2014, HORIZONTAL BAR U+2015, MINUS SIGN U+2212,
+ * FULLWIDTH HYPHEN-MINUS U+FF0D, SMALL HYPHEN-MINUS U+FE63, SOFT HYPHEN U+00AD,
+ * HYPHEN BULLET U+2043), decorative bullets, symbols, and whitespace.
+ */
+export const NOISE_CHARS = '[\\-*#~_+=|:–—‐‑‒―−\u00AD\u2043\uFE63\uFF0D\u00B7•\\s/\\\\]';
+export const LEADING_NOISE_RE  = new RegExp('^' + NOISE_CHARS + '+');
+export const TRAILING_NOISE_RE = new RegExp(NOISE_CHARS + '+$');
+
 export const TECHNICAL_TAGS_BRACKETS = /\[\s*(?:4K(?:\s*UHD)?|UHD|2160p|1080p|1080i|FHD|720p|HD|480p|SD|HEVC|H\.?26[45]|x26[45]|10bit|HDR(?:10\+?)?|DV|Dolby(?:\s*(?:Vision|Atmos|Digital))?|Atmos|DTS(?:-HD)?|TrueHD|5\.1|7\.1|WEBRip|WEB-Rip|WEB-DL|WEBDL|BluRay|Blu-Ray|BRRip|BDRip|HDTV|DVDRip|REMUX|PROPER|REPACK|MULTI|DUAL|VOSTFR|VF|Subbed|Dubbed|Dual\s*Audio)[^\]]*\]/gi;
 
 export const TECHNICAL_TAGS_PARENS = /\(\s*(?:4K(?:\s*UHD)?|UHD|2160p|1080p|1080i|FHD|720p|HD|480p|SD|HEVC|x26[45]|H\.?26[45]|10bit|HDR|DV|BluRay|WEBRip|WEB-DL|REMUX|MULTI|VOSTFR|Subbed|Dubbed)\s*\)/gi;
@@ -94,7 +105,7 @@ export function stripProviderPrefixes(str?: string): string {
     s = s.replace(FULL_LANGUAGE_PREFIX_REGEX, '');
     s = s.replace(LEADING_LANG_CODE_REGEX, '');
     s = s.replace(COUNTRY_CODE_PREFIX_REGEX, '');
-    s = s.replace(/^[-*#~_+=|:–—\s/]+/, '');
+    s = s.replace(LEADING_NOISE_RE, '');
     if (s === prev) break;
   }
   return s.trim();
@@ -222,18 +233,23 @@ function computeCleanMediaTitle(raw: string): string {
     const prev = title;
     title = title.replace(TRAILING_SCENE_TAGS, '');
     title = title.replace(/\s+-[A-Za-z0-9]{2,12}\s*$/g, '');
-    title = title.replace(/^[-*#~_+=|:–—\s/]+/, '').replace(/[-*#~_+=|:–—\s/]+$/, '');
+    title = title.replace(LEADING_NOISE_RE, '').replace(TRAILING_NOISE_RE, '');
     if (title === prev) break;
   }
 
   // 10. Strip empty brackets/parentheses and stray punctuation
   title = title.replace(/\(\s*\)/g, '').replace(/\[\s*\]/g, '');
-  title = title.replace(/^[-*#~_+=|:–—\s/]+/, '').replace(/[-*#~_+=|:–—\s/]+$/, '');
+  title = title.replace(LEADING_NOISE_RE, '').replace(TRAILING_NOISE_RE, '');
 
-  // Collapse multiple spaces
+  // Collapse multiple spaces and perform final trim of any residual leading/trailing noise
   title = title.replace(/\s{2,}/g, ' ').trim();
+  title = title.replace(LEADING_NOISE_RE, '').replace(TRAILING_NOISE_RE, '').trim();
 
-  return title.length > 0 ? title : raw.trim();
+  if (title.length > 0) {
+    return title;
+  }
+  const fallback = raw.replace(LEADING_NOISE_RE, '').replace(TRAILING_NOISE_RE, '').trim();
+  return fallback.length > 0 ? fallback : 'Untitled';
 }
 
 /**
@@ -245,8 +261,8 @@ export function cleanCategoryTitle(category?: string): string | undefined {
     .replace(/^[-*#~_+=|\s]*\b(VOD|MOVIES?|SERIES?|CHANNELS?|LIVE)\b[-*#~_+=|\s:]*/gi, '')
     .replace(/^\|?[A-Z]{2,4}\|?\s*[-:|]\s*/g, '')
     .replace(/Movies|Series|VOD/gi, '')
-    .replace(/^[-*#~_+=|:–—\s]+/, '')
-    .replace(/[-*#~_+=|:–—\s]+$/, '')
+    .replace(LEADING_NOISE_RE, '')
+    .replace(TRAILING_NOISE_RE, '')
     .trim();
 
   if (clean.length < 2 || /^(all|vod|movies|series)$/i.test(clean)) {
@@ -321,6 +337,16 @@ export function toTitleCase(str?: string): string {
       return prefix + core + suffix;
     }
 
+    if (core.includes('-')) {
+      const parts = core.split('-');
+      const capitalized = parts.map((p) => {
+        if (!p) return '';
+        if (/^[A-Z]{2,4}$/.test(p)) return p;
+        return p.charAt(0).toUpperCase() + p.slice(1).toLowerCase();
+      }).join('-');
+      return prefix + capitalized + suffix;
+    }
+
     return prefix + core.charAt(0).toUpperCase() + core.slice(1).toLowerCase() + suffix;
   }).join(' ');
 }
@@ -385,8 +411,8 @@ export function sanitizeEpisodeTitle(
   title = title.replace(TECHNICAL_TAGS_BRACKETS, ' ');
   title = title.replace(TECHNICAL_TAGS_PARENS, ' ');
   title = title.replace(TRAILING_SCENE_TAGS, '');
-  title = title.replace(/^[-*#~_+=|:–—/·.\s]+/, '');
-  title = title.replace(/[-*#~_+=|:–—/·.\s]+$/, '');
+  title = title.replace(LEADING_NOISE_RE, '');
+  title = title.replace(TRAILING_NOISE_RE, '');
   title = title.trim();
 
   if (title.length > 0) {
@@ -434,20 +460,39 @@ export function formatPlayerEpisodeLabel(
     }
   }
 
-  const epTitle = sanitizeEpisodeTitle(epRaw, showTitle, resolvedEpNum, seasonNum);
+  const epTitle = (resolvedEpNum != null && resolvedEpNum > 0) || showTitle
+    ? sanitizeEpisodeTitle(epRaw, showTitle, resolvedEpNum, seasonNum)
+    : '';
 
   let secondary = '';
-  if (resolvedEpNum != null && resolvedEpNum > 0) {
-    if (epTitle && epTitle.toLowerCase() !== `episode ${resolvedEpNum}`.toLowerCase()) {
-      secondary = `- ${resolvedEpNum}. ${epTitle}`;
-    } else {
-      secondary = `- Episode ${resolvedEpNum}`;
+  if (showTitle) {
+    if (resolvedEpNum != null && resolvedEpNum > 0) {
+      if (epTitle && epTitle.toLowerCase() !== `episode ${resolvedEpNum}`.toLowerCase()) {
+        secondary = `- ${resolvedEpNum}. ${epTitle}`;
+      } else {
+        secondary = `- Episode ${resolvedEpNum}`;
+      }
+    } else if (epTitle) {
+      secondary = `- ${epTitle}`;
     }
-  } else if (epTitle) {
-    secondary = `- ${epTitle}`;
+  } else {
+    // Standalone title (no show title provided): never prepend a leading hyphen
+    if (resolvedEpNum != null && resolvedEpNum > 0) {
+      if (epTitle && epTitle.toLowerCase() !== `episode ${resolvedEpNum}`.toLowerCase()) {
+        showTitle = `${resolvedEpNum}. ${epTitle}`;
+      } else {
+        showTitle = `Episode ${resolvedEpNum}`;
+      }
+    } else {
+      showTitle = cleanMediaTitle(epRaw) || sanitizeShowTitle(epRaw) || epRaw;
+    }
+    if (showTitle) {
+      showTitle = showTitle.replace(LEADING_NOISE_RE, '').replace(TRAILING_NOISE_RE, '').trim();
+    }
+    secondary = '';
   }
 
-  const full = showTitle ? (secondary ? `${showTitle} ${secondary}` : showTitle) : (secondary.replace(/^-\s*/, '') || epRaw);
+  const full = showTitle ? (secondary ? `${showTitle} ${secondary}` : showTitle) : (secondary.replace(/^[-–—:\s]+/, '') || epRaw);
   return { primary: showTitle, secondary, full, epTitle };
 }
 

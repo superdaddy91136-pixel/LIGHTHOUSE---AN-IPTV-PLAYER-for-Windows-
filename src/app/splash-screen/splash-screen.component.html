@@ -1,6 +1,12 @@
 <div class="lighthouse-splash" [class.fading-out]="splashService.fadingOut" aria-hidden="true">
+  <!-- Subtle ambient cinematic lighting behind the center -->
+  <div class="splash-ambient-glow"></div>
+
   <div class="splash-card">
     <div class="splash-logo-container">
+      <!-- Ambient halo directly behind the logo -->
+      <div class="splash-logo-halo"></div>
+
       <img
         src="assets/logo.png"
         alt="Lighthouse"
@@ -10,8 +16,13 @@
         decoding="sync"
         loading="eager"
         draggable="false" />
+
+      <!-- Soft blue light sweep across the logo -->
+      <div class="splash-light-sweep" aria-hidden="true"></div>
     </div>
+
     <div class="splash-brand-title">LIGHTHOUSE</div>
+
     <div class="splash-loader-track">
       <div class="splash-loader-indicator"></div>
     </div>

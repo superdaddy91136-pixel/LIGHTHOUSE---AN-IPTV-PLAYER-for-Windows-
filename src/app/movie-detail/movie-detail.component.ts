@@ -1025,9 +1025,10 @@ export class MovieDetailComponent implements OnInit, AfterViewInit, OnDestroy {
         height = Math.round(rect.height * dpr);
       }
 
+      const displayTitle = this.cleanTitle || cleanMediaTitle(playChannel.name);
       const playerChannel: Channel = {
         ...playChannel,
-        name: cleanMediaTitle(playChannel.name || this.cleanTitle),
+        name: displayTitle,
       };
 
       await invoke('start_embedded_player', {
@@ -1041,7 +1042,7 @@ export class MovieDetailComponent implements OnInit, AfterViewInit, OnDestroy {
 
       this.embeddedPlayer.emitPlaybackSegments(playerChannel, {
         mode: 'movie',
-        seriesTitle: this.cleanTitle || playerChannel.name,
+        seriesTitle: displayTitle,
       }).catch(console.warn);
 
       this.setupVideoResizeObserver();

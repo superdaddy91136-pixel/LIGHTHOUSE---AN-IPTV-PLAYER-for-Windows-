@@ -943,9 +943,10 @@ export class EmbeddedPlayerService implements OnDestroy {
         ? this.getSavedDuration(channel.id, channel)
         : 0);
 
+    const displayTitle = options?.title || cleanMediaTitle(channel.name);
     const playChannel: Channel = {
       ...channel,
-      name: options?.title || channel.name,
+      name: displayTitle,
     };
 
     emit('embedded-player-mode', { mode: this.currentMode, channelId: channel.id }).catch(console.warn);
@@ -986,7 +987,7 @@ export class EmbeddedPlayerService implements OnDestroy {
 
       const stableMediaKey = this.computeStableMediaKey(playChannel, options);
       emit('embedded-player-started', {
-        name: options?.title || channel.name,
+        name: displayTitle,
         channel_id: channel.id,
         channelId: channel.id,
         startTime: startPos,
@@ -1384,20 +1385,21 @@ export class EmbeddedPlayerService implements OnDestroy {
       this.currentGroupId = channel.group_id;
     }
     const channelTitle = title || cleanMediaTitle(channel.name || 'Live TV');
+    const playChannel = { ...channel, name: channelTitle };
 
     if (this.onSwitchChannelCallback) {
       try {
-        await this.onSwitchChannelCallback(channel);
+        await this.onSwitchChannelCallback(playChannel);
       } catch (e) {
         console.warn('onSwitchChannelCallback error:', e);
       }
     }
 
     try {
-      await invoke('switch_embedded_channel', { channel });
+      await invoke('switch_embedded_channel', { channel: playChannel });
     } catch (err) {
       console.warn('switch_embedded_channel error, falling back to startPlayer:', err);
-      await this.startPlayer(channel, this.hostTarget || this.resolveVideoCanvasId(), {
+      await this.startPlayer(playChannel, this.hostTarget || this.resolveVideoCanvasId(), {
         mode: 'live',
         title: channelTitle,
       });
@@ -2313,7 +2315,7 @@ export class EmbeddedPlayerService implements OnDestroy {
 
     const startPos = this.getSavedPosition(playChannel.id, playChannel);
     await this.startPlayer(playChannel, canvas, {
-      title: cleanMediaTitle(playChannel.name),
+      title: cleanMediaTitle(channel.name || playChannel.name),
       mode: 'movie',
       startTime: startPos,
     });

@@ -7716,6 +7716,9 @@
       const CATEGORY_PREFIX_REGEX = /^(?:[\[\(|]\s*(?:TOP|VIP|NEW|EXCLUSIVE|PREMIUM|VOD|SERIES?|TV|SHOWS?|FILMS?|CINEMA)\s*[\]\)|]\s*[-:|–—\/]?|(?:TOP|VIP|NEW|EXCLUSIVE|PREMIUM|VOD|SERIES?|TV|SHOWS?|FILMS?|CINEMA)\s*[-:|–—\/])\s*/i;
       const LEADING_TAG_REGEX = /^(?:\|[A-Za-z0-9\s_-]+\||\([A-Za-z0-9\s_-]+\)|\[[A-Za-z0-9\s_-]+\])\s*[-:|–—\/]?\s*/;
       const RESOLUTION_PREFIX_REGEX = /^(?:\[?(?:4K|UHD|1080p|FHD|720p|HD)\]?)\s*[-:|–—\/]\s*/i;
+      const NOISE_CHARS = '[\\-*#~_+=|:–—‐‑‒―−\u00AD\u2043\uFE63\uFF0D\u00B7•\\s/\\\\]';
+      const LEADING_NOISE_RE = new RegExp('^' + NOISE_CHARS + '+');
+      const TRAILING_NOISE_RE = new RegExp(NOISE_CHARS + '+$');
 
       function toTitleCase(str) {
         if (!str) return '';
@@ -7750,6 +7753,16 @@
             return prefix + core + suffix;
           }
 
+          if (core.includes('-')) {
+            const parts = core.split('-');
+            const capitalized = parts.map((p) => {
+              if (!p) return '';
+              if (/^[A-Z]{2,4}$/.test(p)) return p;
+              return p.charAt(0).toUpperCase() + p.slice(1).toLowerCase();
+            }).join('-');
+            return prefix + capitalized + suffix;
+          }
+
           return prefix + core.charAt(0).toUpperCase() + core.slice(1).toLowerCase() + suffix;
         }).join(' ');
       }
@@ -7763,7 +7776,7 @@
           s = s.replace(CATEGORY_PREFIX_REGEX, '');
           s = s.replace(LEADING_TAG_REGEX, '');
           s = s.replace(RESOLUTION_PREFIX_REGEX, '');
-          s = s.replace(/^[-*#~_+=|:–—\s/]+/, '');
+          s = s.replace(LEADING_NOISE_RE, '');
           if (s === prev) break;
         }
         return s.trim();
@@ -7778,9 +7791,13 @@
         title = title.replace(/\s*\[\s*(?:4K|UHD|1080p|FHD|720p|HD|HEVC|HDR|HDR10|DV|Dolby)[^\]]*\]/gi, '');
         title = title.replace(/\s*[-–—:|/]?\s*\b(?:Season|Series)\s*\d+\b/gi, '');
         title = title.replace(/\s*[-–—:|/]?\s*\bS\d{1,2}\b/gi, '');
-        title = title.replace(/^[-*#~_+=|:–—\s/]+/, '').replace(/[-*#~_+=|:–—\s/]+$/, '').trim();
+        title = title.replace(LEADING_NOISE_RE, '').replace(TRAILING_NOISE_RE, '').trim();
 
-        return toTitleCase(title) || rawTitle.trim();
+        if (!title) {
+          const fallback = rawTitle.replace(LEADING_NOISE_RE, '').replace(TRAILING_NOISE_RE, '').trim();
+          return fallback || 'Untitled';
+        }
+        return toTitleCase(title);
       }
 
       function sanitizeEpisodeTitle(rawTitle, showTitle, episodeNum, seasonNum) {
@@ -7816,8 +7833,8 @@
         }
 
         title = title.replace(/\s*\[\s*(?:4K|UHD|1080p|FHD|720p|HD|HEVC|HDR)[^\]]*\]/gi, '');
-        title = title.replace(/^[-*#~_+=|:–—/·.\s]+/, '');
-        title = title.replace(/[-*#~_+=|:–—/·.\s]+$/, '');
+        title = title.replace(LEADING_NOISE_RE, '');
+        title = title.replace(TRAILING_NOISE_RE, '');
         title = title.trim();
 
         if (title.length > 0) {
@@ -7851,20 +7868,39 @@
           }
         }
 
-        const epTitle = sanitizeEpisodeTitle(epRaw, showTitle, resolvedEpNum, seasonNum);
+        const epTitle = (resolvedEpNum != null && resolvedEpNum > 0) || showTitle
+          ? sanitizeEpisodeTitle(epRaw, showTitle, resolvedEpNum, seasonNum)
+          : '';
 
         let secondary = '';
-        if (resolvedEpNum != null && resolvedEpNum > 0) {
-          if (epTitle && epTitle.toLowerCase() !== `episode ${resolvedEpNum}`.toLowerCase()) {
-            secondary = `- ${resolvedEpNum}. ${epTitle}`;
-          } else {
-            secondary = `- Episode ${resolvedEpNum}`;
+        if (showTitle) {
+          if (resolvedEpNum != null && resolvedEpNum > 0) {
+            if (epTitle && epTitle.toLowerCase() !== `episode ${resolvedEpNum}`.toLowerCase()) {
+              secondary = `- ${resolvedEpNum}. ${epTitle}`;
+            } else {
+              secondary = `- Episode ${resolvedEpNum}`;
+            }
+          } else if (epTitle) {
+            secondary = `- ${epTitle}`;
           }
-        } else if (epTitle) {
-          secondary = `- ${epTitle}`;
+        } else {
+          // No show title: standalone title, must not prepend hyphen
+          if (resolvedEpNum != null && resolvedEpNum > 0) {
+            if (epTitle && epTitle.toLowerCase() !== `episode ${resolvedEpNum}`.toLowerCase()) {
+              showTitle = `${resolvedEpNum}. ${epTitle}`;
+            } else {
+              showTitle = `Episode ${resolvedEpNum}`;
+            }
+          } else {
+            showTitle = sanitizeShowTitle(epRaw) || epRaw;
+          }
+          if (showTitle) {
+            showTitle = showTitle.replace(LEADING_NOISE_RE, '').replace(TRAILING_NOISE_RE, '').trim();
+          }
+          secondary = '';
         }
 
-        const full = showTitle ? (secondary ? `${showTitle} ${secondary}` : showTitle) : (secondary.replace(/^-\s*/, '') || epRaw);
+        const full = showTitle ? (secondary ? `${showTitle} ${secondary}` : showTitle) : (secondary.replace(/^[-–—:\s]+/, '') || epRaw);
         return { primary: showTitle, secondary, full, epTitle };
       }
 
@@ -7887,12 +7923,21 @@
           );
           primary = formatted.primary;
           secondary = formatted.secondary;
+        } else {
+          // Movie or Live TV mode: clean title directly, never format as episode subtitle
+          primary = sanitizeShowTitle(currentRawTitle) || currentRawTitle;
+          if (primary) {
+            primary = primary.replace(LEADING_NOISE_RE, '').replace(TRAILING_NOISE_RE, '').trim();
+          }
+          secondary = '';
         }
 
         if (!primary && currentRawTitle) {
-          const formatted = formatPlayerEpisodeLabel('', currentRawTitle);
-          primary = formatted.primary;
-          secondary = formatted.secondary;
+          primary = sanitizeShowTitle(currentRawTitle) || currentRawTitle;
+          if (primary) {
+            primary = primary.replace(LEADING_NOISE_RE, '').replace(TRAILING_NOISE_RE, '').trim();
+          }
+          secondary = '';
         }
 
         const titleHtml = secondary

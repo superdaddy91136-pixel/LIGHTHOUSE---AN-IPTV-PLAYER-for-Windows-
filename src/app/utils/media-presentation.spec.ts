@@ -7,6 +7,7 @@ import {
   replaceSceneSeparators,
   stripProviderPrefixes,
   parseMediaTitle,
+  formatPlayerEpisodeLabel,
 } from './media-presentation';
 
 describe('MediaPresentationUtils', () => {
@@ -60,6 +61,42 @@ describe('MediaPresentationUtils', () => {
       expect(cleanMediaTitle('Spider-Man: Across the Spider-Verse')).toBe('Spider-Man: Across the Spider-Verse');
       expect(cleanMediaTitle('Mission: Impossible - Dead Reckoning Part One (2023)')).toBe('Mission: Impossible - Dead Reckoning Part One');
       expect(cleanMediaTitle('Dune: Part Two (2024) [4K UHD]')).toBe('Dune: Part Two');
+    });
+
+    it('should remove unwanted leading hyphens and surrounding whitespace while preserving internal hyphens', () => {
+      // Single leading hyphen
+      expect(cleanMediaTitle('- Spider-Man: Brand New Day')).toBe('Spider-Man: Brand New Day');
+      expect(cleanMediaTitle('-Spider-Man: Brand New Day')).toBe('Spider-Man: Brand New Day');
+
+      // Multiple leading hyphens
+      expect(cleanMediaTitle('-- The Dark Knight')).toBe('The Dark Knight');
+      expect(cleanMediaTitle('--- X-Men: First Class')).toBe('X-Men: First Class');
+
+      // Repeated combinations with whitespace
+      expect(cleanMediaTitle('- - Breaking Bad')).toBe('Breaking Bad');
+      expect(cleanMediaTitle('- - - Breaking Bad')).toBe('Breaking Bad');
+      expect(cleanMediaTitle('  -- Inception')).toBe('Inception');
+      expect(cleanMediaTitle(' - -  Interstellar')).toBe('Interstellar');
+      expect(cleanMediaTitle(' - Spider-Man')).toBe('Spider-Man');
+
+      // Unicode dash variants as leading noise
+      expect(cleanMediaTitle('– Spider-Man')).toBe('Spider-Man');
+      expect(cleanMediaTitle('— The Dark Knight')).toBe('The Dark Knight');
+      expect(cleanMediaTitle('\u2010 Breaking Bad')).toBe('Breaking Bad');
+      expect(cleanMediaTitle('\u2011 Inception')).toBe('Inception');
+      expect(cleanMediaTitle('\u2212 Dune')).toBe('Dune');
+      expect(cleanMediaTitle('\uFF0D Avatar')).toBe('Avatar');
+
+      // Legitimate internal hyphens must be preserved
+      expect(cleanMediaTitle('Spider-Man')).toBe('Spider-Man');
+      expect(cleanMediaTitle('X-Men: First Class')).toBe('X-Men: First Class');
+      expect(cleanMediaTitle('Mission: Impossible - Fallout')).toBe('Mission: Impossible - Fallout');
+      expect(cleanMediaTitle('Avengers: Infinity War - Part 1')).toBe('Avengers: Infinity War - Part 1');
+
+      // Existing sanitization rules combined with leading hyphens
+      expect(cleanMediaTitle('[4K UHD] - Spider-Man: Brand New Day (2024)')).toBe('Spider-Man: Brand New Day');
+      expect(cleanMediaTitle('ENGLISH - - The.Dark.Knight.2008.WEB-DL')).toBe('The Dark Knight');
+      expect(cleanMediaTitle('MOVIES/SCI-FI/- Spider-Man.2024.1080p.BluRay.x265')).toBe('Spider-Man');
     });
 
     it('should preserve non-English titles and characters', () => {
@@ -120,6 +157,48 @@ describe('MediaPresentationUtils', () => {
       expect(parsed.season).toBe(1);
       expect(parsed.episode).toBe(8);
       expect(parsed.quality).toBe('1080p');
+    });
+  });
+
+  describe('formatPlayerEpisodeLabel', () => {
+    it('should format TV episodes with primary show and secondary episode label', () => {
+      const result = formatPlayerEpisodeLabel('Breaking Bad', 'Pilot', 1, 1);
+      expect(result.primary).toBe('Breaking Bad');
+      expect(result.secondary).toBe('- 1. Pilot');
+      expect(result.full).toBe('Breaking Bad - 1. Pilot');
+    });
+
+    it('should never prepend a leading hyphen to movie or standalone titles when showTitle is empty', () => {
+      const movie1 = formatPlayerEpisodeLabel('', 'Spider-Man: Brand New Day');
+      expect(movie1.primary).toBe('Spider-Man: Brand New Day');
+      expect(movie1.secondary).toBe('');
+      expect(movie1.full).toBe('Spider-Man: Brand New Day');
+
+      const movie2 = formatPlayerEpisodeLabel('', '- Spider-Man: Brand New Day');
+      expect(movie2.primary).toBe('Spider-Man: Brand New Day');
+      expect(movie2.secondary).toBe('');
+      expect(movie2.full).toBe('Spider-Man: Brand New Day');
+
+      const movie3 = formatPlayerEpisodeLabel('', '-- The Dark Knight');
+      expect(movie3.primary).toBe('The Dark Knight');
+      expect(movie3.secondary).toBe('');
+      expect(movie3.full).toBe('The Dark Knight');
+
+      const movie4 = formatPlayerEpisodeLabel('', '- - Breaking Bad');
+      expect(movie4.primary).toBe('Breaking Bad');
+      expect(movie4.secondary).toBe('');
+      expect(movie4.full).toBe('Breaking Bad');
+
+      const movie5 = formatPlayerEpisodeLabel('', 'Mission: Impossible - Fallout');
+      expect(movie5.full).toBe('Mission: Impossible - Fallout');
+      expect(movie5.full.startsWith('-')).toBe(false);
+    });
+
+    it('should preserve legitimate internal hyphens in standalone titles', () => {
+      const result = formatPlayerEpisodeLabel('', 'Spider-Man');
+      expect(result.primary).toBe('Spider-Man');
+      expect(result.secondary).toBe('');
+      expect(result.full).toBe('Spider-Man');
     });
   });
 });

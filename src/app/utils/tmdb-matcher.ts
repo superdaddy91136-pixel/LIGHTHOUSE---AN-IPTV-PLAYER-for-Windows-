@@ -1,4 +1,4 @@
-import { cleanMediaTitle, extractYear, stripFolderPaths, stripFileExtensions, stripProviderPrefixes } from './media-presentation';
+import { cleanMediaTitle, extractYear, stripFolderPaths, stripFileExtensions, stripProviderPrefixes, LEADING_NOISE_RE, TRAILING_NOISE_RE } from './media-presentation';
 
 export const TMDB_MINIMUM_CONFIDENCE_THRESHOLD = 0.65;
 
@@ -72,7 +72,7 @@ export function prepareSearchQuery(rawTitle?: string, mediaType?: 'movie' | 'tv'
   clean = clean.replace(/\s*\([^)]*$/g, '').trim();
 
   // Strip leading and trailing non-alphanumeric separators, but preserve internal punctuation
-  clean = clean.replace(/^[-*#~_+=|:–—\s/]+/, '').replace(/[-*#~_+=|:–—\s/]+$/, '').trim();
+  clean = clean.replace(LEADING_NOISE_RE, '').replace(TRAILING_NOISE_RE, '').trim();
 
   return {
     query: clean || rawTitle.trim(),

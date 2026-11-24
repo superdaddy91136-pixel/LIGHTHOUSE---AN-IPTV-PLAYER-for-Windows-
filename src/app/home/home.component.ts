@@ -1761,7 +1761,7 @@ export class HomeComponent implements AfterViewInit, OnDestroy {
     const savedSearch = this.searchStateService.getSearchState(currentTab);
     if (savedSearch && savedSearch.query && savedSearch.query.trim().length > 0) {
       const sourceIds = this.memory.Sources ? Array.from(this.memory.Sources.keys()) : [];
-      let mediaTypes = [MediaType.movie, MediaType.serie];
+      let mediaTypes = [MediaType.movie, MediaType.serie, MediaType.livestream];
       if (currentTab === NavTab.Movies) {
         mediaTypes = [MediaType.movie];
       } else if (currentTab === NavTab.TVShows) {
@@ -2127,18 +2127,21 @@ export class HomeComponent implements AfterViewInit, OnDestroy {
         }
       }),
     );
-    let wasLivePlaying = false;
+    let wasPlayingEmbedded = false;
     this.subscriptions.push(
       this.embeddedPlayer.isPlayingEmbedded$.subscribe((isPlaying) => {
-        if (isPlaying && !wasLivePlaying) {
+        if (isPlaying && !wasPlayingEmbedded) {
           if (this.isLiveTvTab) {
             this.savedLiveContentScroll = this.liveTvContent?.nativeElement?.scrollTop || 0;
             const sidebar = document.querySelector('.live-tv-sidebar');
             this.savedLiveSidebarScroll = sidebar ? sidebar.scrollTop : 0;
+          } else if (this.isSearching) {
+            this.saveCurrentTabSearchState();
           }
           EpgQueueManager.clearQueue();
           EpgQueueManager.setPaused(true);
-        } else if (!isPlaying && wasLivePlaying) {
+          this.cdr.markForCheck();
+        } else if (!isPlaying && wasPlayingEmbedded) {
           EpgQueueManager.setPaused(false);
           if (this.isLiveTvTab) {
             setTimeout(() => {
@@ -2151,9 +2154,25 @@ export class HomeComponent implements AfterViewInit, OnDestroy {
               }
               this.cdr.markForCheck();
             }, 30);
+          } else {
+            const currentTab = this.memory.activeNavTab.value;
+            const savedSearch = this.searchStateService.getSearchState(currentTab);
+            if (this.isSearching && savedSearch) {
+              const targetSearchScroll = this.memory.searchScrollPositions.get(currentTab) ?? savedSearch.scrollPosition;
+              if (targetSearchScroll && targetSearchScroll > 0) {
+                this.restoreScrollPosition(targetSearchScroll);
+              }
+            }
+            if (this.isSearching && this.search?.nativeElement && this.filters?.query) {
+              this.search.nativeElement.value = this.filters.query;
+            }
+            this.cdr.markForCheck();
+            setTimeout(() => {
+              this.cdr.markForCheck();
+            }, 30);
           }
         }
-        wasLivePlaying = isPlaying;
+        wasPlayingEmbedded = isPlaying;
       }),
     );
     this.subscriptions.push(
@@ -2894,6 +2913,10 @@ export class HomeComponent implements AfterViewInit, OnDestroy {
   }
 
   async goBackHotkey() {
+    if (this.embeddedPlayer.isPlayingEmbedded) {
+      await this.embeddedPlayer.stopPlayer();
+      return;
+    }
     if (this.isFilterMenuOpen) {
       this.isFilterMenuOpen = false;
       return;
@@ -3171,6 +3194,12 @@ export class HomeComponent implements AfterViewInit, OnDestroy {
       event.key == "BrowserBack" ||
       (event.key == "Backspace" && !isInputFocused())
     ) {
+      if (this.embeddedPlayer.isPlayingEmbedded) {
+        this.embeddedPlayer.stopPlayer().catch(console.warn);
+        event.preventDefault();
+        event.stopPropagation();
+        return;
+      }
       this.goBackHotkey();
       event.preventDefault();
     }
