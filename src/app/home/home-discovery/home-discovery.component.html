@@ -33,6 +33,7 @@
     <div 
       *ngIf="currentHero" 
       class="hero-banner" 
+      [style.--banner-rotate-ms]="BANNER_ROTATE_MS + 'ms'"
       [class.hero-transitioning]="isTransitioning"
       (mouseenter)="onHeroMouseEnter()" 
       (mouseleave)="onHeroMouseLeave()"
@@ -147,6 +148,13 @@
           [attr.aria-selected]="dot.isActive"
           [attr.aria-label]="'Go to hero item ' + (dot.targetIndex + 1)"
           (click)="onPaginationDotClick(dot.targetIndex, $event)">
+          <ng-container *ngIf="dot.isActive">
+            <span
+              *ngFor="let k of [currentHeroIndex]"
+              class="hero-dot-fill"
+              [class.paused]="isHeroTimerPaused">
+            </span>
+          </ng-container>
         </button>
       </div>
     </div>

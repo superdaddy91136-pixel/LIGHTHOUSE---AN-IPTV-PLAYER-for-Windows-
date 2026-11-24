@@ -51,7 +51,7 @@ import { AmbientBackgroundService } from "../../services/ambient-background.serv
 import { FavoritesService } from "../../services/favorites.service";
 import { SplashScreenService } from "../../services/splash-screen.service";
 
-const BANNER_ROTATE_MS = 30000;
+export const BANNER_ROTATE_MS = 10000;
 
 export type ContentPreference = 'all' | 'english' | 'hindi' | 'korean';
 export type HeroCategory = "english" | "hindi" | "korean" | "uk" | "anime" | "international";
@@ -195,7 +195,11 @@ export class HomeDiscoveryComponent implements OnInit, AfterViewInit, OnDestroy 
   private cachedWatchProgressStore: Record<string, any> | null = null;
   private lastWatchProgressReadTime: number = 0;
 
+  readonly BANNER_ROTATE_MS = BANNER_ROTATE_MS;
   private heroTimer?: any;
+  private heroTimerStartTime: number = 0;
+  private heroRemainingMs: number = BANNER_ROTATE_MS;
+  isHeroTimerPaused: boolean = false;
   private isHeroFocused: boolean = false;
   private isHeroDragging: boolean = false;
   private subs: Subscription[] = [];
@@ -721,24 +725,41 @@ export class HomeDiscoveryComponent implements OnInit, AfterViewInit, OnDestroy 
   }
 
   startHeroTimer() {
-    if (this.heroTimer || this.shouldPauseHeroTimer()) return;
+    if (this.heroTimer || this.shouldPauseHeroTimer() || this.heroItems.length <= 1) return;
+    this.isHeroTimerPaused = false;
+    this.heroTimerStartTime = Date.now();
+    const duration = this.heroRemainingMs > 0 ? this.heroRemainingMs : BANNER_ROTATE_MS;
+
     this.ngZone.runOutsideAngular(() => {
-      this.heroTimer = setInterval(() => {
-        if (this.shouldPauseHeroTimer() || this.heroItems.length <= 1) return;
-        this.ngZone.run(() => this.nextHero(true));
-      }, BANNER_ROTATE_MS);
+      this.heroTimer = setTimeout(() => {
+        this.heroTimer = undefined;
+        this.heroRemainingMs = BANNER_ROTATE_MS;
+        this.ngZone.run(() => {
+          this.nextHero(true);
+        });
+      }, duration);
     });
+    this.cdr.markForCheck();
   }
 
-  stopHeroTimer() {
+  stopHeroTimer(isPause: boolean = false) {
     if (this.heroTimer) {
-      clearInterval(this.heroTimer);
+      clearTimeout(this.heroTimer);
       this.heroTimer = undefined;
     }
+    if (isPause) {
+      const elapsed = Date.now() - this.heroTimerStartTime;
+      this.heroRemainingMs = Math.max(0, this.heroRemainingMs - elapsed);
+      this.isHeroTimerPaused = true;
+    } else {
+      this.heroRemainingMs = BANNER_ROTATE_MS;
+      this.isHeroTimerPaused = false;
+    }
+    this.cdr.markForCheck();
   }
 
   private restartHeroTimer(): void {
-    this.stopHeroTimer();
+    this.stopHeroTimer(false);
     this.startHeroTimer();
   }
 
@@ -785,7 +806,7 @@ export class HomeDiscoveryComponent implements OnInit, AfterViewInit, OnDestroy 
 
   private updateHeroTimer(): void {
     if (this.shouldPauseHeroTimer()) {
-      this.stopHeroTimer();
+      this.stopHeroTimer(true);
     } else {
       this.startHeroTimer();
     }
@@ -904,7 +925,7 @@ export class HomeDiscoveryComponent implements OnInit, AfterViewInit, OnDestroy 
         this.currentHeroIndex = index;
         return;
       }
-      this.restartHeroTimer();
+      this.stopHeroTimer(false);
       this.isTransitioning = true;
 
       if (this.transitionTimeout) {
@@ -917,6 +938,7 @@ export class HomeDiscoveryComponent implements OnInit, AfterViewInit, OnDestroy 
         this.updateAmbientBackground();
         this.preloadVisibleHeroImages();
         this.cdr.markForCheck();
+        this.startHeroTimer();
 
         setTimeout(() => {
           this.isTransitioning = false;
@@ -977,7 +999,7 @@ export class HomeDiscoveryComponent implements OnInit, AfterViewInit, OnDestroy 
   nextHero(isAuto: boolean = false) {
     if (this.heroItems.length <= 1) return;
     if (!isAuto) {
-      this.restartHeroTimer();
+      this.stopHeroTimer(false);
     }
     this.isTransitioning = true;
     this.cdr.markForCheck();
@@ -1008,6 +1030,7 @@ export class HomeDiscoveryComponent implements OnInit, AfterViewInit, OnDestroy 
       this.updateAmbientBackground();
       this.preloadVisibleHeroImages();
       this.cdr.markForCheck();
+      this.startHeroTimer();
 
       setTimeout(() => {
         this.isTransitioning = false;
@@ -1018,7 +1041,7 @@ export class HomeDiscoveryComponent implements OnInit, AfterViewInit, OnDestroy 
 
   prevHero() {
     if (this.heroItems.length <= 1) return;
-    this.restartHeroTimer();
+    this.stopHeroTimer(false);
     this.isTransitioning = true;
     this.cdr.markForCheck();
 
@@ -1033,6 +1056,7 @@ export class HomeDiscoveryComponent implements OnInit, AfterViewInit, OnDestroy 
       this.updateAmbientBackground();
       this.preloadVisibleHeroImages();
       this.cdr.markForCheck();
+      this.startHeroTimer();
 
       setTimeout(() => {
         this.isTransitioning = false;
@@ -1315,21 +1339,12 @@ export class HomeDiscoveryComponent implements OnInit, AfterViewInit, OnDestroy 
         this.cacheLocalRows();
         this.applyContentPreferences();
 
-        // Select an active hero title avoiding recently displayed titles
-        if (isManualRefresh && this.heroItems.length > 1) {
-          this.currentHeroIndex = this.selectStartupHeroIndex(
-            this.heroItems,
-            this.currentHero?.channel?.id
-          );
-        } else if (activeHeroId) {
+        // Select an active hero title: start at index 0 on fresh startup, or restore activeHeroId if returning to Home
+        if (activeHeroId && !isManualRefresh) {
           const activeIdx = this.heroItems.findIndex((h) => h.channel?.id === activeHeroId);
-          if (activeIdx !== -1) {
-            this.currentHeroIndex = activeIdx;
-          } else {
-            this.currentHeroIndex = this.selectStartupHeroIndex(this.heroItems);
-          }
-        } else if (this.heroItems.length > 1) {
-          this.currentHeroIndex = this.selectStartupHeroIndex(this.heroItems);
+          this.currentHeroIndex = activeIdx !== -1 ? activeIdx : 0;
+        } else {
+          this.currentHeroIndex = 0;
         }
         this.recordHeroShown(this.currentHero?.channel?.id);
         this.discoveryState.setActiveHero(this.currentHero?.channel?.id);
@@ -1383,7 +1398,7 @@ export class HomeDiscoveryComponent implements OnInit, AfterViewInit, OnDestroy 
       );
       this.heroItems = [...this.masterHeroItems];
       this.applyContentPreferences();
-      this.currentHeroIndex = this.selectStartupHeroIndex(this.heroItems);
+      this.currentHeroIndex = 0;
       this.recordHeroShown(this.currentHero?.channel?.id);
       this.discoveryState.setActiveHero(this.currentHero?.channel?.id);
       this.tmdbRecommendationsUnavailable = !this.tmdbConfig.isEnabled();
@@ -3308,8 +3323,8 @@ export class HomeDiscoveryComponent implements OnInit, AfterViewInit, OnDestroy 
     if (activeHeroId) {
       const activeIdx = this.heroItems.findIndex((h) => h.channel?.id === activeHeroId);
       this.currentHeroIndex = activeIdx !== -1 ? activeIdx : 0;
-    } else if (this.heroItems.length > 0) {
-      this.currentHeroIndex = this.selectStartupHeroIndex(this.heroItems);
+    } else {
+      this.currentHeroIndex = 0;
       this.recordHeroShown(this.currentHero?.channel?.id);
       this.discoveryState.setActiveHero(this.currentHero?.channel?.id);
     }
