@@ -1118,8 +1118,7 @@ export class TvDetailComponent implements OnInit, AfterViewInit, OnDestroy {
       const epNum = epChannel.episode_num ?? this.extractEpisodeNumber(epChannel.name, index + 1);
       const tmdbEp = tmdbEpisodesByNumber?.get(epNum);
 
-      const cleanProviderTitle = this.cleanEpisodeTitle(epChannel.name);
-      const title = tmdbEp?.name ? `${epNum}. ${tmdbEp.name}` : (cleanProviderTitle || `Episode ${epNum}`);
+      const title = tmdbEp?.name || epChannel.name || '';
       const stillUrl = tmdbEp?.stillPath
         ? getTmdbStillUrl(tmdbEp.stillPath, 'w300')
         : epChannel.image;
