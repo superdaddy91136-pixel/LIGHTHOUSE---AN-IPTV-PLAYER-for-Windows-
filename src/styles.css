@@ -2105,13 +2105,17 @@ body:has(app-tv-detail)::-webkit-scrollbar {
 }
 
 /* ── Cast Section ── */
+.movie-cast-section {
+  margin-bottom: 24px;
+}
 .cast-track {
   display: flex;
   gap: 12px;
   overflow-x: auto;
   scrollbar-width: none;
   -ms-overflow-style: none;
-  padding-bottom: 4px;
+  padding-top: 4px;
+  padding-bottom: 8px;
   user-select: none;
   -webkit-user-select: none;
 }
@@ -2121,23 +2125,41 @@ body:has(app-tv-detail)::-webkit-scrollbar {
   height: 0;
 }
 .cast-card {
-  flex: 0 0 100px;
-  width: 100px;
-  text-align: center;
+  flex: 0 0 96px;
+  width: 96px;
+  max-width: 96px;
+  text-align: left;
+  outline: none;
+  cursor: default;
 }
 .cast-avatar-wrap {
-  width: 68px;
-  height: 68px;
-  border-radius: 50%;
+  width: 100%;
+  aspect-ratio: 3 / 4;
+  border-radius: 12px;
   overflow: hidden;
-  margin: 0 auto 6px;
-  background: rgba(255, 255, 255, 0.05);
-  border: 2px solid rgba(255, 255, 255, 0.08);
+  margin: 0 0 8px 0;
+  background: rgba(255, 255, 255, 0.06);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  box-shadow: 0 6px 20px rgba(0, 0, 0, 0.25);
+  position: relative;
+  transition: transform 150ms ease-out, border-color 150ms ease-out;
+  transform-origin: center center;
+}
+.cast-card:hover .cast-avatar-wrap,
+.cast-card:focus-visible .cast-avatar-wrap {
+  transform: scale(1.03);
+  border-color: rgba(255, 255, 255, 0.18);
+}
+.cast-track.is-dragging .cast-card .cast-avatar-wrap,
+.cast-track.is-scrolling .cast-card .cast-avatar-wrap {
+  transform: none !important;
 }
 .cast-avatar-img {
   width: 100%;
   height: 100%;
   object-fit: cover;
+  object-position: center top;
+  display: block;
 }
 .cast-avatar-fallback {
   width: 100%;
@@ -2145,26 +2167,38 @@ body:has(app-tv-detail)::-webkit-scrollbar {
   display: flex;
   align-items: center;
   justify-content: center;
-  color: rgba(255, 255, 255, 0.25);
+  background: rgba(255, 255, 255, 0.06);
+  color: rgba(255, 255, 255, 0.3);
 }
 .cast-avatar-fallback svg {
   width: 1.8rem;
   height: 1.8rem;
 }
 .cast-name {
-  font-size: 0.78rem;
-  font-weight: 600;
-  color: #ffffff;
+  font-size: 12.5px;
+  font-weight: 500;
+  color: rgba(255, 255, 255, 0.92);
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
+  line-height: 1.25;
+  margin: 0;
+  width: 100%;
+  max-width: 100%;
+  text-align: left;
 }
 .cast-character {
-  font-size: 0.7rem;
-  color: rgba(255, 255, 255, 0.45);
+  font-size: 11px;
+  font-weight: 400;
+  color: rgba(255, 255, 255, 0.55);
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
+  line-height: 1.25;
+  margin-top: 2px;
+  width: 100%;
+  max-width: 100%;
+  text-align: left;
 }
 
 /* ── Carousel Navigation ── */
@@ -3056,19 +3090,21 @@ body:has(app-tv-detail)::-webkit-scrollbar {
 }
 
 .skeleton-avatar {
-  border-radius: 50% !important;
+  border-radius: 12px !important;
 }
 
 .cast-name-skeleton {
-  width: 72px;
-  height: 12px;
-  margin: 6px auto 4px;
+  width: 68px;
+  height: 11px;
+  margin: 0 0 3px 0;
+  border-radius: 4px;
 }
 
 .cast-role-skeleton {
-  width: 52px;
-  height: 10px;
-  margin: 0 auto;
+  width: 48px;
+  height: 9px;
+  margin: 0;
+  border-radius: 4px;
 }
 
 .season-dropdown-skeleton {
