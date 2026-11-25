@@ -37,7 +37,7 @@ import { HomeDiscoveryComponent } from './home/home-discovery/home-discovery.com
 import { MovieDetailComponent } from './movie-detail/movie-detail.component';
 import { TvDetailComponent } from './tv-detail/tv-detail.component';
 import { DragScrollDirective } from './directives/drag-scroll.directive';
-import { ChannelSwitcherComponent } from './channel-switcher/channel-switcher.component';
+
 import { EpisodeSwitcherComponent } from './episode-switcher/episode-switcher.component';
 import { SplashScreenComponent } from './splash-screen/splash-screen.component';
 
@@ -54,7 +54,7 @@ import { TimeUntilPipe } from './pipes/time-until.pipe';
     MovieDetailComponent,
     TvDetailComponent,
     DragScrollDirective,
-    ChannelSwitcherComponent,
+
     EpisodeSwitcherComponent,
     TimeAgoPipe,
     TimeUntilPipe,

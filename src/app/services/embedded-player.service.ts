@@ -192,11 +192,11 @@ export class EmbeddedPlayerService implements OnDestroy {
   }
 
   private async initGlobalListeners(): Promise<void> {
-    // Listen for stream started (captures stream info even if started outside service, e.g. movie screen)
+    // Listen for stream started (captures stream info only if started outside service, e.g. movie screen)
     this.unlistenPlayerStarted = await listen('embedded-player-started', (event: any) => {
       this.ngZone.run(() => {
         const stream = event?.payload;
-        if (stream?.channel_id && stream?.url) {
+        if (!this.isPlayingEmbedded && stream?.channel_id && stream?.url) {
           this.activeFallbackChannel = {
             id: stream.channel_id,
             name: stream.name,
@@ -703,6 +703,33 @@ export class EmbeddedPlayerService implements OnDestroy {
       event.preventDefault();
       event.stopPropagation();
       return;
+    }
+
+    if (this.currentMode === 'live' && !event.ctrlKey && !event.altKey && !event.metaKey && !isInputFocused()) {
+      if (event.key === 'PageUp' || event.key === 'ChannelUp') {
+        emit('player-channel-next').catch(console.warn);
+        event.preventDefault();
+        event.stopPropagation();
+        return;
+      }
+      if (event.key === 'PageDown' || event.key === 'ChannelDown') {
+        emit('player-channel-prev').catch(console.warn);
+        event.preventDefault();
+        event.stopPropagation();
+        return;
+      }
+      if (event.key === 'l' || event.key === 'L') {
+        emit('player-channel-recall').catch(console.warn);
+        event.preventDefault();
+        event.stopPropagation();
+        return;
+      }
+      if (event.key === 'c' || event.key === 'C') {
+        emit('toggle-channels-drawer').catch(console.warn);
+        event.preventDefault();
+        event.stopPropagation();
+        return;
+      }
     }
   }
 
@@ -1407,6 +1434,7 @@ export class EmbeddedPlayerService implements OnDestroy {
     emit('embedded-player-channels-data', {
       currentChannelId: this.currentChannel?.id,
       currentGroupId: this.currentGroupId ?? this.currentChannel?.group_id,
+      currentChannel: this.currentChannel,
       sourceIds: sourceIds,
       channels: this.liveChannels.map((c) => ({
         ...c,
@@ -1418,9 +1446,7 @@ export class EmbeddedPlayerService implements OnDestroy {
   public async switchChannel(channel: Channel, title?: string): Promise<void> {
     if (!channel || channel.id == null) return;
     this.currentChannel = channel;
-    if (channel.id) {
-      await this.markLastWatched(channel.id);
-    }
+    await this.markLastWatched(channel.id);
     if (channel.group_id != null) {
       this.currentGroupId = channel.group_id;
     }

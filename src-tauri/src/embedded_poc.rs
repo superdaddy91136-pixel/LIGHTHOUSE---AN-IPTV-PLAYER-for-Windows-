@@ -1964,11 +1964,13 @@ pub async fn switch_embedded_channel(
     app: AppHandle,
 ) -> Result<(), String> {
     let stream = build_stream_info_from_channel(&channel)?;
-    if let Some(id) = channel.id {
-        let _ = crate::sql::add_last_watched(id);
-    }
     let mut inner = state.inner.lock().await;
     if let Some(ref tx) = inner.ipc_tx {
+        let prev_had_ua = inner
+            .stream_info
+            .as_ref()
+            .and_then(|s| s.user_agent.as_ref())
+            .is_some();
         let mut headers_vec = Vec::new();
         if let Some(ref orig) = stream.origin {
             headers_vec.push(format!("origin:{}", orig));
@@ -1977,24 +1979,54 @@ pub async fn switch_embedded_channel(
             headers_vec.push(format!("referer:{}", refer));
         }
         if let Some(ref ua) = stream.user_agent {
-            let _ = tx
-                .send(serde_json::json!({
+            tx.send(
+                serde_json::json!({
                     "command": ["set_property", "user-agent", ua]
-                }).to_string())
-                .await;
+                })
+                .to_string(),
+            )
+            .await
+            .map_err(|e| format!("Failed to set user-agent on MPV IPC: {}", e))?;
+        } else if prev_had_ua {
+            tx.send(
+                serde_json::json!({
+                    "command": ["set_property", "user-agent", "libmpv"]
+                })
+                .to_string(),
+            )
+            .await
+            .map_err(|e| format!("Failed to reset user-agent on MPV IPC: {}", e))?;
         }
+
         if !headers_vec.is_empty() {
-            let _ = tx
-                .send(serde_json::json!({
+            tx.send(
+                serde_json::json!({
                     "command": ["set_property", "http-header-fields", headers_vec.join(",")]
-                }).to_string())
-                .await;
+                })
+                .to_string(),
+            )
+            .await
+            .map_err(|e| format!("Failed to set http-header-fields on MPV IPC: {}", e))?;
+        } else {
+            let empty_headers: Vec<&str> = Vec::new();
+            tx.send(
+                serde_json::json!({
+                    "command": ["set_property", "http-header-fields", empty_headers]
+                })
+                .to_string(),
+            )
+            .await
+            .map_err(|e| format!("Failed to reset http-header-fields on MPV IPC: {}", e))?;
         }
-        let _ = tx
-            .send(serde_json::json!({
+
+        tx.send(
+            serde_json::json!({
                 "command": ["loadfile", stream.url, "replace"]
-            }).to_string())
-            .await;
+            })
+            .to_string(),
+        )
+        .await
+        .map_err(|e| format!("Failed to send loadfile to MPV IPC: {}", e))?;
 
         inner.stream_info = Some(stream.clone());
 

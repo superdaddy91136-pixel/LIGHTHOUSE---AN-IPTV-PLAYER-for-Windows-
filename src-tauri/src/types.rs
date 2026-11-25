@@ -136,7 +136,7 @@ pub struct Filters {
     pub source_ids: Vec<i64>,
     pub media_types: Option<Vec<u8>>,
     pub view_type: u8,
-    pub page: u8,
+    pub page: u16,
     pub series_id: Option<i64>,
     pub group_id: Option<i64>,
     pub use_keywords: bool,

@@ -54,7 +54,6 @@ import {
   formatPlayerEpisodeLabel,
   isEpisodicOrTvContent,
 } from '../utils/media-presentation';
-import { ChannelSwitcherComponent } from '../channel-switcher/channel-switcher.component';
 import { EpgQueueManager } from '../channel-tile/channel-tile.component';
 import { PinService } from '../services/pin.service';
 import { EmbeddedPlayerService } from '../services/embedded-player.service';
@@ -147,7 +146,6 @@ export class HomeComponent implements AfterViewInit, OnDestroy {
     return this.memory.nodeStack;
   }
   showScrollTop = false;
-  @ViewChild(ChannelSwitcherComponent) channelSwitcher?: ChannelSwitcherComponent;
   livePlayingChannel?: Channel;
 
   searchResults: UniversalSearchResults = {
@@ -1681,7 +1679,6 @@ export class HomeComponent implements AfterViewInit, OnDestroy {
     };
     if (isLive) {
       this.livePlayingChannel = channel;
-      invoke("add_last_watched", { id: channel.id }).catch(console.error);
       if (this.isLiveTvTab) {
         this.savedLiveContentScroll = this.liveTvContent?.nativeElement?.scrollTop || 0;
         const sidebar = document.querySelector('.live-tv-sidebar');
@@ -1769,16 +1766,9 @@ export class HomeComponent implements AfterViewInit, OnDestroy {
 
   async onSwitchChannel(channel: Channel): Promise<void> {
     this.livePlayingChannel = channel;
-    if (channel.id) {
-      invoke("add_last_watched", { id: channel.id }).catch(console.error);
-    }
     if (!this.embeddedPlayer.isPlayingEmbedded) {
       this.playMedia(channel);
     }
-  }
-
-  onChannelSwitcherClose(): void {
-    // No-op, panel closes itself
   }
 
   async openSeries(channel: Channel) {

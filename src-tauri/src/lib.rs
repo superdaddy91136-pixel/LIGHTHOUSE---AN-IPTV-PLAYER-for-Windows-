@@ -124,7 +124,9 @@ pub fn run() {
             embedded_poc::take_embedded_screenshot,
             get_source_refresh_status,
             get_all_source_refresh_statuses,
-            trigger_auto_refresh_check
+            trigger_auto_refresh_check,
+            get_live_channel_page,
+            get_adjacent_live_channel
         ])
         .setup(|app| {
             app.manage(Mutex::new(AppState {
@@ -645,4 +647,24 @@ fn get_source_content_counts(source_id: i64) -> Result<SourceContentCounts, Stri
 #[tauri::command(async)]
 fn get_all_source_content_counts() -> Result<HashMap<i64, SourceContentCounts>, String> {
     sql::get_all_source_content_counts().map_err(map_err_frontend)
+}
+
+#[tauri::command(async)]
+fn get_live_channel_page(
+    source_ids: Vec<i64>,
+    group_id: Option<i64>,
+    channel_id: i64,
+) -> Result<Option<u16>, String> {
+    sql::get_live_channel_page(source_ids, group_id, channel_id).map_err(map_err_frontend)
+}
+
+#[tauri::command(async)]
+fn get_adjacent_live_channel(
+    source_ids: Vec<i64>,
+    group_id: Option<i64>,
+    current_channel_id: Option<i64>,
+    delta: i8,
+) -> Result<Option<Channel>, String> {
+    sql::get_adjacent_live_channel(source_ids, group_id, current_channel_id, delta)
+        .map_err(map_err_frontend)
 }

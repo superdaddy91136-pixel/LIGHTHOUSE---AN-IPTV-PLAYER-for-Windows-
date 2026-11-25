@@ -560,7 +560,7 @@ pub fn search(filters: Filters) -> Result<Vec<Channel>> {
     }
     let sql = get_conn()?;
     let _guard = register_search_handle(&sql, filters.query.as_deref());
-    let offset: u16 = filters.page as u16 * PAGE_SIZE as u16 - PAGE_SIZE as u16;
+    let offset: u32 = (filters.page.max(1) as u32 - 1) * PAGE_SIZE as u32;
     let media_types = match filters.series_id.is_some() {
         true => vec![1],
         false => filters.media_types.clone().unwrap(),
@@ -654,7 +654,7 @@ pub fn search(filters: Filters) -> Result<Vec<Channel>> {
 fn search_series(filters: Filters) -> Result<Vec<Channel>> {
     let sql = get_conn()?;
     let _guard = register_search_handle(&sql, filters.query.as_deref());
-    let offset: u16 = filters.page as u16 * PAGE_SIZE as u16 - PAGE_SIZE as u16;
+    let offset: u32 = (filters.page.max(1) as u32 - 1) * PAGE_SIZE as u32;
     let query = filters.query.unwrap_or("".to_string());
     let keywords: Vec<String> = match filters.use_keywords {
         true => {
@@ -944,7 +944,7 @@ fn apply_bulk_channels(
 fn search_hidden(filters: Filters) -> Result<Vec<Channel>> {
     let sql = get_conn()?;
     let _guard = register_search_handle(&sql, filters.query.as_deref());
-    let offset: u16 = filters.page as u16 * PAGE_SIZE as u16 - PAGE_SIZE as u16;
+    let offset: u32 = (filters.page.max(1) as u32 - 1) * PAGE_SIZE as u32;
 
     let media_types = match filters.series_id.is_some() {
         true => vec![1],
@@ -1059,7 +1059,7 @@ fn to_sql_like(query: Option<String>) -> String {
 pub fn search_group(filters: Filters) -> Result<Vec<Channel>> {
     let sql = get_conn()?;
     let _guard = register_search_handle(&sql, filters.query.as_deref());
-    let offset: u16 = filters.page as u16 * PAGE_SIZE as u16 - PAGE_SIZE as u16;
+    let offset: u32 = (filters.page.max(1) as u32 - 1) * PAGE_SIZE as u32;
     let query = filters.query.unwrap_or("".to_string());
     let media_types = filters.media_types.context("no media types")?;
     let keywords: Vec<String> = match filters.use_keywords {
@@ -2246,5 +2246,98 @@ pub fn record_source_refresh_error(source_id: i64, timestamp: i64, error: &str) 
         params![source_id, timestamp, error],
     )?;
     Ok(())
+}
+
+fn build_live_scope_clause(source_count: usize, has_group: bool) -> String {
+    let mut clause = format!(
+        "media_type = 0 AND source_id IN ({}) AND url IS NOT NULL AND hidden = 0 AND series_id IS NULL AND season_id IS NULL AND episode_num IS NULL",
+        generate_placeholders(source_count)
+    );
+    if has_group {
+        clause.push_str(" AND group_id = ?");
+    }
+    clause
+}
+
+fn build_live_scope_params<'a>(
+    source_ids: &'a [i64],
+    group_id: Option<&'a i64>,
+    extra_id: Option<&'a i64>,
+) -> Vec<&'a dyn rusqlite::ToSql> {
+    let mut params: Vec<&dyn rusqlite::ToSql> = Vec::with_capacity(source_ids.len() + 2);
+    params.extend(to_to_sql(source_ids));
+    if let Some(gid) = group_id {
+        params.push(gid);
+    }
+    if let Some(eid) = extra_id {
+        params.push(eid);
+    }
+    params
+}
+
+/// Returns the 1-based page number containing `channel_id` within the active live scope.
+pub fn get_live_channel_page(
+    source_ids: Vec<i64>,
+    group_id: Option<i64>,
+    channel_id: i64,
+) -> Result<Option<u16>> {
+    if source_ids.is_empty() {
+        return Ok(None);
+    }
+    let sql = get_conn()?;
+    let scope = build_live_scope_clause(source_ids.len(), group_id.is_some());
+    let exists_sql = format!("SELECT 1 FROM channels WHERE {scope} AND id = ? LIMIT 1");
+    let exists_params = build_live_scope_params(&source_ids, group_id.as_ref(), Some(&channel_id));
+    let exists: Option<i64> = sql
+        .query_row(&exists_sql, params_from_iter(exists_params), |row| row.get(0))
+        .optional()?;
+    if exists.is_none() {
+        return Ok(None);
+    }
+
+    let count_sql = format!("SELECT COUNT(1) FROM channels WHERE {scope} AND id < ?");
+    let count_params = build_live_scope_params(&source_ids, group_id.as_ref(), Some(&channel_id));
+    let before_count: i64 =
+        sql.query_row(&count_sql, params_from_iter(count_params), |row| row.get(0))?;
+    let page = ((before_count.max(0) / PAGE_SIZE as i64) + 1).clamp(1, u16::MAX as i64) as u16;
+    Ok(Some(page))
+}
+
+/// Returns the next (`delta >= 0`) or previous (`delta < 0`) live channel in provider order,
+/// wrapping around at the boundaries of the active source/group scope.
+pub fn get_adjacent_live_channel(
+    source_ids: Vec<i64>,
+    group_id: Option<i64>,
+    current_channel_id: Option<i64>,
+    delta: i8,
+) -> Result<Option<Channel>> {
+    if source_ids.is_empty() {
+        return Ok(None);
+    }
+    let sql = get_conn()?;
+    let scope = build_live_scope_clause(source_ids.len(), group_id.is_some());
+    let is_next = delta >= 0;
+    let order = if is_next { "ASC" } else { "DESC" };
+
+    if let Some(cur_id) = current_channel_id {
+        let cmp = if is_next { ">" } else { "<" };
+        let step_sql = format!(
+            "SELECT * FROM channels WHERE {scope} AND id {cmp} ? ORDER BY id {order} LIMIT 1"
+        );
+        let step_params = build_live_scope_params(&source_ids, group_id.as_ref(), Some(&cur_id));
+        if let Some(ch) = sql
+            .query_row(&step_sql, params_from_iter(step_params), row_to_channel)
+            .optional()?
+        {
+            return Ok(Some(ch));
+        }
+    }
+
+    let wrap_sql = format!("SELECT * FROM channels WHERE {scope} ORDER BY id {order} LIMIT 1");
+    let wrap_params = build_live_scope_params(&source_ids, group_id.as_ref(), None);
+    let wrapped = sql
+        .query_row(&wrap_sql, params_from_iter(wrap_params), row_to_channel)
+        .optional()?;
+    Ok(wrapped)
 }
 

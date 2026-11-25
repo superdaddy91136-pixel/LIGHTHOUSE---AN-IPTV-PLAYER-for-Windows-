@@ -330,6 +330,49 @@
       color: #fecaca;
     }
 
+    /* MINI CHANNEL INFO BANNER (SHOWN ON SWITCH WHEN DRAWER IS CLOSED) */
+    .channel-info-banner {
+      position: absolute;
+      bottom: 88px;
+      left: 24px;
+      max-width: min(360px, calc(100vw - 48px));
+      min-width: 210px;
+      padding: 10px 14px;
+      border-radius: 12px;
+      background: var(--glassTint);
+      border: 1px solid var(--glassBorder);
+      box-shadow: var(--glassShadow);
+      backdrop-filter: blur(var(--glassBlur));
+      -webkit-backdrop-filter: blur(var(--glassBlur));
+      color: var(--textPrimary);
+      text-shadow: var(--textShadow);
+      -webkit-font-smoothing: antialiased;
+      -moz-osx-font-smoothing: grayscale;
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      z-index: 88;
+      opacity: 0;
+      visibility: hidden;
+      pointer-events: none;
+      transform: translateY(8px);
+      transition: opacity 0.20s ease-out, visibility 0.20s ease-out, transform 0.20s cubic-bezier(0.16, 1, 0.3, 1);
+      user-select: none;
+      -webkit-user-select: none;
+    }
+
+    @supports not ((-webkit-backdrop-filter: blur(1px)) or (backdrop-filter: blur(1px))) {
+      .channel-info-banner {
+        background: var(--glassFallbackTint);
+      }
+    }
+
+    .channel-info-banner.visible {
+      opacity: 1;
+      visibility: visible;
+      transform: translateY(0);
+    }
+
     /* CENTER SUBTITLE SYNC TOAST */
     .sub-sync-toast {
       position: absolute;
@@ -2257,6 +2300,7 @@
       display: flex;
       flex-direction: column;
       gap: 3px;
+      contain: content;
     }
 
     .folders-list::-webkit-scrollbar,
@@ -2304,6 +2348,14 @@
       color: #ffffff;
     }
 
+    .folder-item.kb-focused,
+    .folder-item:focus-visible {
+      background: rgba(255, 255, 255, 0.10);
+      border-color: rgba(255, 255, 255, 0.18);
+      color: #ffffff;
+      outline: none;
+    }
+
     .folder-item.active {
       background: rgba(229, 9, 20, 0.2);
       border-color: rgba(229, 9, 20, 0.5);
@@ -2335,6 +2387,7 @@
       display: flex;
       flex-direction: column;
       gap: 6px;
+      contain: content;
     }
 
     /* CHANNEL ROW */
@@ -2355,6 +2408,13 @@
     .channel-row:hover {
       background: rgba(255, 255, 255, 0.12);
       border-color: rgba(255, 255, 255, 0.2);
+    }
+
+    .channel-row.kb-focused,
+    .channel-row:focus-visible {
+      background: rgba(255, 255, 255, 0.14);
+      border-color: rgba(255, 255, 255, 0.28);
+      outline: none;
     }
 
     .channel-row.current {
@@ -3038,6 +3098,23 @@
       <span id="screenshotToastText"></span>
     </div>
 
+    <!-- MINI CHANNEL INFO BANNER -->
+    <div class="channel-info-banner" id="channelInfoBanner" aria-live="polite">
+      <div class="ch-logo-box">
+        <img class="ch-logo-img" id="channelBannerLogo" src="" alt="" referrerpolicy="no-referrer" style="display: none;" />
+        <div class="ch-logo-fallback" id="channelBannerLogoFallback">
+          <svg width="20" height="20" viewBox="0 0 24 24" fill="currentColor">
+            <path d="M21 3H3c-1.1 0-2 .9-2 2v12c0 1.1.9 2 2 2h5v2h8v-2h5c1.1 0 1.99-.9 1.99-2L23 5c0-1.1-.9-2-2-2zm0 14H3V5h18v12z"/>
+          </svg>
+        </div>
+      </div>
+      <div class="ch-info-box">
+        <span class="ch-name" id="channelBannerName"></span>
+        <span class="ch-group" id="channelBannerGroup" style="display: none;"></span>
+      </div>
+      <div class="ch-playing-badge"><span class="live-badge-dot"></span><span>LIVE</span></div>
+    </div>
+
     <!-- BOTTOM CONTROLS DOCK -->
     <footer class="bottom-bar" id="bottomBar">
       <!-- PROGRESS / SEEK BAR & REMAINING TIME -->
@@ -3575,17 +3652,31 @@
         foldersPage: 1,
         foldersHasMore: true,
         foldersLoading: false,
+        foldersSourceKey: '',
+        foldersLoaded: false,
         selectedFolderId: null,
         selectedFolderName: 'All Channels',
+        hasUserSelectedFolder: false,
         channels: [],
         channelsPage: 1,
+        channelsTopPage: 1,
+        channelsBottomPage: 1,
         channelsHasMore: true,
         channelsLoading: false,
         currentChannelId: null,
         currentGroupId: null,
+        currentChannelObj: null,
+        previousChannelObj: null,
+        switchDeltaInFlight: false,
+        focusedPane: null,
         searchQuery: '',
         searchDebounceTimer: null,
         isSearching: false,
+        searchPage: 1,
+        searchHasMore: false,
+        searchLoading: false,
+        searchSeq: 0,
+        openEpoch: 0,
         matchingFolders: [],
         matchingChannels: [],
       };
@@ -3725,6 +3816,12 @@
       const channelsCount = document.getElementById('channelsCount');
       const channelsActiveFolderBadge = document.getElementById('channelsActiveFolderBadge');
       const channelsPaneTitle = document.getElementById('channelsPaneTitle');
+      const channelInfoBanner = document.getElementById('channelInfoBanner');
+      const channelBannerLogo = document.getElementById('channelBannerLogo');
+      const channelBannerLogoFallback = document.getElementById('channelBannerLogoFallback');
+      const channelBannerName = document.getElementById('channelBannerName');
+      const channelBannerGroup = document.getElementById('channelBannerGroup');
+      let channelInfoBannerTimer = null;
 
       // NERD STATS (TECHNICAL DETAILS)
       const btnInfo = document.getElementById('btnInfo');
@@ -4357,7 +4454,7 @@
         btnAudioSubs.blur();
         if (btnSpeed) btnSpeed.blur();
         if (btnInfo) btnInfo.blur();
-        channelSwitcherState.isOpen = false;
+        cleanupChannelsDrawerState();
         clearInterval(nerdStatsInterval);
         nerdStatsInterval = null;
       }
@@ -6690,15 +6787,121 @@
         return channelSwitcherState.sourceIds || [];
       }
 
-      async function loadFolders() {
+      function cleanupChannelsDrawerState() {
+        clearTimeout(channelSwitcherState.searchDebounceTimer);
+        channelSwitcherState.searchDebounceTimer = null;
+        channelSwitcherState.isOpen = false;
+        channelSwitcherState.openEpoch += 1;
+        channelSwitcherState.searchSeq += 1;
+        channelSwitcherState.foldersLoading = false;
+        channelSwitcherState.channelsLoading = false;
+        channelSwitcherState.searchLoading = false;
+        channelSwitcherState.focusedPane = null;
+      }
+
+      function findKnownChannelById(id) {
+        if (id == null) return null;
+        if (channelSwitcherState.currentChannelObj && channelSwitcherState.currentChannelObj.id === id) {
+          return channelSwitcherState.currentChannelObj;
+        }
+        if (channelSwitcherState.previousChannelObj && channelSwitcherState.previousChannelObj.id === id) {
+          return channelSwitcherState.previousChannelObj;
+        }
+        const fromChannels = channelSwitcherState.channels.find((c) => c.id === id);
+        if (fromChannels) return fromChannels;
+        const fromSearch = channelSwitcherState.matchingChannels.find((c) => c.id === id);
+        if (fromSearch) return fromSearch;
+        const fromData = (channelsData.channels || []).find((c) => c.id === id);
+        if (fromData) return fromData.channel || fromData;
+        return null;
+      }
+
+      function clearChannelSwitcherFocusHighlight(container) {
+        if (!container) return;
+        container.querySelectorAll('.kb-focused').forEach((el) => el.classList.remove('kb-focused'));
+      }
+
+      function focusFolderAtIndex(index) {
+        if (!foldersListContainer) return false;
+        const items = Array.from(foldersListContainer.querySelectorAll('.folder-item'));
+        if (items.length === 0) return false;
+        const normalized = ((index % items.length) + items.length) % items.length;
+        clearChannelSwitcherFocusHighlight(foldersListContainer);
+        clearChannelSwitcherFocusHighlight(channelListContainer);
+        const target = items[normalized];
+        target.classList.add('kb-focused');
+        target.focus({ preventScroll: true });
+        target.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
+        channelSwitcherState.focusedPane = 'folders';
+        return true;
+      }
+
+      function focusChannelAtIndex(index) {
+        if (!channelListContainer) return false;
+        const items = Array.from(channelListContainer.querySelectorAll('.channel-row'));
+        if (items.length === 0) return false;
+        const normalized = ((index % items.length) + items.length) % items.length;
+        clearChannelSwitcherFocusHighlight(foldersListContainer);
+        clearChannelSwitcherFocusHighlight(channelListContainer);
+        const target = items[normalized];
+        target.classList.add('kb-focused');
+        target.focus({ preventScroll: true });
+        target.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
+        channelSwitcherState.focusedPane = 'channels';
+        return true;
+      }
+
+      function resetChannelSearchState() {
+        clearTimeout(channelSwitcherState.searchDebounceTimer);
+        channelSwitcherState.searchDebounceTimer = null;
+        channelSwitcherState.searchSeq += 1;
+        channelSwitcherState.isSearching = false;
+        channelSwitcherState.searchQuery = '';
+        channelSwitcherState.searchPage = 1;
+        channelSwitcherState.searchHasMore = false;
+        channelSwitcherState.searchLoading = false;
+        if (channelSearchInput) channelSearchInput.value = '';
+        if (btnChannelSearchClear) btnChannelSearchClear.style.display = 'none';
+      }
+
+      function syncCurrentChannelHighlight(channelId) {
+        if (!channelListContainer) return;
+        channelListContainer.querySelectorAll('.channel-row').forEach((row) => {
+          const isCur = channelId != null && row.dataset.channelId === String(channelId);
+          row.classList.toggle('current', isCur);
+          let badge = row.querySelector('.ch-playing-badge');
+          if (isCur && !badge) {
+            badge = document.createElement('div');
+            badge.className = 'ch-playing-badge';
+            badge.innerHTML = '<span class="live-badge-dot"></span><span>LIVE</span>';
+            row.appendChild(badge);
+          } else if (!isCur && badge) {
+            badge.remove();
+          }
+        });
+      }
+
+      async function loadFolders(epoch = channelSwitcherState.openEpoch, force = false) {
         if (channelSwitcherState.foldersLoading) return;
-        channelSwitcherState.foldersLoading = true;
-        channelSwitcherState.foldersPage = 1;
         const sourceIds = await ensureSourceIds();
         if (!sourceIds || sourceIds.length === 0) {
-          channelSwitcherState.foldersLoading = false;
           return;
         }
+        const sourceKey = sourceIds.join(',');
+        if (
+          !force &&
+          channelSwitcherState.foldersLoaded &&
+          channelSwitcherState.foldersSourceKey === sourceKey &&
+          channelSwitcherState.folders.length > 0
+        ) {
+          if (epoch === channelSwitcherState.openEpoch && channelSwitcherState.isOpen) {
+            renderFoldersList();
+          }
+          return;
+        }
+
+        channelSwitcherState.foldersLoading = true;
+        channelSwitcherState.foldersPage = 1;
 
         try {
           let allFolders = [];
@@ -6712,13 +6915,16 @@
             sort: 2,          // SortType.provider = 2
           };
           const firstResults = (await tauriInvoke('search', { filters: firstFilters })) || [];
+          if (epoch !== channelSwitcherState.openEpoch || !channelSwitcherState.isOpen) return;
           allFolders = (firstResults || []).filter((g) => g.id != null && g.name);
           channelSwitcherState.folders = allFolders;
-          renderFoldersList();
 
           // 2. Fetch remaining pages of folders so that no folders are missing
           let page = 2;
           let hasMore = firstResults.length >= 36;
+          if (hasMore) {
+            renderFoldersList();
+          }
           while (hasMore && page <= 50) {
             const nextFilters = {
               source_ids: sourceIds,
@@ -6729,6 +6935,7 @@
               sort: 2,
             };
             const nextResults = (await tauriInvoke('search', { filters: nextFilters })) || [];
+            if (epoch !== channelSwitcherState.openEpoch || !channelSwitcherState.isOpen) return;
             const nextFolders = (nextResults || []).filter((g) => g.id != null && g.name);
             if (nextFolders.length === 0) break;
             allFolders = allFolders.concat(nextFolders);
@@ -6738,7 +6945,19 @@
           }
           channelSwitcherState.folders = allFolders;
           channelSwitcherState.foldersHasMore = false;
-          renderFoldersList();
+          channelSwitcherState.foldersLoaded = true;
+          channelSwitcherState.foldersSourceKey = sourceKey;
+          if (epoch === channelSwitcherState.openEpoch && channelSwitcherState.isOpen) {
+            renderFoldersList();
+            if (typeof channelSwitcherState.selectedFolderId === 'number') {
+              const matched = allFolders.find((f) => f.id === channelSwitcherState.selectedFolderId);
+              if (matched && matched.name) {
+                channelSwitcherState.selectedFolderName = matched.name;
+                if (channelsActiveFolderBadge) channelsActiveFolderBadge.textContent = matched.name;
+                if (channelsPaneTitle) channelsPaneTitle.textContent = matched.name;
+              }
+            }
+          }
         } catch (e) {
           console.warn('Failed to load folders:', e);
         } finally {
@@ -6755,6 +6974,36 @@
         container.scrollTo({ top: Math.max(0, targetScrollTop), behavior: 'smooth' });
       }
 
+      const VIRTUAL_FOLDER_FAVORITES = '__favorites__';
+      const VIRTUAL_FOLDER_RECENT = '__recent__';
+
+      function appendVirtualFolderItem({ id, datasetId, label, iconPath }) {
+        const isActive = channelSwitcherState.selectedFolderId === id;
+        const item = document.createElement('div');
+        item.className = `folder-item ${isActive ? 'active' : ''}`;
+        item.dataset.groupId = datasetId;
+        item.tabIndex = 0;
+        item.setAttribute('role', 'option');
+        item.setAttribute('aria-selected', isActive ? 'true' : 'false');
+        item.innerHTML = `
+          <svg class="folder-icon" width="16" height="16" viewBox="0 0 24 24" fill="currentColor">
+            <path d="${iconPath}"/>
+          </svg>
+          <span class="folder-name">${escapeHtml(label)}</span>
+        `;
+        item.addEventListener('click', (e) => {
+          e.stopPropagation();
+          selectFolder(id, label, 1, true);
+        });
+        item.addEventListener('focus', () => {
+          clearChannelSwitcherFocusHighlight(foldersListContainer);
+          clearChannelSwitcherFocusHighlight(channelListContainer);
+          item.classList.add('kb-focused');
+          channelSwitcherState.focusedPane = 'folders';
+        });
+        foldersListContainer.appendChild(item);
+      }
+
       function renderFoldersList() {
         if (!foldersListContainer) return;
         foldersListContainer.innerHTML = '';
@@ -6766,23 +7015,26 @@
           foldersCount.textContent = String(foldersToRender.length);
         }
 
-        // Show "All Channels" at top in browsing mode
+        // Show pinned virtual folders at top in browsing mode
         if (!channelSwitcherState.isSearching) {
-          const allItem = document.createElement('div');
-          const isAllActive = channelSwitcherState.selectedFolderId == null;
-          allItem.className = `folder-item ${isAllActive ? 'active' : ''}`;
-          allItem.dataset.groupId = 'all';
-          allItem.innerHTML = `
-            <svg class="folder-icon" width="16" height="16" viewBox="0 0 24 24" fill="currentColor">
-              <path d="M4 6H2v14c0 1.1.9 2 2 2h14v-2H4V6zm16-4H8c-1.1 0-2 .9-2 2v12c0 1.1.9 2 2 2h12c1.1 0 2-.9 2-2V4c0-1.1-.9-2-2-2zm0 14H8V4h12v12z"/>
-            </svg>
-            <span class="folder-name">All Channels</span>
-          `;
-          allItem.addEventListener('click', (e) => {
-            e.stopPropagation();
-            selectFolder(null, 'All Channels');
+          appendVirtualFolderItem({
+            id: null,
+            datasetId: 'all',
+            label: 'All Channels',
+            iconPath: 'M4 6H2v14c0 1.1.9 2 2 2h14v-2H4V6zm16-4H8c-1.1 0-2 .9-2 2v12c0 1.1.9 2 2 2h12c1.1 0 2-.9 2-2V4c0-1.1-.9-2-2-2zm0 14H8V4h12v12z',
           });
-          foldersListContainer.appendChild(allItem);
+          appendVirtualFolderItem({
+            id: VIRTUAL_FOLDER_FAVORITES,
+            datasetId: VIRTUAL_FOLDER_FAVORITES,
+            label: 'Favorites',
+            iconPath: 'M12 17.27L18.18 21l-1.64-7.03L22 9.24l-7.19-.61L12 2 9.19 8.63 2 9.24l5.46 4.73L5.82 21z',
+          });
+          appendVirtualFolderItem({
+            id: VIRTUAL_FOLDER_RECENT,
+            datasetId: VIRTUAL_FOLDER_RECENT,
+            label: 'Recent',
+            iconPath: 'M11.99 2C6.47 2 2 6.48 2 12s4.47 10 9.99 10C17.52 22 22 17.52 22 12S17.52 2 11.99 2zM12 20c-4.42 0-8-3.58-8-8s3.58-8 8-8 8 3.58 8 8-3.58 8-8 8zm.5-13H11v6l5.25 3.15.75-1.23-4.5-2.67z',
+          });
         }
 
         if (foldersToRender.length === 0) {
@@ -6800,20 +7052,27 @@
           const item = document.createElement('div');
           item.className = `folder-item ${isSelected ? 'active' : ''}`;
           item.dataset.groupId = String(group.id);
+          item.tabIndex = 0;
+          item.setAttribute('role', 'option');
+          item.setAttribute('aria-selected', isSelected ? 'true' : 'false');
           item.innerHTML = `
             <svg class="folder-icon" width="16" height="16" viewBox="0 0 24 24" fill="currentColor">
               <path d="M10 4H4c-1.1 0-1.99.9-1.99 2L2 18c0 1.1.9 2 2 2h16c1.1 0 2-.9 2-2V8c0-1.1-.9-2-2-2h-8l-2-2z"/>
             </svg>
-            <span class="folder-name">${group.name}</span>
+            <span class="folder-name">${escapeHtml(group.name)}</span>
           `;
           item.addEventListener('click', (e) => {
             e.stopPropagation();
             if (channelSwitcherState.isSearching) {
-              if (channelSearchInput) channelSearchInput.value = '';
-              if (btnChannelSearchClear) btnChannelSearchClear.style.display = 'none';
-              channelSwitcherState.isSearching = false;
+              resetChannelSearchState();
             }
-            selectFolder(group.id, group.name);
+            selectFolder(group.id, group.name, 1, true);
+          });
+          item.addEventListener('focus', () => {
+            clearChannelSwitcherFocusHighlight(foldersListContainer);
+            clearChannelSwitcherFocusHighlight(channelListContainer);
+            item.classList.add('kb-focused');
+            channelSwitcherState.focusedPane = 'folders';
           });
           foldersListContainer.appendChild(item);
         });
@@ -6824,9 +7083,10 @@
         }
       }
 
-      function selectFolder(groupId, groupName) {
+      function selectFolder(groupId, groupName, initialPage = 1, userInitiated = true) {
         channelSwitcherState.selectedFolderId = groupId;
         channelSwitcherState.selectedFolderName = groupName || 'All Channels';
+        channelSwitcherState.hasUserSelectedFolder = !!userInitiated;
         if (channelsActiveFolderBadge) {
           channelsActiveFolderBadge.textContent = channelSwitcherState.selectedFolderName;
         }
@@ -6839,61 +7099,127 @@
             const gid = el.dataset.groupId;
             const isActive = (groupId == null && gid === 'all') || (groupId != null && gid === String(groupId));
             el.classList.toggle('active', isActive);
+            el.setAttribute('aria-selected', isActive ? 'true' : 'false');
             if (isActive) {
               scrollItemToCenter(foldersListContainer, el);
             }
           });
         }
 
-        loadFolderChannels(groupId, 1, false);
+        loadFolderChannels(groupId, initialPage, 'replace', channelSwitcherState.openEpoch);
       }
 
-      async function loadFolderChannels(groupId, page = 1, append = false) {
-        if (channelSwitcherState.channelsLoading) return;
+      async function loadFolderChannels(groupId, page = 1, mode = 'replace', epoch = channelSwitcherState.openEpoch) {
+        const loadMode = mode === true ? 'append' : (mode === false ? 'replace' : mode);
+        if (channelSwitcherState.channelsLoading) return false;
         channelSwitcherState.channelsLoading = true;
         channelSwitcherState.channelsPage = page;
         const sourceIds = await ensureSourceIds();
         if (!sourceIds || sourceIds.length === 0) {
           channelSwitcherState.channelsLoading = false;
-          return;
+          return false;
+        }
+        if (epoch !== channelSwitcherState.openEpoch || !channelSwitcherState.isOpen) {
+          channelSwitcherState.channelsLoading = false;
+          return false;
         }
 
-        if (!append && channelListContainer) {
+        if (loadMode === 'replace' && channelListContainer) {
           channelListContainer.innerHTML = '<div class="drawer-empty">Loading channels...</div>';
         }
 
         try {
+          const isFavorites = groupId === VIRTUAL_FOLDER_FAVORITES;
+          const isRecent = groupId === VIRTUAL_FOLDER_RECENT;
+          const viewType = isFavorites ? 1 : (isRecent ? 3 : 0);
           const filters = {
             source_ids: sourceIds,
             media_types: [0], // livestream
-            view_type: 0,     // ALL CHANNELS (ViewMode.All = 0, view_type::ALL = 0)
+            view_type: viewType, // ViewMode.Favorites=1, History=3, All=0
             page: page,
-            group_id: groupId != null ? groupId : undefined,
+            group_id: !isFavorites && !isRecent && groupId != null ? groupId : undefined,
             use_keywords: false,
             sort: 2,          // SortType.provider = 2
           };
           const results = (await tauriInvoke('search', { filters })) || [];
+          if (epoch !== channelSwitcherState.openEpoch || !channelSwitcherState.isOpen || channelSwitcherState.selectedFolderId !== groupId) {
+            return false;
+          }
           const newChannels = (results || []).filter((c) => c.id != null && (c.media_type === 0 || c.media_type == null));
 
-          if (append) {
+          if (loadMode === 'append') {
             channelSwitcherState.channels = channelSwitcherState.channels.concat(newChannels);
+            channelSwitcherState.channelsBottomPage = page;
+            channelSwitcherState.channelsHasMore = newChannels.length >= 36;
+          } else if (loadMode === 'prepend') {
+            channelSwitcherState.channels = newChannels.concat(channelSwitcherState.channels);
+            channelSwitcherState.channelsTopPage = page;
           } else {
             channelSwitcherState.channels = newChannels;
+            channelSwitcherState.channelsTopPage = page;
+            channelSwitcherState.channelsBottomPage = page;
+            channelSwitcherState.channelsHasMore = newChannels.length >= 36;
           }
-          channelSwitcherState.channelsHasMore = newChannels.length >= 36;
-          renderChannelsList(append, newChannels);
+
+          if (!channelSwitcherState.isSearching) {
+            renderChannelsList(loadMode, newChannels);
+          }
+          return true;
         } catch (e) {
           console.warn('Failed to load channels for folder:', e);
-          if (!append && channelListContainer) {
+          if (loadMode === 'replace' && channelListContainer && epoch === channelSwitcherState.openEpoch && channelSwitcherState.isOpen) {
             channelListContainer.innerHTML = '<div class="drawer-empty">Failed to load channels</div>';
           }
+          return false;
         } finally {
           channelSwitcherState.channelsLoading = false;
         }
       }
 
-      function renderChannelsList(append = false, newItems = null) {
+      function buildChannelRow(ch) {
+        const isCurrent = ch.id === channelSwitcherState.currentChannelId;
+        const row = document.createElement('div');
+        row.className = `channel-row ${isCurrent ? 'current' : ''}`;
+        row.dataset.channelId = String(ch.id);
+        row.tabIndex = 0;
+        row.setAttribute('role', 'option');
+        row.setAttribute('aria-selected', isCurrent ? 'true' : 'false');
+
+        const safeName = escapeHtml(ch.name || '');
+        const safeGroup = ch.group ? escapeHtml(ch.group) : '';
+        const safeImage = ch.image ? escapeHtml(ch.image) : '';
+        const logoContent = safeImage
+          ? `<img class="ch-logo-img" src="${safeImage}" alt="${safeName}" loading="lazy" decoding="async" referrerpolicy="no-referrer" onerror="this.style.display='none'; this.nextElementSibling.style.display='flex';" /><div class="ch-logo-fallback" style="display:none;"><svg width="20" height="20" viewBox="0 0 24 24" fill="currentColor"><path d="M21 3H3c-1.1 0-2 .9-2 2v12c0 1.1.9 2 2 2h5v2h8v-2h5c1.1 0 1.99-.9 1.99-2L23 5c0-1.1-.9-2-2-2zm0 14H3V5h18v12z"/></svg></div>`
+          : `<div class="ch-logo-fallback"><svg width="20" height="20" viewBox="0 0 24 24" fill="currentColor"><path d="M21 3H3c-1.1 0-2 .9-2 2v12c0 1.1.9 2 2 2h5v2h8v-2h5c1.1 0 1.99-.9 1.99-2L23 5c0-1.1-.9-2-2-2zm0 14H3V5h18v12z"/></svg></div>`;
+
+        row.innerHTML = `
+          <div class="ch-logo-box">
+            ${logoContent}
+          </div>
+          <div class="ch-info-box">
+            <span class="ch-name">${safeName}</span>
+            ${safeGroup ? `<span class="ch-group">${safeGroup}</span>` : ''}
+          </div>
+          ${isCurrent ? '<div class="ch-playing-badge"><span class="live-badge-dot"></span><span>LIVE</span></div>' : ''}
+        `;
+
+        row.addEventListener('click', (e) => {
+          e.stopPropagation();
+          selectChannel(ch);
+        });
+        row.addEventListener('focus', () => {
+          clearChannelSwitcherFocusHighlight(foldersListContainer);
+          clearChannelSwitcherFocusHighlight(channelListContainer);
+          row.classList.add('kb-focused');
+          channelSwitcherState.focusedPane = 'channels';
+        });
+
+        return row;
+      }
+
+      function renderChannelsList(modeOrAppend = 'replace', newItems = null) {
         if (!channelListContainer) return;
+        const renderMode = modeOrAppend === true ? 'append' : (modeOrAppend === false ? 'replace' : modeOrAppend);
         const listToRender = channelSwitcherState.isSearching
           ? channelSwitcherState.matchingChannels
           : channelSwitcherState.channels;
@@ -6902,53 +7228,46 @@
           channelsCount.textContent = String(listToRender.length);
         }
 
-        if (!append) {
+        if (renderMode === 'replace') {
           channelListContainer.innerHTML = '';
         }
 
         if (listToRender.length === 0) {
+          let emptyText = 'No channels in this folder';
+          if (channelSwitcherState.isSearching) {
+            emptyText = 'No channels match your search';
+          } else if (channelSwitcherState.selectedFolderId === VIRTUAL_FOLDER_FAVORITES) {
+            emptyText = 'No favorite channels yet';
+          } else if (channelSwitcherState.selectedFolderId === VIRTUAL_FOLDER_RECENT) {
+            emptyText = 'No recently watched channels yet';
+          }
           channelListContainer.innerHTML = `
             <div class="drawer-empty">
-              ${channelSwitcherState.isSearching ? 'No channels match your search' : 'No channels in this folder'}
+              ${emptyText}
             </div>
           `;
           return;
         }
 
-        const itemsToAppend = append && newItems
+        const itemsToInsert = (renderMode === 'append' || renderMode === 'prepend') && newItems
           ? newItems
-          : (append ? listToRender.slice(Math.max(0, channelSwitcherState.channels.length - 36)) : listToRender);
+          : (renderMode === 'append' ? listToRender.slice(Math.max(0, channelSwitcherState.channels.length - 36)) : listToRender);
 
-        itemsToAppend.forEach((ch) => {
-          const isCurrent = ch.id === channelSwitcherState.currentChannelId;
-          const row = document.createElement('div');
-          row.className = `channel-row ${isCurrent ? 'current' : ''}`;
-          row.dataset.channelId = String(ch.id);
+        if (renderMode === 'prepend') {
+          const prevScrollHeight = channelListContainer.scrollHeight;
+          const prevScrollTop = channelListContainer.scrollTop;
+          const frag = document.createDocumentFragment();
+          itemsToInsert.forEach((ch) => frag.appendChild(buildChannelRow(ch)));
+          channelListContainer.prepend(frag);
+          channelListContainer.scrollTop = prevScrollTop + (channelListContainer.scrollHeight - prevScrollHeight);
+          return;
+        }
 
-          const logoContent = ch.image
-            ? `<img class="ch-logo-img" src="${ch.image}" alt="${ch.name}" onerror="this.style.display='none'; this.nextElementSibling.style.display='flex';" /><div class="ch-logo-fallback" style="display:none;"><svg width="20" height="20" viewBox="0 0 24 24" fill="currentColor"><path d="M21 3H3c-1.1 0-2 .9-2 2v12c0 1.1.9 2 2 2h5v2h8v-2h5c1.1 0 1.99-.9 1.99-2L23 5c0-1.1-.9-2-2-2zm0 14H3V5h18v12z"/></svg></div>`
-            : `<div class="ch-logo-fallback"><svg width="20" height="20" viewBox="0 0 24 24" fill="currentColor"><path d="M21 3H3c-1.1 0-2 .9-2 2v12c0 1.1.9 2 2 2h5v2h8v-2h5c1.1 0 1.99-.9 1.99-2L23 5c0-1.1-.9-2-2-2zm0 14H3V5h18v12z"/></svg></div>`;
+        const frag = document.createDocumentFragment();
+        itemsToInsert.forEach((ch) => frag.appendChild(buildChannelRow(ch)));
+        channelListContainer.appendChild(frag);
 
-          row.innerHTML = `
-            <div class="ch-logo-box">
-              ${logoContent}
-            </div>
-            <div class="ch-info-box">
-              <span class="ch-name">${ch.name}</span>
-              ${ch.group ? `<span class="ch-group">${ch.group}</span>` : ''}
-            </div>
-            ${isCurrent ? '<div class="ch-playing-badge"><span class="live-badge-dot"></span><span>LIVE</span></div>' : ''}
-          `;
-
-          row.addEventListener('click', (e) => {
-            e.stopPropagation();
-            selectChannel(ch);
-          });
-
-          channelListContainer.appendChild(row);
-        });
-
-        if (!append) {
+        if (renderMode === 'replace') {
           const currentEl = channelListContainer.querySelector('.channel-row.current');
           if (currentEl) {
             scrollItemToCenter(channelListContainer, currentEl);
@@ -6956,9 +7275,74 @@
         }
       }
 
-      async function selectChannel(ch) {
+      function hideChannelInfoBanner() {
+        clearTimeout(channelInfoBannerTimer);
+        channelInfoBannerTimer = null;
+        if (channelInfoBanner) {
+          channelInfoBanner.classList.remove('visible');
+        }
+      }
+
+      function showChannelInfoBanner(ch) {
+        if (!ch || !channelInfoBanner || !channelBannerName) return;
+        if (drawerChannels && drawerChannels.classList.contains('open')) return;
+
+        channelBannerName.textContent = ch.name || 'Live TV';
+        let groupLabel = ch.group || '';
+        if (!groupLabel && ch.group_id != null && channelSwitcherState.folders.length > 0) {
+          const matched = channelSwitcherState.folders.find((f) => f.id === ch.group_id);
+          if (matched && matched.name) groupLabel = matched.name;
+        }
+        if (channelBannerGroup) {
+          if (groupLabel) {
+            channelBannerGroup.textContent = groupLabel;
+            channelBannerGroup.style.display = '';
+          } else {
+            channelBannerGroup.textContent = '';
+            channelBannerGroup.style.display = 'none';
+          }
+        }
+
+        const logoUrl = ch.image || ch.logo || '';
+        if (channelBannerLogo && channelBannerLogoFallback) {
+          if (logoUrl) {
+            channelBannerLogo.onerror = () => {
+              channelBannerLogo.style.display = 'none';
+              channelBannerLogoFallback.style.display = 'flex';
+            };
+            channelBannerLogo.onload = () => {
+              channelBannerLogo.style.display = '';
+              channelBannerLogoFallback.style.display = 'none';
+            };
+            channelBannerLogo.alt = ch.name || 'Channel logo';
+            channelBannerLogo.src = logoUrl;
+            channelBannerLogo.style.display = '';
+            channelBannerLogoFallback.style.display = 'none';
+          } else {
+            channelBannerLogo.removeAttribute('src');
+            channelBannerLogo.style.display = 'none';
+            channelBannerLogoFallback.style.display = 'flex';
+          }
+        }
+
+        channelInfoBanner.classList.add('visible');
+        clearTimeout(channelInfoBannerTimer);
+        channelInfoBannerTimer = setTimeout(() => {
+          channelInfoBanner.classList.remove('visible');
+          channelInfoBannerTimer = null;
+        }, 2800);
+      }
+
+      function selectChannel(ch) {
         if (!ch || ch.id == null) return;
+        if (channelSwitcherState.currentChannelId != null && ch.id !== channelSwitcherState.currentChannelId) {
+          const outgoing = findKnownChannelById(channelSwitcherState.currentChannelId);
+          if (outgoing && outgoing.id !== ch.id) {
+            channelSwitcherState.previousChannelObj = outgoing;
+          }
+        }
         channelSwitcherState.currentChannelId = ch.id;
+        channelSwitcherState.currentChannelObj = ch;
         channelsData.currentChannelId = ch.id;
         if (ch.group_id != null) {
           channelSwitcherState.currentGroupId = ch.group_id;
@@ -6967,47 +7351,84 @@
         updateTitle(ch.name || 'Live TV');
 
         // Move highlight immediately in DOM
-        if (channelListContainer) {
-          channelListContainer.querySelectorAll('.channel-row').forEach((row) => {
-            const isCur = row.dataset.channelId === String(ch.id);
-            row.classList.toggle('current', isCur);
-            let badge = row.querySelector('.ch-playing-badge');
-            if (isCur && !badge) {
-              badge = document.createElement('div');
-              badge.className = 'ch-playing-badge';
-              badge.innerHTML = '<span class="live-badge-dot"></span><span>LIVE</span>';
-              row.appendChild(badge);
-            } else if (!isCur && badge) {
-              badge.remove();
-            }
-          });
+        syncCurrentChannelHighlight(ch.id);
+
+        if (!drawerChannels || !drawerChannels.classList.contains('open')) {
+          showChannelInfoBanner(ch);
         }
 
-        // Seamless stream switch without closing drawer or exiting theater mode!
+        // Seamless stream switch routed via Angular EmbeddedPlayerService (handles add_last_watched & switch_embedded_channel once)
         tauriEmit('select-player-channel', { channelId: ch.id, channel: ch });
-        try {
-          await tauriInvoke('switch_embedded_channel', { channel: ch });
-        } catch (e) {
-          console.warn('switch_embedded_channel direct invoke fallback to service:', e);
+        showControls();
+      }
+
+      function recallLastChannel() {
+        if (currentContentMode !== 'live') return;
+        const target = channelSwitcherState.previousChannelObj;
+        if (!target || target.id == null || target.id === channelSwitcherState.currentChannelId) return;
+        selectChannel(target);
+        if (drawerChannels && drawerChannels.classList.contains('open')) {
+          const curEl = channelListContainer?.querySelector('.channel-row.current');
+          if (curEl) scrollItemToCenter(channelListContainer, curEl);
         }
         showControls();
       }
 
-      function switchChannelByIndexDelta(delta) {
-        const pool = channelSwitcherState.channels.length > 0
-          ? channelSwitcherState.channels
-          : (channelsData.channels || []);
-        if (!pool || pool.length === 0) return;
-        const curIdx = pool.findIndex((c) => c.id === channelSwitcherState.currentChannelId);
-        let nextIdx = 0;
-        if (curIdx !== -1) {
-          nextIdx = (curIdx + delta + pool.length) % pool.length;
-        } else if (delta < 0) {
-          nextIdx = pool.length - 1;
-        }
-        const target = pool[nextIdx];
-        if (target) {
-          selectChannel(target);
+      async function switchChannelByIndexDelta(delta) {
+        if (channelSwitcherState.switchDeltaInFlight) return;
+        channelSwitcherState.switchDeltaInFlight = true;
+        try {
+          const activeList = channelSwitcherState.channels.length > 0
+            ? channelSwitcherState.channels
+            : (!channelSwitcherState.hasUserSelectedFolder ? (channelsData.channels || []).map((c) => c.channel || c) : []);
+          const curIdx = activeList.findIndex((c) => c.id === channelSwitcherState.currentChannelId);
+          if (curIdx !== -1) {
+            const candidateIdx = curIdx + delta;
+            if (candidateIdx >= 0 && candidateIdx < activeList.length) {
+              const target = activeList[candidateIdx];
+              if (target) {
+                selectChannel(target);
+                return;
+              }
+            }
+          }
+
+          // Cross-page or un-opened drawer step + true SQLite wrap-around (skip virtual folders with string IDs)
+          const isVirtualFolder =
+            channelSwitcherState.selectedFolderId === VIRTUAL_FOLDER_FAVORITES ||
+            channelSwitcherState.selectedFolderId === VIRTUAL_FOLDER_RECENT;
+          const sourceIds = !isVirtualFolder ? await ensureSourceIds() : [];
+          if (sourceIds && sourceIds.length > 0) {
+            const rawScopeGroupId = channelSwitcherState.hasUserSelectedFolder
+              ? channelSwitcherState.selectedFolderId
+              : (channelSwitcherState.currentGroupId ?? null);
+            const scopeGroupId = typeof rawScopeGroupId === 'number' ? rawScopeGroupId : null;
+            const adjacent = await tauriInvoke('get_adjacent_live_channel', {
+              sourceIds,
+              groupId: scopeGroupId,
+              currentChannelId: channelSwitcherState.currentChannelId,
+              delta,
+            }).catch(() => null);
+            if (adjacent && adjacent.id != null && adjacent.id !== channelSwitcherState.currentChannelId) {
+              selectChannel(adjacent);
+              return;
+            }
+          }
+
+          if (activeList.length > 0) {
+            let nextIdx = 0;
+            if (curIdx !== -1) {
+              nextIdx = (curIdx + delta + activeList.length) % activeList.length;
+            } else if (delta < 0) {
+              nextIdx = activeList.length - 1;
+            }
+            const fallback = activeList[nextIdx];
+            if (fallback && fallback.id !== channelSwitcherState.currentChannelId) {
+              selectChannel(fallback);
+            }
+          }
+        } finally {
+          channelSwitcherState.switchDeltaInFlight = false;
         }
       }
 
@@ -7024,27 +7445,56 @@
       });
 
       async function openChannelsDrawer(focusSearch = false) {
+        hideChannelInfoBanner();
         drawerChannels.classList.add('open');
         btnChannels.classList.add('active');
+        const epoch = ++channelSwitcherState.openEpoch;
         channelSwitcherState.isOpen = true;
         activeHoverMenu = 'channels';
-        if (channelSearchInput) channelSearchInput.value = '';
-        if (btnChannelSearchClear) btnChannelSearchClear.style.display = 'none';
-        channelSwitcherState.isSearching = false;
+        resetChannelSearchState();
 
-        tauriEmit('request-player-channels');
-
-        await loadFolders();
-
-        if (channelSwitcherState.currentGroupId != null) {
-          const match = channelSwitcherState.folders.find((f) => f.id === channelSwitcherState.currentGroupId);
-          selectFolder(channelSwitcherState.currentGroupId, match?.name || 'Category');
-        } else {
-          selectFolder(null, 'All Channels');
+        if (!channelsData.channels || channelsData.channels.length === 0) {
+          tauriEmit('request-player-channels');
         }
 
-        if (focusSearch && channelSearchInput) {
-          setTimeout(() => channelSearchInput.focus(), 100);
+        const targetFolderId = channelSwitcherState.currentGroupId != null
+          ? channelSwitcherState.currentGroupId
+          : null;
+        const cachedMatch = targetFolderId != null
+          ? channelSwitcherState.folders.find((f) => f.id === targetFolderId)
+          : null;
+        const initialFolderName = targetFolderId != null
+          ? (cachedMatch?.name || 'Category')
+          : 'All Channels';
+
+        let initialPage = 1;
+        if (channelSwitcherState.currentChannelId != null) {
+          const sourceIds = await ensureSourceIds();
+          if (epoch !== channelSwitcherState.openEpoch || !channelSwitcherState.isOpen) return;
+          if (sourceIds && sourceIds.length > 0) {
+            const resolvedPage = await tauriInvoke('get_live_channel_page', {
+              sourceIds,
+              groupId: targetFolderId,
+              channelId: channelSwitcherState.currentChannelId,
+            }).catch(() => null);
+            if (epoch !== channelSwitcherState.openEpoch || !channelSwitcherState.isOpen) return;
+            if (typeof resolvedPage === 'number' && resolvedPage >= 1) {
+              initialPage = resolvedPage;
+            }
+          }
+        }
+
+        // Kick off channel fetch at centered page immediately, then load/render folders concurrently
+        selectFolder(targetFolderId, initialFolderName, initialPage, false);
+        await loadFolders(epoch);
+
+        if (focusSearch && channelSearchInput && epoch === channelSwitcherState.openEpoch && channelSwitcherState.isOpen) {
+          setTimeout(() => {
+            if (channelSwitcherState.isOpen) {
+              channelSearchInput.focus();
+              channelSwitcherState.focusedPane = 'search';
+            }
+          }, 100);
         }
       }
 
@@ -7061,7 +7511,7 @@
         drawerChannels.classList.remove('open');
         btnChannels.classList.remove('active');
         btnChannels.blur();
-        channelSwitcherState.isOpen = false;
+        cleanupChannelsDrawerState();
         if (activeHoverMenu === 'channels') activeHoverMenu = null;
         showControls();
       }
@@ -7080,6 +7530,87 @@
         closeChannelsMenu();
       });
 
+      async function fetchSearchResults(val, page = 1, append = false, reqSeq = channelSwitcherState.searchSeq) {
+        if (channelSwitcherState.searchLoading && append) return;
+        channelSwitcherState.searchLoading = true;
+        channelSwitcherState.searchPage = page;
+        const sourceIds = await ensureSourceIds();
+        if (!sourceIds || sourceIds.length === 0) {
+          channelSwitcherState.searchLoading = false;
+          return;
+        }
+        if (reqSeq !== channelSwitcherState.searchSeq || !channelSwitcherState.isOpen || !channelSwitcherState.isSearching) {
+          channelSwitcherState.searchLoading = false;
+          return;
+        }
+
+        try {
+          let folderResults = null;
+          let channelResults = null;
+          if (!append) {
+            [folderResults, channelResults] = await Promise.all([
+              tauriInvoke('search', {
+                filters: {
+                  source_ids: sourceIds,
+                  media_types: [0], // livestream
+                  view_type: 2,     // CATEGORIES (ViewMode.Categories = 2)
+                  query: val,
+                  page: 1,
+                  use_keywords: true,
+                  sort: 0,          // Alphabetical ascending for search
+                },
+              }),
+              tauriInvoke('search', {
+                filters: {
+                  source_ids: sourceIds,
+                  media_types: [0], // livestream
+                  view_type: 0,     // ALL CHANNELS (ViewMode.All = 0)
+                  query: val,
+                  page: page,
+                  use_keywords: true,
+                  sort: 0,          // Alphabetical ascending for search
+                },
+              }),
+            ]);
+          } else {
+            channelResults = await tauriInvoke('search', {
+              filters: {
+                source_ids: sourceIds,
+                media_types: [0],
+                view_type: 0,
+                query: val,
+                page: page,
+                use_keywords: true,
+                sort: 0,
+              },
+            });
+          }
+
+          if (reqSeq !== channelSwitcherState.searchSeq || !channelSwitcherState.isOpen || !channelSwitcherState.isSearching) {
+            return;
+          }
+
+          const newChannels = (channelResults || []).filter(
+            (c) => c.id != null && (c.media_type === 0 || c.media_type == null)
+          );
+          channelSwitcherState.searchHasMore = newChannels.length >= 36;
+
+          if (!append) {
+            channelSwitcherState.matchingFolders = (folderResults || []).filter((g) => g.id != null && g.name);
+            channelSwitcherState.matchingChannels = newChannels;
+            renderFoldersList();
+            renderChannelsList(false);
+          } else if (newChannels.length > 0) {
+            channelSwitcherState.matchingChannels = channelSwitcherState.matchingChannels.concat(newChannels);
+            renderChannelsList(true, newChannels);
+          }
+        } catch (err) {
+          console.warn('Channel switcher search error:', err);
+        } finally {
+          channelSwitcherState.searchLoading = false;
+        }
+      }
+
       if (channelSearchInput) {
         channelSearchInput.addEventListener('input', (e) => {
           const val = (e.target.value || '').trim();
@@ -7088,10 +7619,13 @@
           }
 
           clearTimeout(channelSwitcherState.searchDebounceTimer);
-          channelSwitcherState.searchDebounceTimer = setTimeout(async () => {
+          const reqSeq = ++channelSwitcherState.searchSeq;
+          channelSwitcherState.searchDebounceTimer = setTimeout(() => {
             if (!val) {
               channelSwitcherState.isSearching = false;
               channelSwitcherState.searchQuery = '';
+              channelSwitcherState.searchPage = 1;
+              channelSwitcherState.searchHasMore = false;
               renderFoldersList();
               renderChannelsList(false);
               return;
@@ -7099,45 +7633,9 @@
 
             channelSwitcherState.isSearching = true;
             channelSwitcherState.searchQuery = val;
-            const sourceIds = await ensureSourceIds();
-            if (!sourceIds || sourceIds.length === 0) return;
-
-            try {
-              const [folderResults, channelResults] = await Promise.all([
-                tauriInvoke('search', {
-                  filters: {
-                    source_ids: sourceIds,
-                    media_types: [0], // livestream
-                    view_type: 2,     // CATEGORIES (ViewMode.Categories = 2)
-                    query: val,
-                    page: 1,
-                    use_keywords: true,
-                    sort: 0,          // Alphabetical ascending for search
-                  },
-                }),
-                tauriInvoke('search', {
-                  filters: {
-                    source_ids: sourceIds,
-                    media_types: [0], // livestream
-                    view_type: 0,     // ALL CHANNELS (ViewMode.All = 0)
-                    query: val,
-                    page: 1,
-                    use_keywords: true,
-                    sort: 0,          // Alphabetical ascending for search
-                  },
-                }),
-              ]);
-
-              channelSwitcherState.matchingFolders = (folderResults || []).filter((g) => g.id != null && g.name);
-              channelSwitcherState.matchingChannels = (channelResults || []).filter(
-                (c) => c.id != null && (c.media_type === 0 || c.media_type == null)
-              );
-
-              renderFoldersList();
-              renderChannelsList(false);
-            } catch (err) {
-              console.warn('Channel switcher search error:', err);
-            }
+            channelSwitcherState.searchPage = 1;
+            channelSwitcherState.searchHasMore = false;
+            fetchSearchResults(val, 1, false, reqSeq);
           }, 250);
         });
       }
@@ -7145,23 +7643,39 @@
       if (btnChannelSearchClear) {
         btnChannelSearchClear.addEventListener('click', (e) => {
           e.stopPropagation();
-          channelSearchInput.value = '';
-          btnChannelSearchClear.style.display = 'none';
-          channelSwitcherState.isSearching = false;
-          channelSwitcherState.searchQuery = '';
+          resetChannelSearchState();
           renderFoldersList();
           renderChannelsList(false);
           channelSearchInput.focus();
         });
       }
 
-      // Folders are fully populated by loadFolders() loop, infinite scroll only needed for channels
+      // Folders are fully populated by loadFolders() loop; channels paginate in both browse and search modes
 
       if (channelListContainer) {
         channelListContainer.addEventListener('scroll', () => {
-          if (channelSwitcherState.isSearching || channelSwitcherState.channelsLoading || !channelSwitcherState.channelsHasMore) return;
-          if (channelListContainer.scrollTop + channelListContainer.clientHeight >= channelListContainer.scrollHeight - 60) {
-            loadFolderChannels(channelSwitcherState.selectedFolderId, channelSwitcherState.channelsPage + 1, true);
+          if (channelSwitcherState.isSearching) {
+            if (
+              channelListContainer.scrollTop + channelListContainer.clientHeight >= channelListContainer.scrollHeight - 60 &&
+              !channelSwitcherState.searchLoading &&
+              channelSwitcherState.searchHasMore &&
+              channelSwitcherState.searchQuery
+            ) {
+              fetchSearchResults(channelSwitcherState.searchQuery, channelSwitcherState.searchPage + 1, true, channelSwitcherState.searchSeq);
+            }
+            return;
+          }
+          if (channelSwitcherState.channelsLoading) return;
+          if (
+            channelListContainer.scrollTop + channelListContainer.clientHeight >= channelListContainer.scrollHeight - 60 &&
+            channelSwitcherState.channelsHasMore
+          ) {
+            loadFolderChannels(channelSwitcherState.selectedFolderId, channelSwitcherState.channelsBottomPage + 1, 'append', channelSwitcherState.openEpoch);
+          } else if (
+            channelListContainer.scrollTop <= 60 &&
+            channelSwitcherState.channelsTopPage > 1
+          ) {
+            loadFolderChannels(channelSwitcherState.selectedFolderId, channelSwitcherState.channelsTopPage - 1, 'prepend', channelSwitcherState.openEpoch);
           }
         });
       }
@@ -7590,26 +8104,231 @@
         }
       });
 
+      tauriListen('player-channel-next', () => {
+        if (currentContentMode === 'live') {
+          switchChannelByIndexDelta(1);
+          showControls();
+        }
+      });
+
+      tauriListen('player-channel-prev', () => {
+        if (currentContentMode === 'live') {
+          switchChannelByIndexDelta(-1);
+          showControls();
+        }
+      });
+
+      tauriListen('player-channel-recall', () => {
+        recallLastChannel();
+      });
+
+      tauriListen('toggle-channels-drawer', () => {
+        if (currentContentMode !== 'live' || !drawerChannels) return;
+        if (drawerChannels.classList.contains('open')) {
+          closeChannelsMenu();
+        } else {
+          openChannelsMenu(true);
+        }
+      });
+
+      async function handleChannelsDrawerKeydown(e) {
+        if (!drawerChannels || !drawerChannels.classList.contains('open')) return false;
+
+        if (document.activeElement === channelSearchInput) {
+          channelSwitcherState.focusedPane = 'search';
+          if (e.key === 'Escape') {
+            e.preventDefault();
+            e.stopPropagation();
+            if (channelSearchInput.value) {
+              resetChannelSearchState();
+              renderFoldersList();
+              renderChannelsList('replace');
+            } else {
+              closeChannelsMenu();
+            }
+            return true;
+          }
+          if (e.key === 'ArrowDown') {
+            e.preventDefault();
+            e.stopPropagation();
+            const rows = channelListContainer ? Array.from(channelListContainer.querySelectorAll('.channel-row')) : [];
+            if (rows.length > 0) {
+              const curIdx = rows.findIndex((r) => r.classList.contains('current'));
+              focusChannelAtIndex(curIdx !== -1 ? curIdx : 0);
+            } else {
+              focusFolderAtIndex(0);
+            }
+            return true;
+          }
+          if (e.key === 'Enter') {
+            const list = channelSwitcherState.isSearching
+              ? channelSwitcherState.matchingChannels
+              : channelSwitcherState.channels;
+            if (list && list.length > 0) {
+              e.preventDefault();
+              e.stopPropagation();
+              selectChannel(list[0]);
+            }
+            return true;
+          }
+          return true;
+        }
+
+        if (e.key === 'Escape') {
+          e.preventDefault();
+          e.stopPropagation();
+          closeChannelsMenu();
+          return true;
+        }
+
+        if (e.key === '/' && channelSearchInput) {
+          e.preventDefault();
+          e.stopPropagation();
+          channelSearchInput.focus();
+          channelSwitcherState.focusedPane = 'search';
+          return true;
+        }
+
+        const inFolders = (foldersListContainer && foldersListContainer.contains(document.activeElement)) ||
+          channelSwitcherState.focusedPane === 'folders';
+        const inChannels = (channelListContainer && channelListContainer.contains(document.activeElement)) ||
+          channelSwitcherState.focusedPane === 'channels';
+
+        if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
+          e.preventDefault();
+          e.stopPropagation();
+          const step = e.key === 'ArrowDown' ? 1 : -1;
+          if (inFolders) {
+            const items = foldersListContainer ? Array.from(foldersListContainer.querySelectorAll('.folder-item')) : [];
+            if (items.length > 0) {
+              const idx = items.findIndex((el) => el === document.activeElement || el.classList.contains('kb-focused'));
+              const activeIdx = idx !== -1 ? idx : items.findIndex((el) => el.classList.contains('active'));
+              const startIdx = activeIdx !== -1 ? activeIdx : 0;
+              focusFolderAtIndex(startIdx + step);
+            }
+          } else {
+            const rows = channelListContainer ? Array.from(channelListContainer.querySelectorAll('.channel-row')) : [];
+            if (rows.length > 0) {
+              const idx = rows.findIndex((el) => el === document.activeElement || el.classList.contains('kb-focused'));
+              const curIdx = idx !== -1 ? idx : rows.findIndex((el) => el.classList.contains('current'));
+              const baseIdx = curIdx !== -1 ? curIdx : (step > 0 ? -1 : 0);
+              const nextIdx = baseIdx + step;
+
+              if (nextIdx >= rows.length && !channelSwitcherState.isSearching && channelSwitcherState.channelsHasMore) {
+                const prevLen = rows.length;
+                const ok = await loadFolderChannels(
+                  channelSwitcherState.selectedFolderId,
+                  channelSwitcherState.channelsBottomPage + 1,
+                  'append',
+                  channelSwitcherState.openEpoch,
+                );
+                if (ok) {
+                  focusChannelAtIndex(prevLen);
+                }
+              } else if (nextIdx >= rows.length && channelSwitcherState.isSearching && channelSwitcherState.searchHasMore) {
+                const prevLen = rows.length;
+                await fetchSearchResults(channelSwitcherState.searchQuery, channelSwitcherState.searchPage + 1, true, channelSwitcherState.searchSeq);
+                focusChannelAtIndex(prevLen);
+              } else if (nextIdx < 0 && !channelSwitcherState.isSearching && channelSwitcherState.channelsTopPage > 1) {
+                const prevLen = rows.length;
+                const ok = await loadFolderChannels(
+                  channelSwitcherState.selectedFolderId,
+                  channelSwitcherState.channelsTopPage - 1,
+                  'prepend',
+                  channelSwitcherState.openEpoch,
+                );
+                if (ok) {
+                  const updatedRows = channelListContainer ? Array.from(channelListContainer.querySelectorAll('.channel-row')) : [];
+                  const added = Math.max(0, updatedRows.length - prevLen);
+                  focusChannelAtIndex(Math.max(0, added - 1));
+                }
+              } else {
+                focusChannelAtIndex(nextIdx);
+              }
+            }
+          }
+          return true;
+        }
+
+        if (e.key === 'ArrowRight') {
+          if (inFolders || !inChannels) {
+            e.preventDefault();
+            e.stopPropagation();
+            const rows = channelListContainer ? Array.from(channelListContainer.querySelectorAll('.channel-row')) : [];
+            const curIdx = rows.findIndex((r) => r.classList.contains('current'));
+            focusChannelAtIndex(curIdx !== -1 ? curIdx : 0);
+            return true;
+          }
+        }
+
+        if (e.key === 'ArrowLeft') {
+          if (inChannels) {
+            e.preventDefault();
+            e.stopPropagation();
+            const items = foldersListContainer ? Array.from(foldersListContainer.querySelectorAll('.folder-item')) : [];
+            const actIdx = items.findIndex((f) => f.classList.contains('active'));
+            focusFolderAtIndex(actIdx !== -1 ? actIdx : 0);
+            return true;
+          }
+        }
+
+        if (e.key === 'Enter' || e.key === ' ' || e.code === 'Space') {
+          if (inFolders) {
+            const focusedFolder = foldersListContainer?.querySelector('.folder-item.kb-focused') || document.activeElement;
+            if (focusedFolder && focusedFolder.classList?.contains('folder-item')) {
+              e.preventDefault();
+              e.stopPropagation();
+              focusedFolder.click();
+              return true;
+            }
+          } else if (inChannels) {
+            const focusedRow = channelListContainer?.querySelector('.channel-row.kb-focused') || document.activeElement;
+            if (focusedRow && focusedRow.classList?.contains('channel-row')) {
+              e.preventDefault();
+              e.stopPropagation();
+              focusedRow.click();
+              return true;
+            }
+          }
+        }
+
+        if (e.key === 'PageUp' || e.key === 'ChannelUp') {
+          e.preventDefault();
+          e.stopPropagation();
+          switchChannelByIndexDelta(1);
+          return true;
+        }
+
+        if (e.key === 'PageDown' || e.key === 'ChannelDown') {
+          e.preventDefault();
+          e.stopPropagation();
+          switchChannelByIndexDelta(-1);
+          return true;
+        }
+
+        return false;
+      }
+
       // KEYBOARD SHORTCUTS IN OVERLAY
       document.addEventListener('keydown', (e) => {
         const activeTag = document.activeElement ? document.activeElement.tagName : '';
         const isTextInput = activeTag === 'TEXTAREA' || (activeTag === 'INPUT' && document.activeElement.type === 'text') || (document.activeElement && document.activeElement.isContentEditable);
 
-        // If search input inside drawer is focused, allow typing without triggering player hotkeys
-        if (document.activeElement === channelSearchInput) {
-          if (e.key === 'Escape') {
-            if (channelSearchInput.value) {
-              channelSearchInput.value = '';
-              if (btnChannelSearchClear) btnChannelSearchClear.style.display = 'none';
-              channelSwitcherState.isSearching = false;
-              channelSwitcherState.searchQuery = '';
-              renderFoldersList();
-              renderChannelsList(false);
-              e.preventDefault();
-              e.stopPropagation();
-              return;
-            }
-          } else {
+        if (drawerChannels && drawerChannels.classList.contains('open')) {
+          if (e.ctrlKey && e.shiftKey && !e.altKey && !e.metaKey && (e.key === 's' || e.key === 'S' || e.code === 'KeyS')) {
+            e.preventDefault();
+            e.stopPropagation();
+            if (!e.repeat) captureScreenshot();
+            return;
+          }
+          // Intercept drawer navigation/Escape keys synchronously, allowing only typing inside search input
+          const isSearchFocused = document.activeElement === channelSearchInput;
+          if (
+            isSearchFocused ||
+            ['Escape', 'ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight', 'Enter', ' ', '/', 'PageUp', 'PageDown', 'ChannelUp', 'ChannelDown'].includes(e.key) ||
+            e.code === 'Space'
+          ) {
+            void handleChannelsDrawerKeydown(e);
             return;
           }
         }
@@ -7701,6 +8420,26 @@
         } else if ((e.key === 's' || e.key === 'S') && !e.ctrlKey && !e.altKey && !e.metaKey) {
           if (currentActiveSegment && btnSkipSegment && btnSkipSegment.style.display !== 'none') {
             executeSkipSegment();
+            e.preventDefault();
+          }
+        } else if (currentContentMode === 'live' && !e.ctrlKey && !e.altKey && !e.metaKey) {
+          if (e.key === 'PageUp' || e.key === 'ChannelUp') {
+            switchChannelByIndexDelta(1);
+            showControls();
+            e.preventDefault();
+          } else if (e.key === 'PageDown' || e.key === 'ChannelDown') {
+            switchChannelByIndexDelta(-1);
+            showControls();
+            e.preventDefault();
+          } else if (e.key === 'l' || e.key === 'L') {
+            recallLastChannel();
+            e.preventDefault();
+          } else if (e.key === 'c' || e.key === 'C') {
+            if (drawerChannels.classList.contains('open')) {
+              closeChannelsMenu();
+            } else {
+              openChannelsMenu(true);
+            }
             e.preventDefault();
           }
         }
@@ -7857,7 +8596,9 @@
           }
 
           if (parsed.event === 'end-file') {
-            if (currentActiveChannelId && currentContentMode !== 'live' && parsed.reason === 'eof') {
+            if (currentContentMode === 'live' && parsed.reason === 'error') {
+              showScreenshotToast('Channel stream failed to load', true);
+            } else if (currentActiveChannelId && currentContentMode !== 'live' && parsed.reason === 'eof') {
               const effDuration = duration > 0 ? duration : (cachedDuration > 0 ? cachedDuration : 0);
               tauriEmit('save-playback-progress', {
                 channelId: currentActiveChannelId,
@@ -8369,6 +9110,7 @@
 
       tauriListen('embedded-player-channels-data', (event) => {
         if (event?.payload) {
+          const prevChId = channelSwitcherState.currentChannelId;
           if (event.payload.currentChannelId != null) {
             currentActiveChannelId = event.payload.currentChannelId;
           }
@@ -8379,11 +9121,23 @@
             channels: event.payload.channels || []
           };
           if (event.payload.currentChannelId != null) {
+            if (prevChId != null && event.payload.currentChannelId !== prevChId) {
+              const outgoing = findKnownChannelById(prevChId);
+              if (outgoing && outgoing.id !== event.payload.currentChannelId) {
+                channelSwitcherState.previousChannelObj = outgoing;
+              }
+            }
             channelSwitcherState.currentChannelId = event.payload.currentChannelId;
+          }
+          if (event.payload.currentChannel && event.payload.currentChannel.id != null) {
+            channelSwitcherState.currentChannelObj = event.payload.currentChannel;
+          } else if (channelSwitcherState.currentChannelId != null) {
+            const matched = findKnownChannelById(channelSwitcherState.currentChannelId);
+            if (matched) channelSwitcherState.currentChannelObj = matched;
           }
           if (event.payload.currentGroupId != null) {
             channelSwitcherState.currentGroupId = event.payload.currentGroupId;
-            if (channelSwitcherState.selectedFolderId == null) {
+            if (!channelSwitcherState.hasUserSelectedFolder && channelSwitcherState.selectedFolderId == null) {
               channelSwitcherState.selectedFolderId = event.payload.currentGroupId;
             }
           }
@@ -8391,8 +9145,22 @@
             channelSwitcherState.sourceIds = event.payload.sourceIds;
           }
           if (drawerChannels && drawerChannels.classList.contains('open')) {
-            renderFoldersList();
-            renderChannelsList(false);
+            syncCurrentChannelHighlight(channelSwitcherState.currentChannelId);
+            if (
+              !channelSwitcherState.isSearching &&
+              !channelSwitcherState.channelsLoading &&
+              channelSwitcherState.channels.length === 0
+            ) {
+              loadFolderChannels(channelSwitcherState.selectedFolderId, 1, 'replace', channelSwitcherState.openEpoch);
+            }
+          } else if (
+            currentContentMode === 'live' &&
+            prevChId != null &&
+            event.payload.currentChannelId != null &&
+            event.payload.currentChannelId !== prevChId &&
+            channelSwitcherState.currentChannelObj
+          ) {
+            showChannelInfoBanner(channelSwitcherState.currentChannelObj);
           }
         }
       });
@@ -8509,7 +9277,7 @@
         tauriEmit('request-overlay-top-crop');
         if (currentContentMode === 'episode') {
           tauriEmit('request-player-episodes');
-        } else if (currentContentMode === 'live') {
+        } else if (currentContentMode === 'live' && (!channelsData.channels || channelsData.channels.length === 0)) {
           tauriEmit('request-player-channels');
         } else if (currentContentMode === 'movie') {
           tauriEmit('request-movie-recommendations');
@@ -8519,6 +9287,7 @@
       tauriListen('embedded-poc-stopped', () => {
         hideUpNextCard(false);
         hideMovieRecsCard(false);
+        hideChannelInfoBanner();
         if (contextualSelection) {
           applyContextualSelectionUI(contextualSelection, false);
           contextualSelection = null;
@@ -8547,6 +9316,15 @@
         currentPlaybackSessionId = 0;
         isMediaLoaded = false;
         currentMediaSessionId = null;
+        channelSwitcherState.currentChannelId = null;
+        channelSwitcherState.currentGroupId = null;
+        channelSwitcherState.currentChannelObj = null;
+        channelSwitcherState.previousChannelObj = null;
+        channelSwitcherState.hasUserSelectedFolder = false;
+        channelSwitcherState.selectedFolderId = null;
+        channelSwitcherState.channels = [];
+        channelSwitcherState.channelsTopPage = 1;
+        channelSwitcherState.channelsBottomPage = 1;
         setTopCrop(32);
         setContentMode('movie');
         closeAllPanels();
