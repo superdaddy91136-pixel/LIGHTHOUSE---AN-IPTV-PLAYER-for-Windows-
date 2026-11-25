@@ -350,34 +350,13 @@
       <!-- ========================================== -->
       <div class="settings-category" [hidden]="activeCategory !== 'downloads'">
         <div class="category-header">
-          <h2 class="category-title">Downloads &amp; Recording</h2>
-          <p class="category-subtitle">Storage destination for live recordings and downloaded media</p>
+          <h2 class="category-title">Screenshots</h2>
+          <p class="category-subtitle">Storage destination for captured video screenshots</p>
         </div>
 
         <div class="settings-section">
           <h3 class="section-title">Storage Location</h3>
           <div class="section-card">
-            <!-- Recording Destination -->
-            <div class="setting-item">
-              <div class="setting-meta">
-                <label class="setting-title">Recording Destination</label>
-                <p class="setting-hint">Folder where recorded live broadcasts and downloaded media are stored</p>
-              </div>
-              <div class="setting-control">
-                <div class="modern-path-picker">
-                  <div class="path-display" [title]="settings.recording_path || 'Default (~/Videos)'">
-                    <svg class="path-icon" viewBox="0 0 24 24" fill="currentColor">
-                      <path d="M10 4H4c-1.1 0-1.99.9-1.99 2L2 18c0 1.1.9 2 2 2h16c1.1 0 2-.9 2-2V8c0-1.1-.9-2-2-2h-8l-2-2z" />
-                    </svg>
-                    <span class="path-text">{{ settings.recording_path || 'Default (~/Videos)' }}</span>
-                  </div>
-                  <button type="button" (click)="selectFolder()" class="btn-subtle" title="Change recording destination">
-                    <span>Browse...</span>
-                  </button>
-                </div>
-              </div>
-            </div>
-
             <!-- Screenshot Destination -->
             <div class="setting-item">
               <div class="setting-meta">
@@ -404,24 +383,6 @@
                     <span>Reset</span>
                   </button>
                 </div>
-              </div>
-            </div>
-
-            <!-- Always Prompt -->
-            <div class="setting-item">
-              <div class="setting-meta">
-                <label class="setting-title" for="alwaysAskSaveSwitch">Prompt for Save Location</label>
-                <p class="setting-hint">Open a file picker dialog before starting each recording or download</p>
-              </div>
-              <div class="setting-control">
-                <label class="modern-toggle" for="alwaysAskSaveSwitch">
-                  <input 
-                    id="alwaysAskSaveSwitch" 
-                    type="checkbox"
-                    [(ngModel)]="settings.always_ask_save" 
-                    (ngModelChange)="updateSettings()" />
-                  <span class="toggle-slider"></span>
-                </label>
               </div>
             </div>
           </div>

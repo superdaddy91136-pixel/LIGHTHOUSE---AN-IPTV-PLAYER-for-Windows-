@@ -2023,7 +2023,7 @@ pub async fn open_in_external_mpv(
     stop_embedded_poc_internal(&embedded_state).await;
 
     // 2. Play via existing, proven external MPV engine (100% untouched)
-    crate::mpv::play(channel, false, None, app_state)
+    crate::mpv::play(channel, app_state)
         .await
         .map_err(|e| format!("External MPV playback error: {:?}", e))
 }
@@ -2112,7 +2112,7 @@ pub async fn send_embedded_poc_ipc(
     }
 }
 
-fn format_screenshot_title(raw_title: &str) -> String {
+fn format_media_filename_title(raw_title: &str) -> String {
     let sanitized = crate::utils::sanitize(raw_title.to_string());
     let collapsed: String = sanitized
         .split_whitespace()
@@ -2126,27 +2126,56 @@ fn format_screenshot_title(raw_title: &str) -> String {
     }
 }
 
-fn resolve_screenshot_dir() -> Result<std::path::PathBuf, String> {
-    let custom = crate::settings::get_settings()
-        .ok()
-        .and_then(|s| s.screenshot_path)
+fn resolve_media_dir(
+    custom: Option<String>,
+    default_fn: fn() -> anyhow::Result<std::path::PathBuf>,
+    kind: &str,
+) -> Result<std::path::PathBuf, String> {
+    let custom_trimmed = custom
         .map(|s| s.trim().to_string())
         .filter(|s| !s.is_empty());
 
-    let dir = match custom {
+    match custom_trimmed {
         Some(path_str) => {
             let p = std::path::PathBuf::from(&path_str);
             if p.exists() && !p.is_dir() {
-                return Err(format!("Screenshot path '{}' is not a directory", path_str));
+                return Err(format!("{} path '{}' is not a directory", kind, path_str));
             }
             std::fs::create_dir_all(&p)
-                .map_err(|e| format!("Failed to access screenshot directory '{}': {}", path_str, e))?;
-            p
+                .map_err(|e| format!("Failed to access {} directory '{}': {}", kind, path_str, e))?;
+            Ok(p)
         }
-        None => crate::settings::get_default_screenshot_path().map_err(|e| e.to_string())?,
-    };
+        None => default_fn().map_err(|e| e.to_string()),
+    }
+}
 
-    Ok(dir)
+async fn build_unique_media_path(
+    dir: &std::path::Path,
+    raw_title: &str,
+    extension: &str,
+    timed_out_paths: &Arc<Mutex<HashSet<String>>>,
+) -> Result<(std::path::PathBuf, String), String> {
+    let title = format_media_filename_title(raw_title);
+    let timestamp = chrono::Local::now().format("%Y-%m-%d_%H-%M-%S").to_string();
+    let base_stem = format!("{}_{}", title, timestamp);
+
+    let timed_out = timed_out_paths.lock().await;
+    let mut counter: u32 = 0;
+    loop {
+        let candidate_name = if counter == 0 {
+            format!("{}.{}", base_stem, extension)
+        } else {
+            format!("{}_{}.{}", base_stem, counter, extension)
+        };
+        let candidate_path = dir.join(&candidate_name);
+        let candidate_str = candidate_path.to_string_lossy().to_string();
+        if !candidate_path.exists() && !timed_out.contains(&candidate_str) {
+            return Ok((candidate_path, candidate_name));
+        }
+        counter = counter
+            .checked_add(1)
+            .ok_or_else(|| format!("Could not find a unique {} filename", extension))?;
+    }
 }
 
 #[tauri::command]
@@ -2168,29 +2197,16 @@ pub async fn take_embedded_screenshot(
             .unwrap_or_default()
     };
 
-    let dir = resolve_screenshot_dir()?;
-    let title = format_screenshot_title(&stream_name);
-    let timestamp = chrono::Local::now().format("%Y-%m-%d_%H-%M-%S").to_string();
-    let base_stem = format!("{}_{}", title, timestamp);
-
-    let timed_out = state.timed_out_paths.lock().await;
-    let mut counter: u32 = 0;
-    let (target_path, filename) = loop {
-        let candidate_name = if counter == 0 {
-            format!("{}.png", base_stem)
-        } else {
-            format!("{}_{}.png", base_stem, counter)
-        };
-        let candidate_path = dir.join(&candidate_name);
-        let candidate_str = candidate_path.to_string_lossy().to_string();
-        if !candidate_path.exists() && !timed_out.contains(&candidate_str) {
-            break (candidate_path, candidate_name);
-        }
-        counter = counter
-            .checked_add(1)
-            .ok_or_else(|| "Could not find a unique screenshot filename".to_string())?;
-    };
-    drop(timed_out);
+    let custom_dir = crate::settings::get_settings()
+        .ok()
+        .and_then(|s| s.screenshot_path);
+    let dir = resolve_media_dir(
+        custom_dir,
+        crate::settings::get_default_screenshot_path,
+        "Screenshot",
+    )?;
+    let (target_path, filename) =
+        build_unique_media_path(&dir, &stream_name, "png", &state.timed_out_paths).await?;
 
     let target_path_str = target_path.to_string_lossy().to_string();
     let cmd = vec![

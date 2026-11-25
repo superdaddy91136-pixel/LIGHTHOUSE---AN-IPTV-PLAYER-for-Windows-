@@ -86,7 +86,6 @@ pub fn run() {
             channel_exists,
             update_source,
             get_epg,
-            download,
             add_epg,
             remove_epg,
             get_epg_ids,
@@ -99,7 +98,6 @@ pub fn run() {
             add_last_watched,
             backup_favs,
             restore_favs,
-            abort_download,
             clear_history,
             is_container,
             cancel_play,
@@ -276,11 +274,9 @@ async fn get_m3u8_from_link(source: Source) -> Result<(), String> {
 #[tauri::command]
 async fn play(
     channel: Channel,
-    record: bool,
-    record_path: Option<String>,
     state: State<'_, Mutex<AppState>>,
 ) -> Result<(), String> {
-    mpv::play(channel, record, record_path, state)
+    mpv::play(channel, state)
         .await
         .map_err(map_err_frontend)
 }
@@ -525,30 +521,6 @@ fn update_source(source: Source) -> Result<(), String> {
 #[tauri::command]
 async fn get_epg(channel: Channel) -> Result<Vec<EPG>, String> {
     xtream::get_epg(channel).await.map_err(map_err_frontend)
-}
-
-#[tauri::command]
-async fn download(
-    state: State<'_, Mutex<AppState>>,
-    app: AppHandle,
-    channel: Channel,
-    download_id: String,
-    path: Option<String>,
-) -> Result<(), String> {
-    utils::download(state.clone(), app, channel, &download_id, path)
-        .await
-        .map_err(map_err_frontend)
-}
-
-#[tauri::command]
-async fn abort_download(
-    state: State<'_, Mutex<AppState>>,
-    source_id: i64,
-    download_id: String,
-) -> Result<(), String> {
-    mpv::cancel_play(source_id, download_id, state)
-        .await
-        .map_err(map_err_frontend)
 }
 
 #[tauri::command]

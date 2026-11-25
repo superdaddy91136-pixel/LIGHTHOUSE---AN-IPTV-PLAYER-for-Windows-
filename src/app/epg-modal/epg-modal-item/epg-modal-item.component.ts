@@ -1,4 +1,4 @@
-import { Component, Input, NgZone, OnDestroy, Optional } from "@angular/core";
+import { Component, Input, Optional } from "@angular/core";
 import { NgbActiveModal } from "@ng-bootstrap/ng-bootstrap";
 import { EPG } from "../../models/epg";
 import { MemoryService } from "../../memory.service";
@@ -7,11 +7,6 @@ import { EPGNotify } from "../../models/epgNotify";
 import { ErrorService } from "../../error.service";
 import { Channel } from "../../models/channel";
 import { MediaType } from "../../models/mediaType";
-import { DownloadService } from "../../download.service";
-import { Subscription, take } from "rxjs";
-import { Download } from "../../models/download";
-import { save } from "@tauri-apps/plugin-dialog";
-import { getDateFormatted, getExtension, sanitizeFileName } from "../../utils";
 import { EmbeddedPlayerService } from "../../services/embedded-player.service";
 import { cleanMediaTitle } from "../../utils/media-presentation";
 
@@ -20,12 +15,10 @@ import { cleanMediaTitle } from "../../utils/media-presentation";
   templateUrl: "./epg-modal-item.component.html",
   styleUrl: "./epg-modal-item.component.css",
 })
-export class EpgModalItemComponent implements OnDestroy {
+export class EpgModalItemComponent {
   constructor(
     public memory: MemoryService,
     private error: ErrorService,
-    private download: DownloadService,
-    private ngZone: NgZone,
     private embeddedPlayer: EmbeddedPlayerService,
     @Optional() private activeModal?: NgbActiveModal,
   ) { }
@@ -38,15 +31,6 @@ export class EpgModalItemComponent implements OnDestroy {
   @Input()
   channelId?: number;
   playing: boolean = false;
-  progress: number = 0;
-  subscriptions: Subscription[] = [];
-
-  ngAfterViewInit(): void {
-    let download = this.download.Downloads.get(this.getDownloadId());
-    if (download) {
-      this.downloadSubscribe(download);
-    }
-  }
 
   notificationOn(): boolean {
     return this.memory.Watched_epgs.has(this.epg!.epg_id);
@@ -111,65 +95,5 @@ export class EpgModalItemComponent implements OnDestroy {
     } finally {
       this.playing = false;
     }
-  }
-
-  downloading() {
-    return this.download.Downloads.has(this.getDownloadId());
-  }
-
-  getDownloadId() {
-    return `${this.channelId}-${this.epg?.epg_id}`;
-  }
-
-  async downloadTimeshift() {
-    let file = undefined;
-    if (this.memory.IsContainer || this.memory.AlwaysAskSave) {
-      file = await save({
-        canCreateDirectories: true,
-        title: "Select where to save catchback",
-        defaultPath: `${sanitizeFileName(this.epg?.title!)}_${getDateFormatted()}.${getExtension(this.epg?.timeshift_url!)}`,
-      });
-      if (!file) {
-        return;
-      }
-    }
-    if (this.downloading()) return;
-    let channel: Channel = {
-      id: this.channelId,
-      url: this.epg?.timeshift_url,
-      name: this.epg?.title,
-      media_type: MediaType.movie,
-      favorite: false,
-      source_id: this.sourceId,
-    };
-    let download = await this.download.addDownload(
-      this.getDownloadId(),
-      channel,
-    );
-    this.downloadSubscribe(download);
-    await this.download.download(download.id, file);
-  }
-
-  downloadSubscribe(download: Download) {
-    let progressUpdate = download.progressUpdate.subscribe((progress) => {
-      this.ngZone.run(() => {
-        this.progress = Math.trunc(progress);
-      });
-    });
-    this.subscriptions.push(progressUpdate);
-    this.subscriptions.push(
-      download.complete.pipe(take(1)).subscribe((_) => {
-        progressUpdate.unsubscribe();
-        this.progress = 0;
-      }),
-    );
-  }
-
-  async cancelTimeshiftDownload() {
-    await this.download.abortDownload(this.getDownloadId());
-  }
-
-  ngOnDestroy() {
-    this.subscriptions.forEach((x) => x.unsubscribe());
   }
 }

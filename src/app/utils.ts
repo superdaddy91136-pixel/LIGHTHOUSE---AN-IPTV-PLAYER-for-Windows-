@@ -14,14 +14,3 @@ export const sanitizeFileName = (fileName: string) => {
       .replace(/^\s+|\s+$/g, "") || "untitled"
   );
 };
-
-export const getDateFormatted = (): string => {
-  return new Date().toISOString().replace(/T|:/g, "-").split(".")[0];
-};
-
-export const getExtension = (url: string): string => {
-  let split = url.split(".");
-  let last = split[split.length - 1];
-  if (split.length == 1 || last.startsWith("php?")) return "mp4";
-  else return last;
-};

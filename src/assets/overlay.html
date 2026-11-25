@@ -1128,17 +1128,17 @@
     :root,
     .modal-audio-subs {
       --glassBlur: 48px;
-      --glassSaturate: 130%;
-      --glassTint: rgba(28, 28, 30, 0.40);
-      --glassFallbackTint: rgba(28, 28, 30, 0.70);
-      --glassBorder: rgba(255, 255, 255, 0.06);
-      --glassShadow: 0 8px 32px rgba(0, 0, 0, 0.25);
-      --rowFocusFill: rgba(255, 255, 255, 0.10);
-      --rowFocusBorder: rgba(255, 255, 255, 0.08);
-      --textPrimary: rgba(255, 255, 255, 0.90);
-      --textSecondary: rgba(255, 255, 255, 0.50);
-      --textShadow: 0 1px 2px rgba(0, 0, 0, 0.20);
-      --iconColor: rgba(255, 255, 255, 0.90);
+      --glassSaturate: 100%;
+      --glassTint: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='120' height='120'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.85' numOctaves='3' stitchTiles='stitch'/%3E%3CfeColorMatrix type='saturate' values='0'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)' opacity='0.065'/%3E%3C/svg%3E"), rgba(22, 22, 22, 0.56);
+      --glassFallbackTint: rgba(22, 22, 22, 0.78);
+      --glassBorder: rgba(255, 255, 255, 0.18);
+      --glassShadow: 0 10px 32px rgba(0, 0, 0, 0.30), inset 0 1px 0 rgba(255, 255, 255, 0.18), inset 0 0 24px rgba(255, 255, 255, 0.04);
+      --rowFocusFill: rgba(255, 255, 255, 0.14);
+      --rowFocusBorder: rgba(255, 255, 255, 0.22);
+      --textPrimary: #ffffff;
+      --textSecondary: rgba(255, 255, 255, 0.80);
+      --textShadow: 0 1px 2px rgba(0, 0, 0, 0.94), 0 0 6px rgba(0, 0, 0, 0.58);
+      --iconColor: #ffffff;
 
       /* kebab-case aliases */
       --glass-blur: var(--glassBlur);
@@ -1155,7 +1155,7 @@
       --icon-color: var(--iconColor);
     }
 
-    /* MERGED AUDIO & SUBTITLES MODAL — FROSTED ACRYLIC GLASS UI */
+    /* MERGED AUDIO & SUBTITLES MODAL — COLORLESS FROSTED GLASS UI */
     .modal-audio-subs {
       position: absolute;
       bottom: 84px;
@@ -1166,11 +1166,13 @@
       border: 1px solid var(--glassBorder);
       border-radius: 14px;
       box-shadow: var(--glassShadow);
-      backdrop-filter: blur(var(--glassBlur)) saturate(var(--glassSaturate));
-      -webkit-backdrop-filter: blur(var(--glassBlur)) saturate(var(--glassSaturate));
+      backdrop-filter: blur(var(--glassBlur));
+      -webkit-backdrop-filter: blur(var(--glassBlur));
       isolation: isolate;
       color: var(--textPrimary);
       text-shadow: var(--textShadow);
+      -webkit-font-smoothing: antialiased;
+      -moz-osx-font-smoothing: grayscale;
       letter-spacing: 0;
       display: none;
       flex-direction: column;
@@ -1346,7 +1348,7 @@
       gap: 8px;
       padding: 10px 12px;
       margin-bottom: 10px;
-      background: rgba(20, 20, 22, 0.40);
+      background: rgba(12, 12, 12, 0.28);
       border: 1px solid var(--glassBorder);
       border-radius: 8px;
       animation: subSyncPanelSlideDown 0.18s cubic-bezier(0.16, 1, 0.3, 1);

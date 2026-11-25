@@ -1,13 +1,11 @@
-use crate::settings::get_default_record_path;
 use crate::types::{AppState, ChannelHttpHeaders, Source};
 use crate::utils::{find_macos_bin, get_bin};
 use crate::{log, sql};
 use crate::{media_type, settings::get_settings, types::Channel};
 use anyhow::{Context, Result};
-use chrono::Local;
 
 use std::sync::LazyLock;
-use std::{env::consts::OS, path::Path, process::Stdio};
+use std::{env::consts::OS, process::Stdio};
 use tauri::State;
 use tokio::sync::Mutex;
 use tokio::{
@@ -19,7 +17,6 @@ use tokio_util::sync::CancellationToken;
 const ARG_SAVE_POSITION_ON_QUIT: &str = "--save-position-on-quit";
 const ARG_CACHE: &str = "--cache=";
 const ARG_NO: &str = "no";
-const ARG_RECORD: &str = "--stream-record=";
 const ARG_TITLE: &str = "--title=";
 const ARG_MSG_LEVEL: &str = "--msg-level=all=error";
 const ARG_YTDLP_PATH: &str = "--script-opts=ytdl_hook-ytdl_path=";
@@ -42,8 +39,6 @@ static YTDLP_PATH: LazyLock<String> = LazyLock::new(|| find_macos_bin(YTDLP_BIN_
 
 pub async fn play(
     channel: Channel,
-    record: bool,
-    record_path: Option<String>,
     state: State<'_, Mutex<AppState>>,
 ) -> Result<()> {
     eprintln!(
@@ -58,7 +53,7 @@ pub async fn play(
                 .ok()
         })
         .or(None);
-    let args = get_play_args(&channel, record, record_path, &source)?;
+    let args = get_play_args(&channel, &source)?;
     eprintln!("with args: {:?}", args);
 
     if let Some(source) = source.as_ref() {
@@ -158,8 +153,6 @@ pub async fn cancel_play(
 
 fn get_play_args(
     channel: &Channel,
-    record: bool,
-    record_path: Option<String>,
     source: &Option<Source>,
 ) -> Result<Vec<String>> {
     let mut args = Vec::new();
@@ -185,16 +178,6 @@ fn get_play_args(
     if settings.enable_gpu.unwrap_or(false) {
         args.push(ARG_GPU_NEXT.to_string());
         args.push(ARG_GPU_PROFILE_HIGH_QUALITY.to_string());
-    }
-    if record {
-        let path = if let Some(p) = record_path {
-            p
-        } else if let Some(p) = settings.recording_path.map(get_path) {
-            p
-        } else {
-            get_path(get_default_record_path()?)
-        };
-        args.push(format!("{ARG_RECORD}{path}"));
     }
     if OS == "macos" && *MPV_PATH != MPV_BIN_NAME {
         args.push(format!("{}{}", ARG_YTDLP_PATH, *YTDLP_PATH));
@@ -249,16 +232,4 @@ fn set_headers(
         let headers = headers_vec.join(",");
         args.push(format!("{ARG_HTTP_HEADERS}{headers}"));
     }
-}
-
-fn get_path(path_str: String) -> String {
-    let path = Path::new(&path_str);
-    let path = path.join(get_file_name());
-    return path.to_string_lossy().to_string();
-}
-
-fn get_file_name() -> String {
-    let current_time = Local::now();
-    let formatted_time = current_time.format("%Y-%m-%d-%H-%M-%S").to_string();
-    format!("{formatted_time}.mp4")
 }

@@ -31,7 +31,6 @@ import { EpgModalItemComponent } from './epg-modal/epg-modal-item/epg-modal-item
 import { RestreamModalComponent } from './restream-modal/restream-modal.component';
 import { SortButtonComponent } from './home/sort-button/sort-button.component';
 import { SortItemComponent } from './home/sort-button/sort-item/sort-item.component';
-import { DownloadManagerComponent } from './download-manager/download-manager.component';
 import { NavBarComponent } from './nav-bar/nav-bar.component';
 import { AmbientBackgroundComponent } from './ambient-background/ambient-background.component';
 import { HomeDiscoveryComponent } from './home/home-discovery/home-discovery.component';
@@ -81,7 +80,6 @@ import { TimeUntilPipe } from './pipes/time-until.pipe';
     RestreamModalComponent,
     SortButtonComponent,
     SortItemComponent,
-    DownloadManagerComponent,
   ],
   imports: [
     BrowserModule,

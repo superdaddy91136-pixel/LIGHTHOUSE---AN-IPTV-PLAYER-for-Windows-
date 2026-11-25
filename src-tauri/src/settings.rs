@@ -7,7 +7,6 @@ use crate::{sql, types::Settings};
 
 pub const MPV_PARAMS: &str = "mpvParams";
 pub const USE_STREAM_CACHING: &str = "useStreamingCaching";
-pub const RECORDING_PATH: &str = "recordingPath";
 pub const DEFAULT_VIEW: &str = "defaultView";
 pub const VOLUME: &str = "volume";
 pub const REFRESH_ON_START: &str = "refreshOnStart";
@@ -16,7 +15,6 @@ pub const ENABLE_TRAY_ICON: &str = "enableTrayIcon";
 pub const ZOOM: &str = "zoom";
 pub const DEFAULT_SORT: &str = "defaultSort";
 pub const ENABLE_HWDEC: &str = "enableHWDEC";
-pub const ALWAYS_ASK_SAVE: &str = "alwaysAskSave";
 pub const ENABLE_GPU: &str = "enableGPU";
 pub const SCREENSHOT_PATH: &str = "screenshotPath";
 
@@ -24,7 +22,6 @@ pub fn get_settings() -> Result<Settings> {
     let map = sql::get_settings()?;
     let settings = Settings {
         mpv_params: map.get(MPV_PARAMS).map(|s| s.to_string()),
-        recording_path: map.get(RECORDING_PATH).map(|s| s.to_string()),
         use_stream_caching: map.get(USE_STREAM_CACHING).and_then(|s| s.parse().ok()),
         default_view: map.get(DEFAULT_VIEW).and_then(|s| s.parse().ok()),
         volume: map.get(VOLUME).and_then(|s| s.parse().ok()),
@@ -38,7 +35,6 @@ pub fn get_settings() -> Result<Settings> {
         zoom: map.get(ZOOM).and_then(|s| s.parse().ok()),
         default_sort: map.get(DEFAULT_SORT).and_then(|s| s.parse().ok()),
         enable_hwdec: map.get(ENABLE_HWDEC).and_then(|s| s.parse().ok()),
-        always_ask_save: map.get(ALWAYS_ASK_SAVE).and_then(|s| s.parse().ok()),
         enable_gpu: map.get(ENABLE_GPU).and_then(|s| s.parse().ok()),
         screenshot_path: map.get(SCREENSHOT_PATH).map(|s| s.to_string()),
     };
@@ -50,9 +46,6 @@ pub fn update_settings(settings: Settings) -> Result<()> {
 
     map.insert(MPV_PARAMS.to_string(), settings.mpv_params);
 
-    if let Some(recording_path) = settings.recording_path {
-        map.insert(RECORDING_PATH.to_string(), Some(recording_path));
-    }
     if let Some(use_stream_caching) = settings.use_stream_caching {
         map.insert(
             USE_STREAM_CACHING.to_string(),
@@ -86,9 +79,6 @@ pub fn update_settings(settings: Settings) -> Result<()> {
     if let Some(hwdec) = settings.enable_hwdec {
         map.insert(ENABLE_HWDEC.to_string(), Some(hwdec.to_string()));
     }
-    if let Some(save) = settings.always_ask_save {
-        map.insert(ALWAYS_ASK_SAVE.to_string(), Some(save.to_string()));
-    }
     if let Some(gpu) = settings.enable_gpu {
         map.insert(ENABLE_GPU.to_string(), Some(gpu.to_string()));
     }
@@ -98,17 +88,6 @@ pub fn update_settings(settings: Settings) -> Result<()> {
     );
     sql::update_settings(map)?;
     Ok(())
-}
-
-pub fn get_default_record_path() -> Result<String> {
-    let user_dirs = UserDirs::new().context("Failed to get user dirs")?;
-    let mut path = user_dirs
-        .video_dir()
-        .context("No videos dir in ~, please set a recording path in Settings")?
-        .to_owned();
-    path.push("open-tv");
-    std::fs::create_dir_all(&path)?;
-    Ok(path.to_string_lossy().to_string())
 }
 
 pub fn get_default_screenshot_path() -> Result<std::path::PathBuf> {

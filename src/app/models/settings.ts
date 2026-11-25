@@ -1,5 +1,4 @@
 export class Settings {
-  recording_path?: string;
   use_stream_caching?: boolean;
   mpv_params?: string;
   default_view?: number;
@@ -10,7 +9,6 @@ export class Settings {
   zoom?: number;
   default_sort?: number;
   enable_hwdec?: boolean;
-  always_ask_save?: boolean;
   enable_gpu?: boolean;
   screenshot_path?: string;
 }

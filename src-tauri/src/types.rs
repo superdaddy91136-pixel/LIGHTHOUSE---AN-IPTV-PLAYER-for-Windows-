@@ -115,7 +115,6 @@ impl XtreamStatusUserInfo {
 
 #[derive(Clone, PartialEq, Debug, Deserialize, Serialize)]
 pub struct Settings {
-    pub recording_path: Option<String>,
     pub mpv_params: Option<String>,
     pub use_stream_caching: Option<bool>,
     pub default_view: Option<u8>,
@@ -126,7 +125,6 @@ pub struct Settings {
     pub zoom: Option<u16>,
     pub default_sort: Option<u8>,
     pub enable_hwdec: Option<bool>,
-    pub always_ask_save: Option<bool>,
     pub enable_gpu: Option<bool>,
     #[serde(default)]
     pub screenshot_path: Option<String>,

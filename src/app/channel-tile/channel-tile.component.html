@@ -177,13 +177,6 @@
         *ngIf="alreadyHidden">Unhide</ng-container>
       <ng-container *ngIf="!alreadyHidden">Hide</ng-container>
     </button>
-    <button [hidden]="!isLivestream()" mat-menu-item (click)="record()">Record</button>
-    <button [hidden]="!isMovie() || downloading" mat-menu-item (click)="downloadVod()">
-      Download
-    </button>
-    <button [hidden]="!isMovie() || !downloading" mat-menu-item (click)="cancelDownload()">
-      Cancel download
-    </button>
     <button [hidden]="!showEPG()" mat-menu-item (click)="showEPGModal()">EPG</button>
     <button [hidden]="!isCustom()" mat-menu-item (click)="edit()">Edit</button>
     <button [hidden]="!isCustom()" mat-menu-item (click)="share()">Share</button>

@@ -176,7 +176,7 @@ pub async fn watch_self(port: u16, state: State<'_, Mutex<AppState>>) -> Result<
         episode_num: None,
         hidden: Some(false),
     };
-    mpv::play(channel, false, None, state).await
+    mpv::play(channel, state).await
 }
 
 pub fn share_restream(address: String, channel: Channel, path: String) -> Result<()> {

@@ -1,5 +1,4 @@
 import { Component, HostListener } from "@angular/core";
-import { DownloadService } from "./download.service";
 import { Router, NavigationEnd } from "@angular/router";
 import { filter } from "rxjs/operators";
 import { MemoryService } from "./memory.service";
@@ -15,7 +14,6 @@ export class AppComponent {
   title = "open-tv";
 
   constructor(
-    private download: DownloadService,
     public router: Router,
     public memory: MemoryService,
     private ambientBackground: AmbientBackgroundService,
@@ -43,10 +41,6 @@ export class AppComponent {
 
   private isInsideMenuTrigger(element: HTMLElement): boolean {
     return !!element.closest("[mat-menu-trigger-for], [matMenuTriggerFor]");
-  }
-
-  showDownloadManager() {
-    return this.download.Downloads.size > 0;
   }
 
   showNavBar(): boolean {

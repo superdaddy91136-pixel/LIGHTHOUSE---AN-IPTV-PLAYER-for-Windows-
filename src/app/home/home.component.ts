@@ -1945,7 +1945,6 @@ export class HomeComponent implements AfterViewInit, OnDestroy {
         let sources = data[1] as Source[];
         if (settings.zoom) getCurrentWebview().setZoom(Math.trunc(settings.zoom! * 100) / 10000);
         this.memory.trayEnabled = settings.enable_tray_icon ?? true;
-        this.memory.AlwaysAskSave = settings.always_ask_save ?? false;
         this.memory.Sources = new Map(sources.filter((x) => x.enabled).map(s => [s.id!, s]));
         if (sources.length == 0) this.reset();
         else {

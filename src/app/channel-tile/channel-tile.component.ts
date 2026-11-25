@@ -1,16 +1,13 @@
 import {
-  AfterViewInit,
   ChangeDetectionStrategy,
   ChangeDetectorRef,
   Component,
-  ElementRef,
   EventEmitter,
   Input,
   OnChanges,
   OnDestroy,
   OnInit,
   Output,
-  Renderer2,
   SimpleChanges,
   ViewChild,
 } from "@angular/core";
@@ -28,12 +25,10 @@ import { DeleteGroupModalComponent } from "../delete-group-modal/delete-group-mo
 import { EpgModalComponent } from "../epg-modal/epg-modal.component";
 import { EPG } from "../models/epg";
 import { RestreamModalComponent } from "../restream-modal/restream-modal.component";
-import { DownloadService } from "../download.service";
-import { Download } from "../models/download";
-import { Subscription, take } from "rxjs";
+import { Subscription } from "rxjs";
 import { save } from "@tauri-apps/plugin-dialog";
-import { CHANNEL_EXTENSION, GROUP_EXTENSION, RECORD_EXTENSION } from "../models/extensions";
-import { getDateFormatted, getExtension, sanitizeFileName } from "../utils";
+import { CHANNEL_EXTENSION, GROUP_EXTENSION } from "../models/extensions";
+import { sanitizeFileName } from "../utils";
 import { NodeType, fromMediaType } from "../models/nodeType";
 
 import { ViewMode } from "../models/viewMode";
@@ -151,15 +146,12 @@ export class EpgQueueManager {
   styleUrl: "./channel-tile.component.css",
   changeDetection: ChangeDetectionStrategy.OnPush,
 })
-export class ChannelTileComponent implements OnInit, OnDestroy, AfterViewInit, OnChanges {
+export class ChannelTileComponent implements OnInit, OnDestroy, OnChanges {
   constructor(
     public memory: MemoryService,
     private toastr: ToastrService,
     private error: ErrorService,
     private modal: NgbModal,
-    private el: ElementRef,
-    private renderer: Renderer2,
-    private download: DownloadService,
     private movieDetailService: MovieDetailService,
     private tvDetailService: TvDetailService,
     public pinService: PinService,
@@ -178,7 +170,6 @@ export class ChannelTileComponent implements OnInit, OnDestroy, AfterViewInit, O
   starting: boolean = false;
   alreadyExistsInFav = false;
   alreadyHidden = false;
-  downloading = false;
   mediaTypeEnum = MediaType;
   viewModeEnum = ViewMode;
   subscriptions: Subscription[] = [];
@@ -287,22 +278,6 @@ export class ChannelTileComponent implements OnInit, OnDestroy, AfterViewInit, O
     }
   }
 
-  ngAfterViewInit(): void {
-    this.getExistingDownload();
-  }
-
-  setDownloadGradient(progress: number) {
-    let element = this.el.nativeElement.querySelector(`#tile-${this.id}`);
-    let background = `linear-gradient(to right, green ${progress}%, #343a40 ${progress}%)`;
-    this.renderer.setStyle(element, "background", background);
-  }
-
-  clearDownloadGradient() {
-    let element = this.el.nativeElement.querySelector(`#tile-${this.id}`);
-    let background = "#343a40";
-    this.renderer.setStyle(element, "background", background);
-  }
-
   async onPlayClick(event: MouseEvent): Promise<void> {
     event.stopPropagation();
     if (this.starting) return;
@@ -325,16 +300,11 @@ export class ChannelTileComponent implements OnInit, OnDestroy, AfterViewInit, O
     }
   }
 
-  async click(record = false) {
+  async click() {
     if (this.starting === true) {
-      try {
-        await invoke("cancel_play", { sourceId: this.channel?.source_id, channelId: this.channel?.id });
-      } catch (e) {
-        this.error.handleError(e);
-      }
       return;
     }
-    if (!record && this.channel?.media_type === MediaType.serie) {
+    if (this.channel?.media_type === MediaType.serie) {
       this.tvDetailService.openTvDetail(this.channel);
       return;
     }
@@ -351,18 +321,9 @@ export class ChannelTileComponent implements OnInit, OnDestroy, AfterViewInit, O
       return;
     }
     const isEpisode = !!(this.channel?.season_id != null || this.channel?.episode_num != null);
-    if (!record && this.channel?.media_type === MediaType.movie && !isEpisode) {
+    if (this.channel?.media_type === MediaType.movie && !isEpisode) {
       this.movieDetailService.openMovieDetail(this.channel);
       return;
-    }
-    let file = undefined;
-    if (record && (this.memory.IsContainer || this.memory.AlwaysAskSave)) {
-      file = await save({
-        canCreateDirectories: true,
-        title: "Select where to save recording",
-        defaultPath: `${sanitizeFileName(this.channel?.name!)}_${getDateFormatted()}${RECORD_EXTENSION}`,
-      });
-      if (!file) return;
     }
     this.starting = true;
     this.cdr.markForCheck();
@@ -377,7 +338,7 @@ export class ChannelTileComponent implements OnInit, OnDestroy, AfterViewInit, O
       this.error.handleError(e);
     });
 
-    if (!record && (this.channel?.media_type === MediaType.livestream || this.isLiveTv())) {
+    if (this.channel?.media_type === MediaType.livestream || this.isLiveTv()) {
       try {
         const canvas = this.embeddedPlayer.resolveVideoCanvasId();
         await this.embeddedPlayer.startPlayer(playChannel, canvas, {
@@ -393,27 +354,16 @@ export class ChannelTileComponent implements OnInit, OnDestroy, AfterViewInit, O
       return;
     }
 
-    if (!record) {
-      try {
-        const mode = isEpisode ? 'episode' : 'movie';
-        const canvas = this.embeddedPlayer.resolveVideoCanvasId();
-        await this.embeddedPlayer.startPlayer(playChannel, canvas, {
-          title: cleanMediaTitle(this.channel?.name || (isEpisode ? 'Episode' : 'Video')),
-          mode,
-        });
-      } catch (err) {
-        console.warn('Failed to start embedded player:', err);
-        this.error.handleError(err);
-      }
-      this.starting = false;
-      this.cdr.markForCheck();
-      return;
-    }
-
     try {
-      await invoke("play", { channel: playChannel, record: true, recordPath: file });
-    } catch (e) {
-      this.error.handleError(e);
+      const mode = isEpisode ? 'episode' : 'movie';
+      const canvas = this.embeddedPlayer.resolveVideoCanvasId();
+      await this.embeddedPlayer.startPlayer(playChannel, canvas, {
+        title: cleanMediaTitle(this.channel?.name || (isEpisode ? 'Episode' : 'Video')),
+        mode,
+      });
+    } catch (err) {
+      console.warn('Failed to start embedded player:', err);
+      this.error.handleError(err);
     }
     this.starting = false;
     this.cdr.markForCheck();
@@ -423,7 +373,6 @@ export class ChannelTileComponent implements OnInit, OnDestroy, AfterViewInit, O
     if (this.channel?.media_type == MediaType.season) return;
     this.alreadyExistsInFav = this.channel!.favorite!;
     this.alreadyHidden = this.channel!.hidden!;
-    this.downloading = this.isDownloading();
     event.preventDefault();
     this.menuTopLeftPosition.x = event.clientX;
     this.menuTopLeftPosition.y = event.clientY;
@@ -539,10 +488,6 @@ export class ChannelTileComponent implements OnInit, OnDestroy, AfterViewInit, O
     } catch (e) {
       this.error.handleError(e, `Failed to hide/unhide "${this.channel?.name}"`);
     }
-  }
-
-  async record() {
-    await this.click(true);
   }
 
   isMovie() {
@@ -799,56 +744,6 @@ export class ChannelTileComponent implements OnInit, OnDestroy, AfterViewInit, O
       invoke("delete_custom_channel", { id: this.channel?.id }),
     );
     this.memory.Refresh.next(true);
-  }
-
-  isDownloading() {
-    return this.download.Downloads.has(this.channel!.id!.toString());
-  }
-
-  async downloadVod() {
-    let file = undefined;
-    if (this.memory.IsContainer || this.memory.AlwaysAskSave) {
-      file = await save({
-        canCreateDirectories: true,
-        title: "Select where to download movie",
-        defaultPath: `${sanitizeFileName(this.channel?.name!)}.${getExtension(this.channel?.url!)}`,
-      });
-      if (!file) {
-        return;
-      }
-    }
-    let download = await this.download.addDownload(
-      this.channel!.id!.toString(),
-      this.channel!,
-    );
-    this.downloadSubscribe(download);
-    await this.download.download(download.id, file);
-  }
-
-  async cancelDownload() {
-    await this.download.abortDownload(this.channel!.id!.toString());
-  }
-
-  getExistingDownload() {
-    let download = this.download.Downloads.get(this.channel!.id!.toString());
-    if (download) {
-      this.setDownloadGradient(download.progress);
-      this.downloadSubscribe(download);
-    }
-  }
-
-  downloadSubscribe(download: Download) {
-    let progressUpdate = download.progressUpdate.subscribe((progress) => {
-      this.setDownloadGradient(progress);
-      if (progress == 100) progressUpdate.unsubscribe();
-    });
-    this.subscriptions.push(progressUpdate);
-    this.subscriptions.push(
-      download.complete.pipe(take(1)).subscribe((_) => {
-        progressUpdate.unsubscribe();
-        this.clearDownloadGradient();
-      }),
-    );
   }
 
   async copyURL() {

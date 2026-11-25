@@ -66,9 +66,9 @@ export class SettingsComponent {
     },
     {
       id: "downloads",
-      label: "Downloads",
-      description: "Recording destination and save location prompts",
-      icon: "M19 9h-4V3H9v6H5l7 7 7-7zM5 18v2h14v-2H5z",
+      label: "Storage",
+      description: "Screenshot storage destination",
+      icon: "M10 4H4c-1.1 0-1.99.9-1.99 2L2 18c0 1.1.9 2 2 2h16c1.1 0 2-.9 2-2V8c0-1.1-.9-2-2-2h-8l-2-2z",
     },
     {
       id: "metadata",
@@ -117,7 +117,6 @@ export class SettingsComponent {
     zoom: 100,
     default_sort: SortType.provider,
     enable_hwdec: true,
-    always_ask_save: false,
     enable_gpu: false,
   };
   viewModeEnum = ViewMode;
@@ -310,7 +309,6 @@ export class SettingsComponent {
       if (this.settings.zoom === undefined) this.settings.zoom = 100;
       if (this.settings.default_sort === undefined) this.settings.default_sort = SortType.provider;
       if (this.settings.enable_hwdec === undefined) this.settings.enable_hwdec = true;
-      if (this.settings.always_ask_save === undefined) this.settings.always_ask_save = false;
       if (this.settings.enable_gpu === undefined) this.settings.enable_gpu = false;
     });
   }
@@ -424,18 +422,6 @@ export class SettingsComponent {
     if (this.settings.mpv_params === "")
       this.settings.mpv_params = undefined;
     await invoke("update_settings", { settings: this.settings });
-  }
-
-  async selectFolder() {
-    const folder = await open({
-      multiple: false,
-      directory: true,
-      canCreateDirectories: true,
-    });
-    if (folder) {
-      this.settings.recording_path = folder;
-      await this.updateSettings();
-    }
   }
 
   async selectScreenshotFolder() {
