@@ -695,7 +695,7 @@
     }
 
     .vertical-vol-box {
-      background: linear-gradient(165deg, rgba(38, 42, 52, 0.90) 0%, rgba(24, 26, 34, 0.94) 100%);
+      background: var(--glassTint);
       border: 1px solid rgba(255, 255, 255, 0.16);
       border-radius: 20px;
       padding: 12px 10px 14px 10px;
@@ -711,8 +711,8 @@
       align-items: center;
       justify-content: center;
       gap: 8px;
-      backdrop-filter: blur(20px) saturate(160%);
-      -webkit-backdrop-filter: blur(20px) saturate(160%);
+      backdrop-filter: blur(var(--glassBlur));
+      -webkit-backdrop-filter: blur(var(--glassBlur));
     }
 
     .vertical-vol-pct {
@@ -835,9 +835,9 @@
       transform: translateX(-50%);
       width: 250px;
       z-index: 125;
-      background: rgba(24, 26, 32, 0.95);
-      backdrop-filter: blur(24px);
-      -webkit-backdrop-filter: blur(24px);
+      background: var(--glassTint);
+      backdrop-filter: blur(var(--glassBlur));
+      -webkit-backdrop-filter: blur(var(--glassBlur));
       border: 1px solid rgba(255, 255, 255, 0.16);
       border-radius: 12px;
       box-shadow: 0 18px 45px rgba(0, 0, 0, 0.8), inset 0 1px 0 rgba(255, 255, 255, 0.12);
@@ -971,7 +971,7 @@
       bottom: calc(100% + 10px);
       left: 50%;
       transform: translateX(-50%);
-      background: linear-gradient(165deg, rgba(38, 42, 52, 0.90) 0%, rgba(24, 26, 34, 0.94) 100%);
+      background: var(--glassTint);
       border: 1px solid rgba(255, 255, 255, 0.16);
       border-radius: 14px;
       padding: 8px;
@@ -986,8 +986,8 @@
       gap: 3px;
       min-width: 152px;
       z-index: 130;
-      backdrop-filter: blur(20px) saturate(160%);
-      -webkit-backdrop-filter: blur(20px) saturate(160%);
+      backdrop-filter: blur(var(--glassBlur));
+      -webkit-backdrop-filter: blur(var(--glassBlur));
     }
 
     .speed-menu.open {
@@ -1127,14 +1127,14 @@
     /* Glass Theme Tokens */
     :root,
     .modal-audio-subs {
-      --glassBlur: 48px;
+      --glassBlur: 64px;
       --glassSaturate: 100%;
-      --glassTint: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='120' height='120'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.85' numOctaves='3' stitchTiles='stitch'/%3E%3CfeColorMatrix type='saturate' values='0'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)' opacity='0.065'/%3E%3C/svg%3E"), rgba(22, 22, 22, 0.56);
-      --glassFallbackTint: rgba(22, 22, 22, 0.78);
-      --glassBorder: rgba(255, 255, 255, 0.18);
-      --glassShadow: 0 10px 32px rgba(0, 0, 0, 0.30), inset 0 1px 0 rgba(255, 255, 255, 0.18), inset 0 0 24px rgba(255, 255, 255, 0.04);
+      --glassTint: linear-gradient(155deg, rgba(255, 255, 255, 0.08) 0%, rgba(255, 255, 255, 0.02) 38%, rgba(0, 0, 0, 0.14) 100%), rgba(18, 18, 18, 0.80);
+      --glassFallbackTint: rgba(18, 18, 18, 0.88);
+      --glassBorder: rgba(255, 255, 255, 0.17);
+      --glassShadow: 0 4px 12px rgba(0, 0, 0, 0.28), 0 18px 42px rgba(0, 0, 0, 0.45), 0 32px 68px rgba(0, 0, 0, 0.28), inset 0 1px 1px 0 rgba(255, 255, 255, 0.28), inset 0 8px 24px -8px rgba(255, 255, 255, 0.06), inset 1px 0 0 0 rgba(255, 255, 255, 0.08), inset -1px 0 0 0 rgba(255, 255, 255, 0.08), inset 0 -1.5px 1px 0 rgba(0, 0, 0, 0.42);
       --rowFocusFill: rgba(255, 255, 255, 0.14);
-      --rowFocusBorder: rgba(255, 255, 255, 0.22);
+      --rowFocusBorder: rgba(255, 255, 255, 0.07);
       --textPrimary: #ffffff;
       --textSecondary: rgba(255, 255, 255, 0.80);
       --textShadow: 0 1px 2px rgba(0, 0, 0, 0.94), 0 0 6px rgba(0, 0, 0, 0.58);
@@ -1202,7 +1202,7 @@
       justify-content: space-between;
       padding: 10px 16px;
       background: transparent;
-      border-bottom: 1px solid var(--glassBorder);
+      border-bottom: none;
     }
 
     .modal-title {
@@ -1217,8 +1217,8 @@
       width: 24px;
       height: 24px;
       border-radius: 50%;
-      background: rgba(255, 255, 255, 0.04);
-      border: 1px solid var(--glassBorder);
+      background: rgba(255, 255, 255, 0.07);
+      border: 1px solid transparent;
       color: var(--iconColor);
       cursor: pointer;
       display: flex;
@@ -1228,8 +1228,8 @@
     }
 
     .modal-close-btn:hover {
-      background: rgba(255, 255, 255, 0.12);
-      border-color: rgba(255, 255, 255, 0.15);
+      background: rgba(255, 255, 255, 0.16);
+      border-color: rgba(255, 255, 255, 0.12);
       color: #ffffff;
     }
 
@@ -1261,7 +1261,7 @@
 
     .modal-col-audio {
       padding-right: 14px;
-      border-right: 1px solid var(--glassBorder);
+      border-right: 1px solid rgba(255, 255, 255, 0.06);
     }
 
     .modal-col-subs {
@@ -1275,7 +1275,7 @@
       letter-spacing: 0;
       text-shadow: var(--textShadow);
       padding-bottom: 8px;
-      border-bottom: 1px solid var(--glassBorder);
+      border-bottom: none;
       margin-bottom: 8px;
       min-height: 28px;
       display: flex;
@@ -1321,8 +1321,8 @@
       letter-spacing: 0;
       text-transform: uppercase;
       border-radius: 4px;
-      border: 1px solid var(--glassBorder);
-      background: rgba(255, 255, 255, 0.04);
+      border: 1px solid transparent;
+      background: rgba(255, 255, 255, 0.07);
       color: var(--textSecondary);
       cursor: pointer;
       transition: all 0.15s ease;
@@ -1331,8 +1331,8 @@
 
     .subtitle-sync-toggle-btn:hover {
       color: var(--textPrimary);
-      background: rgba(255, 255, 255, 0.10);
-      border-color: rgba(255, 255, 255, 0.14);
+      background: rgba(255, 255, 255, 0.14);
+      border-color: rgba(255, 255, 255, 0.10);
     }
 
     .subtitle-sync-toggle-btn.active {
@@ -1348,8 +1348,9 @@
       gap: 8px;
       padding: 10px 12px;
       margin-bottom: 10px;
-      background: rgba(12, 12, 12, 0.28);
-      border: 1px solid var(--glassBorder);
+      background: rgba(0, 0, 0, 0.24);
+      border: 1px solid rgba(255, 255, 255, 0.05);
+      box-shadow: inset 0 1px 3px rgba(0, 0, 0, 0.25);
       border-radius: 8px;
       animation: subSyncPanelSlideDown 0.18s cubic-bezier(0.16, 1, 0.3, 1);
     }
@@ -1412,8 +1413,8 @@
       font-size: 11px;
       font-weight: 400;
       color: var(--textSecondary);
-      background: rgba(255, 255, 255, 0.04);
-      border: 1px solid var(--glassBorder);
+      background: rgba(255, 255, 255, 0.07);
+      border: 1px solid transparent;
       border-radius: 4px;
       cursor: pointer;
       transition: all 0.15s ease;
@@ -1422,8 +1423,8 @@
 
     .sub-sync-reset-btn:hover {
       color: var(--textPrimary);
-      background: rgba(255, 255, 255, 0.10);
-      border-color: rgba(255, 255, 255, 0.14);
+      background: rgba(255, 255, 255, 0.14);
+      border-color: rgba(255, 255, 255, 0.10);
     }
 
     .sub-sync-actions {
@@ -1440,8 +1441,8 @@
       font-size: 11px;
       font-weight: 400;
       color: var(--textPrimary);
-      background: rgba(255, 255, 255, 0.05);
-      border: 1px solid var(--glassBorder);
+      background: rgba(255, 255, 255, 0.08);
+      border: 1px solid transparent;
       border-radius: 5px;
       cursor: pointer;
       transition: all 0.12s ease;
@@ -1451,8 +1452,8 @@
 
     .sub-sync-adj-btn:hover {
       color: #ffffff;
-      background: rgba(255, 255, 255, 0.12);
-      border-color: rgba(255, 255, 255, 0.15);
+      background: rgba(255, 255, 255, 0.16);
+      border-color: rgba(255, 255, 255, 0.10);
       transform: translateY(-1px);
     }
 
@@ -1542,10 +1543,17 @@
       border-color: transparent;
     }
 
-    .track-option.selected,
-    .track-option:focus-visible {
+    .track-option.selected {
       background: var(--rowFocusFill);
       border: 1px solid var(--rowFocusBorder);
+      box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.10);
+      outline: none;
+      font-weight: 400;
+    }
+
+    .track-option:focus-visible {
+      background: var(--rowFocusFill);
+      border: 1px solid rgba(255, 255, 255, 0.24);
       box-shadow: none;
       outline: none;
       font-weight: 400;
@@ -1650,8 +1658,8 @@
     }
 
     .track-action-btn:hover {
-      background: rgba(255, 255, 255, 0.08);
-      border-color: var(--glassBorder);
+      background: rgba(255, 255, 255, 0.10);
+      border-color: transparent;
       color: #ffffff;
     }
 
@@ -1683,7 +1691,7 @@
     .subtitle-size-control {
       margin-top: 14px;
       padding-top: 12px;
-      border-top: 1px solid var(--glassBorder);
+      border-top: none;
     }
 
     .subtitle-size-header {
@@ -1721,12 +1729,12 @@
       bottom: 84px;
       width: 380px;
       max-width: calc(100% - 32px);
-      background: rgba(24, 26, 32, 0.90);
+      background: var(--glassTint);
       border: 1px solid rgba(255, 255, 255, 0.14);
       border-radius: 12px;
       box-shadow: 0 24px 60px rgba(0, 0, 0, 0.75), inset 0 1px 0 0 rgba(255, 255, 255, 0.1);
-      backdrop-filter: blur(24px);
-      -webkit-backdrop-filter: blur(24px);
+      backdrop-filter: blur(var(--glassBlur));
+      -webkit-backdrop-filter: blur(var(--glassBlur));
       display: flex;
       flex-direction: column;
       z-index: 90;
@@ -1868,9 +1876,9 @@
       max-height: 200px;
       overflow-y: auto;
       overflow-x: hidden;
-      background: rgba(26, 28, 36, 0.95);
-      backdrop-filter: blur(24px);
-      -webkit-backdrop-filter: blur(24px);
+      background: var(--glassTint);
+      backdrop-filter: blur(var(--glassBlur));
+      -webkit-backdrop-filter: blur(var(--glassBlur));
       border: 1px solid rgba(255, 255, 255, 0.16);
       border-radius: 10px;
       box-shadow: 0 20px 48px rgba(0, 0, 0, 0.8), inset 0 1px 0 0 rgba(255, 255, 255, 0.1);
@@ -2135,9 +2143,9 @@
     #drawerChannels.channels-drawer-two-pane {
       width: 640px;
       max-width: calc(100% - 32px);
-      background: rgba(24, 26, 32, 0.90);
-      backdrop-filter: blur(24px);
-      -webkit-backdrop-filter: blur(24px);
+      background: var(--glassTint);
+      backdrop-filter: blur(var(--glassBlur));
+      -webkit-backdrop-filter: blur(var(--glassBlur));
       border: 1px solid rgba(255, 255, 255, 0.14);
       border-radius: 12px;
       box-shadow: 0 24px 60px rgba(0, 0, 0, 0.75), inset 0 1px 0 0 rgba(255, 255, 255, 0.1);
@@ -2432,7 +2440,7 @@
       left: 20px;
       width: 360px;
       max-width: calc(100vw - 40px);
-      background: linear-gradient(165deg, rgba(38, 42, 52, 0.90) 0%, rgba(24, 26, 34, 0.94) 100%);
+      background: var(--glassTint);
       border: 1px solid rgba(255, 255, 255, 0.16);
       border-radius: 14px;
       box-shadow: 
@@ -2441,8 +2449,8 @@
         0 32px 64px rgba(0, 0, 0, 0.45),
         inset 0 1px 1px 0 rgba(255, 255, 255, 0.22),
         inset 0 -1px 1px 0 rgba(0, 0, 0, 0.4);
-      backdrop-filter: blur(20px) saturate(160%);
-      -webkit-backdrop-filter: blur(20px) saturate(160%);
+      backdrop-filter: blur(var(--glassBlur));
+      -webkit-backdrop-filter: blur(var(--glassBlur));
       display: none;
       flex-direction: column;
       z-index: 95;
@@ -2652,12 +2660,12 @@
       position: absolute;
       right: 28px;
       bottom: 28px;
-      background: rgba(24, 26, 32, 0.93);
+      background: var(--glassTint);
       border: 1px solid rgba(255, 255, 255, 0.16);
       border-radius: 12px;
       box-shadow: 0 20px 50px rgba(0, 0, 0, 0.8), inset 0 1px 0 rgba(255, 255, 255, 0.12);
-      backdrop-filter: blur(24px);
-      -webkit-backdrop-filter: blur(24px);
+      backdrop-filter: blur(var(--glassBlur));
+      -webkit-backdrop-filter: blur(var(--glassBlur));
       z-index: 95;
       padding: 16px;
       display: flex;
