@@ -286,6 +286,50 @@
       100% { transform: translate(-50%, -50%) scale(1); }
     }
 
+    /* SCREENSHOT FEEDBACK TOAST */
+    .screenshot-toast {
+      position: absolute;
+      top: 56px;
+      left: 50%;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      max-width: min(560px, 84vw);
+      padding: 9px 18px;
+      background: rgba(16, 17, 24, 0.9);
+      backdrop-filter: blur(20px);
+      -webkit-backdrop-filter: blur(20px);
+      border: 1px solid rgba(255, 255, 255, 0.18);
+      border-radius: 9999px;
+      box-shadow: 0 14px 34px rgba(0, 0, 0, 0.7), inset 0 1px 0 0 rgba(255, 255, 255, 0.12);
+      color: #ffffff;
+      font-size: 13px;
+      font-weight: 600;
+      letter-spacing: 0.01em;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      opacity: 0;
+      visibility: hidden;
+      pointer-events: none;
+      transform: translate(-50%, -6px) scale(0.96);
+      transition: opacity 0.18s ease-out, visibility 0.18s ease-out, transform 0.18s cubic-bezier(0.16, 1, 0.3, 1);
+      z-index: 8;
+      user-select: none;
+      -webkit-user-select: none;
+    }
+
+    .screenshot-toast.visible {
+      opacity: 1;
+      visibility: visible;
+      transform: translate(-50%, 0) scale(1);
+    }
+
+    .screenshot-toast.error {
+      border-color: rgba(248, 113, 113, 0.45);
+      color: #fecaca;
+    }
+
     /* CENTER SUBTITLE SYNC TOAST */
     .sub-sync-toast {
       position: absolute;
@@ -2979,6 +3023,11 @@
       </div>
     </div>
 
+    <!-- SCREENSHOT FEEDBACK TOAST -->
+    <div class="screenshot-toast" id="screenshotToast" aria-live="polite">
+      <span id="screenshotToastText"></span>
+    </div>
+
     <!-- BOTTOM CONTROLS DOCK -->
     <footer class="bottom-bar" id="bottomBar">
       <!-- PROGRESS / SEEK BAR & REMAINING TIME -->
@@ -3564,6 +3613,10 @@
       const seekToast = document.getElementById('seekToast');
       const seekToastIcon = document.getElementById('seekToastIcon');
       const seekToastText = document.getElementById('seekToastText');
+      const screenshotToast = document.getElementById('screenshotToast');
+      const screenshotToastText = document.getElementById('screenshotToastText');
+      let screenshotToastTimer = null;
+      let screenshotInFlight = false;
 
       const progressWrap = document.getElementById('progressWrap');
       const progressBuffer = document.getElementById('progressBuffer');
@@ -4835,6 +4888,32 @@
         }
 
         return null;
+      }
+
+      function showScreenshotToast(msg, isError = false) {
+        if (!screenshotToast || !screenshotToastText) return;
+        screenshotToastText.textContent = msg;
+        screenshotToast.classList.toggle('error', !!isError);
+        screenshotToast.classList.add('visible');
+        clearTimeout(screenshotToastTimer);
+        screenshotToastTimer = setTimeout(() => {
+          screenshotToast.classList.remove('visible');
+        }, isError ? 4200 : 2800);
+      }
+
+      async function captureScreenshot() {
+        if (screenshotInFlight || !currentActiveChannelId) return;
+        screenshotInFlight = true;
+        try {
+          const result = await tauriInvoke('take_embedded_screenshot');
+          const filename = result && result.filename ? result.filename : 'screenshot.png';
+          showScreenshotToast(`Saved screenshot: ${filename}`, false);
+        } catch (err) {
+          const msg = typeof err === 'string' ? err : (err && err.message ? err.message : 'Failed to capture screenshot');
+          showScreenshotToast(msg, true);
+        } finally {
+          screenshotInFlight = false;
+        }
       }
 
       function showTrackError(msg) {
@@ -7494,6 +7573,13 @@
         adjustSubDelay(-0.1);
       });
 
+      tauriListen('screenshot-feedback', (event) => {
+        const payload = event && event.payload;
+        if (payload && payload.message) {
+          showScreenshotToast(payload.message, !!payload.isError);
+        }
+      });
+
       // KEYBOARD SHORTCUTS IN OVERLAY
       document.addEventListener('keydown', (e) => {
         const activeTag = document.activeElement ? document.activeElement.tagName : '';
@@ -7538,6 +7624,15 @@
             tauriInvoke('stop_embedded_poc');
           }
           e.preventDefault();
+          return;
+        }
+
+        if (e.ctrlKey && e.shiftKey && !e.altKey && !e.metaKey && (e.key === 's' || e.key === 'S' || e.code === 'KeyS')) {
+          e.preventDefault();
+          e.stopPropagation();
+          if (!e.repeat) {
+            captureScreenshot();
+          }
           return;
         }
 

@@ -378,6 +378,35 @@
               </div>
             </div>
 
+            <!-- Screenshot Destination -->
+            <div class="setting-item">
+              <div class="setting-meta">
+                <label class="setting-title">Screenshot Destination</label>
+                <p class="setting-hint">Folder where captured video screenshots are saved</p>
+              </div>
+              <div class="setting-control">
+                <div class="modern-path-picker">
+                  <div class="path-display" [title]="settings.screenshot_path || 'Default (~/Pictures/Fred TV)'">
+                    <svg class="path-icon" viewBox="0 0 24 24" fill="currentColor">
+                      <path d="M10 4H4c-1.1 0-1.99.9-1.99 2L2 18c0 1.1.9 2 2 2h16c1.1 0 2-.9 2-2V8c0-1.1-.9-2-2-2h-8l-2-2z" />
+                    </svg>
+                    <span class="path-text">{{ settings.screenshot_path || 'Default (~/Pictures/Fred TV)' }}</span>
+                  </div>
+                  <button type="button" (click)="selectScreenshotFolder()" class="btn-subtle" title="Change screenshot destination">
+                    <span>Browse...</span>
+                  </button>
+                  <button
+                    *ngIf="settings.screenshot_path"
+                    type="button"
+                    (click)="resetScreenshotFolder()"
+                    class="btn-subtle"
+                    title="Reset to default (~/Pictures/Fred TV)">
+                    <span>Reset</span>
+                  </button>
+                </div>
+              </div>
+            </div>
+
             <!-- Always Prompt -->
             <div class="setting-item">
               <div class="setting-meta">

@@ -115,6 +115,7 @@ export class EmbeddedPlayerService implements OnDestroy {
   private boundKeyDownHandler = (e: KeyboardEvent) => this.handleKeyDown(e);
   private keyHandlerAttached: boolean = false;
   private isRestartingPlayer: boolean = false;
+  private screenshotInFlight: boolean = false;
 
   // TV Episode switcher state
   private seriesChannel?: Channel;
@@ -547,8 +548,47 @@ export class EmbeddedPlayerService implements OnDestroy {
     }
   }
 
+  private async captureScreenshot(): Promise<void> {
+    if (this.screenshotInFlight || !this.isPlayingEmbedded) return;
+    this.screenshotInFlight = true;
+    try {
+      const res = await invoke<{ path: string; filename: string }>('take_embedded_screenshot');
+      const filename = res?.filename || 'screenshot.png';
+      emit('screenshot-feedback', {
+        message: `Saved screenshot: ${filename}`,
+        isError: false,
+      }).catch(console.warn);
+    } catch (err: any) {
+      const message =
+        typeof err === 'string'
+          ? err
+          : err?.message || 'Failed to capture screenshot';
+      emit('screenshot-feedback', {
+        message,
+        isError: true,
+      }).catch(console.warn);
+    } finally {
+      this.screenshotInFlight = false;
+    }
+  }
+
   private handleKeyDown(event: KeyboardEvent): void {
     if (!this.isPlayingEmbedded) return;
+
+    if (
+      event.ctrlKey &&
+      event.shiftKey &&
+      !event.altKey &&
+      !event.metaKey &&
+      (event.key === 's' || event.key === 'S' || event.code === 'KeyS')
+    ) {
+      event.preventDefault();
+      event.stopPropagation();
+      if (!event.repeat && !this.screenshotInFlight) {
+        void this.captureScreenshot();
+      }
+      return;
+    }
 
     if (
       event.key === 'Escape' ||

@@ -1,10 +1,11 @@
 use serde::{Deserialize, Serialize};
-use std::sync::atomic::{AtomicU32, AtomicUsize, Ordering};
+use std::collections::{HashMap, HashSet};
+use std::sync::atomic::{AtomicU32, AtomicU64, AtomicUsize, Ordering};
 use std::sync::Arc;
 use tauri::{AppHandle, Emitter, Listener, Manager, State, Window, WebviewWindow};
 use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
 use tokio::process::Child;
-use tokio::sync::{mpsc, Mutex};
+use tokio::sync::{mpsc, oneshot, Mutex};
 
 #[derive(Serialize, Deserialize, Clone, Debug)]
 pub struct PocStreamInfo {
@@ -28,6 +29,12 @@ pub struct PocIpcCommand {
     pub request_id: Option<u64>,
 }
 
+#[derive(Serialize, Clone, Debug)]
+pub struct ScreenshotResult {
+    pub path: String,
+    pub filename: String,
+}
+
 #[derive(Clone)]
 pub struct EmbeddedPocState {
     pub inner: Arc<Mutex<EmbeddedPocInner>>,
@@ -35,6 +42,10 @@ pub struct EmbeddedPocState {
     pub active_hwnd: Arc<AtomicUsize>,
     pub active_overlay_hwnd: Arc<AtomicUsize>,
     pub active_main_hwnd: Arc<AtomicUsize>,
+    pub pending_ipc: Arc<Mutex<HashMap<u64, oneshot::Sender<serde_json::Value>>>>,
+    pub next_request_id: Arc<AtomicU64>,
+    pub screenshot_lock: Arc<Mutex<()>>,
+    pub timed_out_paths: Arc<Mutex<HashSet<String>>>,
 }
 
 pub struct EmbeddedPocInner {
@@ -71,6 +82,58 @@ impl EmbeddedPocState {
             active_hwnd: Arc::new(AtomicUsize::new(0)),
             active_overlay_hwnd: Arc::new(AtomicUsize::new(0)),
             active_main_hwnd: Arc::new(AtomicUsize::new(0)),
+            pending_ipc: Arc::new(Mutex::new(HashMap::new())),
+            next_request_id: Arc::new(AtomicU64::new(100_000)),
+            screenshot_lock: Arc::new(Mutex::new(())),
+            timed_out_paths: Arc::new(Mutex::new(HashSet::new())),
+        }
+    }
+
+    /// Sends an MPV IPC command with a unique Rust-side `request_id` and awaits its response.
+    pub async fn send_ipc_and_wait(
+        &self,
+        command: Vec<serde_json::Value>,
+        timeout: std::time::Duration,
+    ) -> Result<serde_json::Value, String> {
+        // Keep within i64::MAX for mpv's signed integer request_id compatibility.
+        let request_id = self.next_request_id.fetch_add(1, Ordering::SeqCst);
+        let payload = serde_json::json!({
+            "command": command,
+            "request_id": request_id,
+        })
+        .to_string();
+
+        let (tx_waiter, rx_waiter) = oneshot::channel();
+        {
+            let mut pending = self.pending_ipc.lock().await;
+            pending.insert(request_id, tx_waiter);
+        }
+
+        let ipc_tx_opt = {
+            let inner = self.inner.lock().await;
+            inner.ipc_tx.clone()
+        };
+
+        let Some(ipc_tx) = ipc_tx_opt else {
+            self.pending_ipc.lock().await.remove(&request_id);
+            return Err("MPV IPC channel is not connected".to_string());
+        };
+
+        if let Err(e) = ipc_tx.send(payload).await {
+            self.pending_ipc.lock().await.remove(&request_id);
+            return Err(format!("Failed to queue MPV IPC command: {:?}", e));
+        }
+
+        match tokio::time::timeout(timeout, rx_waiter).await {
+            Ok(Ok(val)) => Ok(val),
+            Ok(Err(_)) => {
+                self.pending_ipc.lock().await.remove(&request_id);
+                Err("MPV IPC connection closed while waiting for response".to_string())
+            }
+            Err(_) => {
+                self.pending_ipc.lock().await.remove(&request_id);
+                Err("Timed out waiting for MPV IPC response".to_string())
+            }
         }
     }
 
@@ -1679,6 +1742,7 @@ pub async fn start_embedded_player_internal(
         // Background task: read IPC events from MPV and forward to Angular
         let app_handle = window.app_handle().clone();
         let tx_events = tx.clone();
+        let pending_ipc = Arc::clone(&state.pending_ipc);
         tokio::spawn(async move {
             let mut lines = BufReader::new(reader).lines();
             let mut last_dw: Option<f64> = None;
@@ -1696,9 +1760,20 @@ pub async fn start_embedded_player_internal(
                     last_time_pos_emit = std::time::Instant::now();
                 }
 
+                let parsed_val = serde_json::from_str::<serde_json::Value>(&line).ok();
+                if let Some(ref val) = parsed_val {
+                    if let Some(req_id) = val.get("request_id").and_then(|v| v.as_u64()) {
+                        let waiter_opt = pending_ipc.lock().await.remove(&req_id);
+                        if let Some(tx_waiter) = waiter_opt {
+                            let _ = tx_waiter.send(val.clone());
+                            continue;
+                        }
+                    }
+                }
+
                 let _ = app_handle.emit("embedded-poc-event", &line);
 
-                if let Ok(val) = serde_json::from_str::<serde_json::Value>(&line) {
+                if let Some(val) = parsed_val {
                     if let Some(event_name) = val.get("event").and_then(|v| v.as_str()) {
                         match event_name {
                             "file-loaded" | "playback-restart" | "tracks-changed" => {
@@ -1780,6 +1855,7 @@ pub async fn start_embedded_player_internal(
             }
         }
     }
+    pending_ipc.lock().await.clear();
     let _ = app_handle.emit("embedded-poc-stopped", ());
     crate::auto_refresh::notify_playback_ended(&app_handle);
 });
@@ -2036,6 +2112,126 @@ pub async fn send_embedded_poc_ipc(
     }
 }
 
+fn format_screenshot_title(raw_title: &str) -> String {
+    let sanitized = crate::utils::sanitize(raw_title.to_string());
+    let collapsed: String = sanitized
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join("_");
+    let trimmed = collapsed.trim_matches(|c: char| c == '_' || c == '.');
+    if trimmed.is_empty() {
+        "Fred_TV".to_string()
+    } else {
+        trimmed.to_string()
+    }
+}
+
+fn resolve_screenshot_dir() -> Result<std::path::PathBuf, String> {
+    let custom = crate::settings::get_settings()
+        .ok()
+        .and_then(|s| s.screenshot_path)
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty());
+
+    let dir = match custom {
+        Some(path_str) => {
+            let p = std::path::PathBuf::from(&path_str);
+            if p.exists() && !p.is_dir() {
+                return Err(format!("Screenshot path '{}' is not a directory", path_str));
+            }
+            std::fs::create_dir_all(&p)
+                .map_err(|e| format!("Failed to access screenshot directory '{}': {}", path_str, e))?;
+            p
+        }
+        None => crate::settings::get_default_screenshot_path().map_err(|e| e.to_string())?,
+    };
+
+    Ok(dir)
+}
+
+#[tauri::command]
+pub async fn take_embedded_screenshot(
+    state: State<'_, EmbeddedPocState>,
+) -> Result<ScreenshotResult, String> {
+    // Serialize simultaneous screenshot requests so filename resolution and writes never race.
+    let _screenshot_guard = state.screenshot_lock.lock().await;
+
+    let stream_name = {
+        let inner = state.inner.lock().await;
+        if inner.ipc_tx.is_none() {
+            return Err("No active video playback".to_string());
+        }
+        inner
+            .stream_info
+            .as_ref()
+            .map(|s| s.name.clone())
+            .unwrap_or_default()
+    };
+
+    let dir = resolve_screenshot_dir()?;
+    let title = format_screenshot_title(&stream_name);
+    let timestamp = chrono::Local::now().format("%Y-%m-%d_%H-%M-%S").to_string();
+    let base_stem = format!("{}_{}", title, timestamp);
+
+    let timed_out = state.timed_out_paths.lock().await;
+    let mut counter: u32 = 0;
+    let (target_path, filename) = loop {
+        let candidate_name = if counter == 0 {
+            format!("{}.png", base_stem)
+        } else {
+            format!("{}_{}.png", base_stem, counter)
+        };
+        let candidate_path = dir.join(&candidate_name);
+        let candidate_str = candidate_path.to_string_lossy().to_string();
+        if !candidate_path.exists() && !timed_out.contains(&candidate_str) {
+            break (candidate_path, candidate_name);
+        }
+        counter = counter
+            .checked_add(1)
+            .ok_or_else(|| "Could not find a unique screenshot filename".to_string())?;
+    };
+    drop(timed_out);
+
+    let target_path_str = target_path.to_string_lossy().to_string();
+    let cmd = vec![
+        serde_json::json!("screenshot-to-file"),
+        serde_json::json!(target_path_str),
+        serde_json::json!("video"),
+    ];
+
+    let resp = match state
+        .send_ipc_and_wait(cmd, std::time::Duration::from_secs(10))
+        .await
+    {
+        Ok(val) => val,
+        Err(err) => {
+            if err.contains("Timed out") {
+                state.timed_out_paths.lock().await.insert(target_path_str);
+            }
+            return Err(err);
+        }
+    };
+
+    let ipc_error = resp
+        .get("error")
+        .and_then(|v| v.as_str())
+        .unwrap_or("unknown error");
+    if ipc_error != "success" {
+        return Err(format!("Screenshot failed: {}", ipc_error));
+    }
+
+    let meta = std::fs::metadata(&target_path)
+        .map_err(|e| format!("Screenshot file could not be verified: {}", e))?;
+    if !meta.is_file() || meta.len() == 0 {
+        return Err("Screenshot file was not created or is empty".to_string());
+    }
+
+    Ok(ScreenshotResult {
+        path: target_path_str,
+        filename,
+    })
+}
+
 #[tauri::command]
 pub async fn stop_embedded_poc(
     state: State<'_, EmbeddedPocState>,
@@ -2055,6 +2251,8 @@ pub async fn stop_embedded_poc_internal(state: &EmbeddedPocState) {
             win32::ShowWindow(overlay_hwnd as win32::HWND, win32::SW_HIDE);
         }
     }
+
+    state.pending_ipc.lock().await.clear();
 
     let (child_opt, child_pid, hwnd_opt, app_opt) = {
         let mut inner = state.inner.lock().await;

@@ -18,6 +18,7 @@ pub const DEFAULT_SORT: &str = "defaultSort";
 pub const ENABLE_HWDEC: &str = "enableHWDEC";
 pub const ALWAYS_ASK_SAVE: &str = "alwaysAskSave";
 pub const ENABLE_GPU: &str = "enableGPU";
+pub const SCREENSHOT_PATH: &str = "screenshotPath";
 
 pub fn get_settings() -> Result<Settings> {
     let map = sql::get_settings()?;
@@ -39,6 +40,7 @@ pub fn get_settings() -> Result<Settings> {
         enable_hwdec: map.get(ENABLE_HWDEC).and_then(|s| s.parse().ok()),
         always_ask_save: map.get(ALWAYS_ASK_SAVE).and_then(|s| s.parse().ok()),
         enable_gpu: map.get(ENABLE_GPU).and_then(|s| s.parse().ok()),
+        screenshot_path: map.get(SCREENSHOT_PATH).map(|s| s.to_string()),
     };
     Ok(settings)
 }
@@ -90,6 +92,10 @@ pub fn update_settings(settings: Settings) -> Result<()> {
     if let Some(gpu) = settings.enable_gpu {
         map.insert(ENABLE_GPU.to_string(), Some(gpu.to_string()));
     }
+    map.insert(
+        SCREENSHOT_PATH.to_string(),
+        settings.screenshot_path.filter(|s| !s.trim().is_empty()),
+    );
     sql::update_settings(map)?;
     Ok(())
 }
@@ -103,4 +109,16 @@ pub fn get_default_record_path() -> Result<String> {
     path.push("open-tv");
     std::fs::create_dir_all(&path)?;
     Ok(path.to_string_lossy().to_string())
+}
+
+pub fn get_default_screenshot_path() -> Result<std::path::PathBuf> {
+    let user_dirs = UserDirs::new().context("Failed to get user dirs")?;
+    let base = user_dirs
+        .picture_dir()
+        .or_else(|| user_dirs.video_dir())
+        .context("No Pictures directory found; please set a screenshot path in Settings")?;
+    let path = base.join("Fred TV");
+    std::fs::create_dir_all(&path)
+        .with_context(|| format!("Failed to create screenshot directory '{}'", path.display()))?;
+    Ok(path)
 }

@@ -438,6 +438,23 @@ export class SettingsComponent {
     }
   }
 
+  async selectScreenshotFolder() {
+    const folder = await open({
+      multiple: false,
+      directory: true,
+      canCreateDirectories: true,
+    });
+    if (folder) {
+      this.settings.screenshot_path = folder;
+      await this.updateSettings();
+    }
+  }
+
+  async resetScreenshotFolder() {
+    this.settings.screenshot_path = undefined;
+    await this.updateSettings();
+  }
+
   async nuke() {
     this.memory.ModalRef = this.modal.open(ConfirmDeleteModalComponent, {
       backdrop: "static",

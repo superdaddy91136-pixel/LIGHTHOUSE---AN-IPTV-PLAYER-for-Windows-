@@ -123,6 +123,7 @@ pub fn run() {
             embedded_poc::get_saved_external_subtitles,
             embedded_poc::remove_external_subtitle,
             embedded_poc::fetch_playback_segments,
+            embedded_poc::take_embedded_screenshot,
             get_source_refresh_status,
             get_all_source_refresh_statuses,
             trigger_auto_refresh_check
