@@ -76,8 +76,8 @@
 
 .profile-pill-btn.active {
   color: #fff;
-  background: rgba(255, 255, 255, 0.14);
-  border-color: rgba(255, 255, 255, 0.16);
+  background: var(--lh-accent-soft, rgba(255, 77, 109, 0.14));
+  border-color: var(--lh-accent-border, rgba(255, 77, 109, 0.45));
   box-shadow: 0 4px 14px rgba(0, 0, 0, 0.25);
 }
 
@@ -120,8 +120,8 @@
 
 .fav-search-input:focus {
   background: rgba(255, 255, 255, 0.1);
-  border-color: rgba(255, 255, 255, 0.4);
-  box-shadow: 0 0 0 3px rgba(255, 255, 255, 0.1);
+  border-color: var(--lh-accent-border, rgba(255, 77, 109, 0.45));
+  box-shadow: 0 0 0 3px var(--lh-accent-soft, rgba(255, 77, 109, 0.14));
   color: #fff;
 }
 
@@ -136,7 +136,7 @@
 
 .fav-filter-btn {
   background: transparent;
-  border: none;
+  border: 1px solid transparent;
   color: rgba(255, 255, 255, 0.6);
   padding: 5px 12px;
   border-radius: 9px;
@@ -151,7 +151,8 @@
 }
 
 .fav-filter-btn.active {
-  background: rgba(255, 255, 255, 0.15);
+  background: var(--lh-accent-soft, rgba(255, 77, 109, 0.14));
+  border-color: var(--lh-accent-border, rgba(255, 77, 109, 0.45));
   color: #fff;
   font-weight: 600;
 }

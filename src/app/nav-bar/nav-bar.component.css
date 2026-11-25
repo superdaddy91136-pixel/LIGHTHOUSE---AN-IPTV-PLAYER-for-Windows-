@@ -63,7 +63,7 @@
 }
 
 .nav-tab-btn.active {
-  color: #ff5b7c;
+  color: var(--lh-accent, #ff5b7c);
   background: transparent;
   border: none;
   box-shadow: none;
@@ -74,7 +74,7 @@
 }
 
 .nav-tab-btn.active .tab-icon {
-  color: #ff5b7c;
+  color: var(--lh-accent, #ff5b7c);
 }
 
 .tab-icon {

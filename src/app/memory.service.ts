@@ -66,7 +66,6 @@ export class MemoryService {
   public Watched_epgs: Set<string> = new Set();
   public LoadingNotification: boolean = false;
   public AppVersion?: string;
-  public trayEnabled?: boolean;
 
   getCatalogPage(key: string): { channels: Channel[]; reachedMax: boolean } | undefined {
     const cached = this.catalogPageCache.get(key);

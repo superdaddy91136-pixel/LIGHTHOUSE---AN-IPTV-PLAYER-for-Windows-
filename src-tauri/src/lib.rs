@@ -52,6 +52,10 @@ pub fn run() {
             play,
             get_settings,
             update_settings,
+            set_remembered_volume,
+            export_settings_backup,
+            import_settings_backup,
+            get_storage_stats,
             search,
             cancel_search,
             bulk_update,
@@ -136,10 +140,16 @@ pub fn run() {
             let auto_refresh_coord = auto_refresh::start_auto_refresh_coordinator(app.handle().clone());
             app.manage(auto_refresh_coord);
             if let Some(window) = app.get_webview_window("main") {
+                let remember_win = settings::get_settings()
+                    .ok()
+                    .and_then(|s| s.remember_window_state)
+                    .unwrap_or(true);
+                if remember_win {
+                    restore_main_window_state(&window);
+                } else {
+                    let _ = settings::clear_window_state();
+                }
                 let _ = window.show();
-            }
-            if let Ok(conn) = crate::sql::get_conn() {
-                let _ = conn.execute("DELETE FROM settings WHERE key = 'main_window_state'", rusqlite::params![]);
             }
             embedded_poc::init_overlay_window(app.handle());
             Ok(())
@@ -156,6 +166,8 @@ pub fn run() {
                 if let Some(state) = window.try_state::<embedded_poc::EmbeddedPocState>() {
                     state.stop_sync();
                 }
+
+                persist_and_cleanup_on_exit(window.app_handle());
 
                 if let Some(overlay) = window.app_handle().get_webview_window("player-overlay") {
                     let _ = overlay.destroy();
@@ -249,6 +261,7 @@ pub fn run() {
                 if let Some(state) = app.try_state::<embedded_poc::EmbeddedPocState>() {
                     state.stop_sync();
                 }
+                persist_and_cleanup_on_exit(app);
                 if let Some(overlay) = app.get_webview_window("player-overlay") {
                     let _ = overlay.destroy();
                 }
@@ -291,6 +304,21 @@ fn get_settings() -> Result<Settings, String> {
 #[tauri::command(async)]
 fn update_settings(settings: Settings) -> Result<(), String> {
     settings::update_settings(settings).map_err(map_err_frontend)
+}
+
+#[tauri::command(async)]
+fn set_remembered_volume(volume: u8) -> Result<bool, String> {
+    settings::set_remembered_volume(volume).map_err(map_err_frontend)
+}
+
+#[tauri::command(async)]
+fn export_settings_backup(path: String, startup_page: Option<String>) -> Result<usize, String> {
+    settings::export_settings_backup(path, startup_page).map_err(map_err_frontend)
+}
+
+#[tauri::command(async)]
+fn import_settings_backup(path: String) -> Result<types::BackupRestoreSummary, String> {
+    settings::import_settings_backup(path).map_err(map_err_frontend)
 }
 
 #[tauri::command(async)]
@@ -667,4 +695,86 @@ fn get_adjacent_live_channel(
 ) -> Result<Option<Channel>, String> {
     sql::get_adjacent_live_channel(source_ids, group_id, current_channel_id, delta)
         .map_err(map_err_frontend)
+}
+
+#[tauri::command(async)]
+fn get_storage_stats() -> Result<types::StorageStats, String> {
+    settings::get_storage_stats().map_err(map_err_frontend)
+}
+
+fn restore_main_window_state(window: &tauri::WebviewWindow) {
+    let Some(saved) = settings::get_window_state() else {
+        return;
+    };
+    if saved.width < 600 || saved.height < 400 || saved.width > 7680 || saved.height > 4320 {
+        return;
+    }
+
+    let is_on_monitor = window
+        .available_monitors()
+        .ok()
+        .map(|monitors| {
+            monitors.iter().any(|m| {
+                let pos = m.position();
+                let size = m.size();
+                let right = pos.x + size.width as i32;
+                let bottom = pos.y + size.height as i32;
+                saved.x + (saved.width as i32) > pos.x + 40
+                    && saved.x < right - 40
+                    && saved.y + (saved.height as i32) > pos.y + 40
+                    && saved.y < bottom - 40
+            })
+        })
+        .unwrap_or(false);
+
+    let _ = window.set_size(tauri::PhysicalSize::new(saved.width, saved.height));
+    if is_on_monitor {
+        let _ = window.set_position(tauri::PhysicalPosition::new(saved.x, saved.y));
+    }
+    if saved.maximized {
+        let _ = window.maximize();
+    }
+}
+
+fn persist_and_cleanup_on_exit(app: &AppHandle) {
+    static CLEANED_ON_EXIT: std::sync::atomic::AtomicBool =
+        std::sync::atomic::AtomicBool::new(false);
+
+    let app_settings = settings::get_settings().ok();
+    let remember_win = app_settings
+        .as_ref()
+        .and_then(|s| s.remember_window_state)
+        .unwrap_or(true);
+
+    if remember_win {
+        if let Some(win) = app.get_webview_window("main") {
+            let is_fs = win.is_fullscreen().unwrap_or(false);
+            let is_min = win.is_minimized().unwrap_or(false);
+            if !is_fs && !is_min {
+                let maximized = win.is_maximized().unwrap_or(false);
+                if let (Ok(pos), Ok(size)) = (win.outer_position(), win.outer_size()) {
+                    if size.width >= 600 && size.height >= 400 {
+                        let state = types::WindowBoundsState {
+                            x: pos.x,
+                            y: pos.y,
+                            width: size.width,
+                            height: size.height,
+                            maximized,
+                        };
+                        let _ = settings::save_window_state(&state);
+                    }
+                }
+            }
+        }
+    }
+
+    if !CLEANED_ON_EXIT.swap(true, std::sync::atomic::Ordering::SeqCst) {
+        if app_settings
+            .as_ref()
+            .and_then(|s| s.clear_history_on_exit)
+            == Some(true)
+        {
+            let _ = sql::clear_history();
+        }
+    }
 }

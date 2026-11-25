@@ -4,8 +4,8 @@ use std::{collections::HashMap, sync::LazyLock};
 use crate::log::log;
 use crate::sort_type;
 use crate::types::{
-    ChannelPreserve, CustomChannel, CustomChannelExtraData, EPGNotify, ExportedGroup, Group,
-    IdName, Season,
+    ChannelPreserve, CustomChannel, CustomChannelExtraData, EPGNotify, ExportedGroup,
+    FavoriteMapping, Group, IdName, Season,
 };
 use crate::{
     media_type, source_type,
@@ -75,6 +75,10 @@ fn create_connection_pool() -> Pool<SqliteConnectionManager> {
             )
         });
     r2d2::Pool::builder().max_size(20).build(manager).unwrap()
+}
+
+pub fn get_sqlite_db_path() -> String {
+    get_and_create_sqlite_db_path()
 }
 
 fn get_and_create_sqlite_db_path() -> String {
@@ -540,6 +544,61 @@ pub fn update_settings(map: HashMap<String, Option<String>>) -> Result<()> {
     }
     tx.commit()?;
     Ok(())
+}
+
+pub fn get_setting_value(key: &str) -> Result<Option<String>> {
+    let sql = get_conn()?;
+    let val = sql
+        .query_row(
+            "SELECT value FROM Settings WHERE key = ?1 LIMIT 1",
+            params![key],
+            |row| row.get::<_, Option<String>>(0),
+        )
+        .optional()?
+        .flatten();
+    Ok(val)
+}
+
+pub fn set_setting_value(key: &str, value: Option<String>) -> Result<()> {
+    let sql = get_conn()?;
+    sql.execute(
+        r#"
+        INSERT INTO Settings (key, value)
+        VALUES (?1, ?2)
+        ON CONFLICT(key) DO UPDATE SET value = ?2
+        "#,
+        params![key, value],
+    )?;
+    Ok(())
+}
+
+pub fn get_storage_counts() -> Result<(u64, u64, u64)> {
+    let sql = get_conn()?;
+    let history_count: i64 = sql.query_row(
+        "SELECT COUNT(1) FROM channels WHERE last_watched IS NOT NULL",
+        [],
+        |row| row.get(0),
+    )?;
+    let hidden_channels: i64 = sql.query_row(
+        "SELECT COUNT(1) FROM channels WHERE hidden = 1",
+        [],
+        |row| row.get(0),
+    )?;
+    let hidden_groups: i64 = sql.query_row(
+        "SELECT COUNT(1) FROM groups WHERE hidden = 1",
+        [],
+        |row| row.get(0),
+    )?;
+    let favorites_count: i64 = sql.query_row(
+        "SELECT COUNT(1) FROM channels WHERE favorite = 1",
+        [],
+        |row| row.get(0),
+    )?;
+    Ok((
+        history_count.max(0) as u64,
+        (hidden_channels + hidden_groups).max(0) as u64,
+        favorites_count.max(0) as u64,
+    ))
 }
 
 pub fn search(filters: Filters) -> Result<Vec<Channel>> {
@@ -2094,6 +2153,79 @@ pub fn restore_preserve(
         }
     }
     Ok(())
+}
+
+/// Returns credential-free favorite mappings for a single source.
+pub fn get_favorite_mappings(tx: &Transaction, source_id: i64) -> Result<Vec<FavoriteMapping>> {
+    let items: Vec<FavoriteMapping> = tx
+        .prepare(
+            r#"
+              SELECT name, media_type, stream_id, series_id, season_id, episode_num, favorite_added
+              FROM channels
+              WHERE favorite = 1 AND source_id = ?
+            "#,
+        )?
+        .query_map(params![source_id], |row| {
+            Ok(FavoriteMapping {
+                name: row.get("name")?,
+                media_type: row.get("media_type")?,
+                stream_id: row.get("stream_id")?,
+                series_id: row.get("series_id")?,
+                season_id: row.get("season_id")?,
+                episode_num: row.get("episode_num")?,
+                favorite_added: row.get("favorite_added")?,
+            })
+        })?
+        .filter_map(Result::ok)
+        .collect();
+    Ok(items)
+}
+
+/// Restores favorite flags additively for matching channels in a source.
+pub fn restore_favorite_mappings(
+    tx: &Transaction,
+    source_id: i64,
+    mappings: &[FavoriteMapping],
+) -> Result<usize> {
+    if mappings.is_empty() {
+        return Ok(0);
+    }
+    let mut update_by_stream_id_stmt = tx.prepare_cached(
+        "UPDATE channels SET favorite = 1, favorite_added = COALESCE(favorite_added, ?)
+         WHERE source_id = ? AND stream_id = ?",
+    )?;
+    let mut update_by_name_stmt = tx.prepare_cached(
+        "UPDATE channels SET favorite = 1, favorite_added = COALESCE(favorite_added, ?)
+         WHERE source_id = ? AND name = ? AND media_type = ?
+           AND series_id IS ? AND season_id IS ? AND episode_num IS ?",
+    )?;
+
+    let mut restored = 0usize;
+    for item in mappings {
+        let mut rows = 0usize;
+        if let Some(stream_id) = item.stream_id {
+            rows = update_by_stream_id_stmt.execute(params![
+                item.favorite_added,
+                source_id,
+                stream_id,
+            ])?;
+        }
+        if rows == 0 {
+            rows = update_by_name_stmt.execute(params![
+                item.favorite_added,
+                source_id,
+                item.name,
+                item.media_type,
+                item.series_id,
+                item.season_id,
+                item.episode_num,
+            ])?;
+        }
+        if rows > 0 {
+            restored += rows;
+        }
+    }
+    Ok(restored)
 }
 
 pub fn analyze(tx: &Transaction) -> Result<()> {

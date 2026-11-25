@@ -5,14 +5,26 @@
   <title></title>
   <style>
     :root {
+      color-scheme: dark;
       --top-crop: 32px;
-      --netflix-red: #e50914;
-      --netflix-red-hover: #f40612;
-      --netflix-red-glow: rgba(229, 9, 20, 0.45);
+      --lh-accent: #e50914;
+      --lh-accent-hover: #f40612;
+      --lh-accent-rgb: 229, 9, 20;
+      --lh-accent-glow: rgba(229, 9, 20, 0.45);
+      --lh-accent-soft: rgba(229, 9, 20, 0.20);
+      --lh-accent-border: rgba(229, 9, 20, 0.55);
+      --lh-accent-contrast: #ffffff;
       --text-primary: #ffffff;
       --text-secondary: #b3b3b3;
       --bg-panel: rgba(255, 255, 255, 0.10);
       --border-subtle: rgba(255, 255, 255, 0.26);
+      accent-color: var(--lh-accent);
+      caret-color: var(--lh-accent);
+    }
+
+    ::selection {
+      background: rgba(var(--lh-accent-rgb), 0.32);
+      color: #ffffff;
     }
 
     *, *::before, *::after {
@@ -167,9 +179,9 @@
     }
 
     .btn-top-action.active {
-      color: var(--netflix-red);
-      background: rgba(229, 9, 20, 0.25);
-      border-color: var(--netflix-red);
+      color: var(--lh-accent);
+      background: var(--lh-accent-soft);
+      border-color: var(--lh-accent);
     }
 
     .btn-close:hover {
@@ -535,9 +547,9 @@
       left: 0;
       height: 100%;
       width: 0%;
-      background: var(--netflix-red);
+      background: #e50914;
       border-radius: 2px;
-      box-shadow: 0 0 10px var(--netflix-red-glow);
+      box-shadow: 0 0 10px rgba(229, 9, 20, 0.45);
       pointer-events: none;
       z-index: 2;
     }
@@ -549,7 +561,7 @@
       width: 14px;
       height: 14px;
       border-radius: 50%;
-      background: var(--netflix-red);
+      background: #e50914;
       border: 2px solid #ffffff;
       box-shadow: 0 0 10px rgba(0, 0, 0, 0.8);
       transform: translate(-50%, -50%) scale(0);
@@ -641,7 +653,7 @@
     }
 
     .ctrl-btn:focus-visible {
-      outline: 2px solid rgba(255, 255, 255, 0.45);
+      outline: 2px solid var(--lh-accent-border);
       outline-offset: 2px;
     }
 
@@ -786,9 +798,9 @@
       left: 0;
       width: 100%;
       height: 100%;
-      background: linear-gradient(to top, #e50914, #ff3b30);
+      background: linear-gradient(to top, var(--lh-accent), var(--lh-accent-hover));
       border-radius: 3px;
-      box-shadow: 0 0 6px rgba(229, 9, 20, 0.6);
+      box-shadow: 0 0 6px rgba(var(--lh-accent-rgb), 0.6);
       pointer-events: none;
     }
 
@@ -800,8 +812,8 @@
       height: 14px;
       border-radius: 50%;
       background: #ffffff;
-      border: 3px solid #e50914;
-      box-shadow: 0 2px 6px rgba(0, 0, 0, 0.7), 0 0 6px rgba(229, 9, 20, 0.5);
+      border: 3px solid var(--lh-accent);
+      box-shadow: 0 2px 6px rgba(0, 0, 0, 0.7), 0 0 6px rgba(var(--lh-accent-rgb), 0.5);
       transform: translate(-50%, 50%);
       pointer-events: none;
       transition: transform 0.1s ease;
@@ -949,8 +961,8 @@
       text-transform: uppercase;
       padding: 2px 6px;
       border-radius: 4px;
-      background: rgba(229, 9, 20, 0.88);
-      color: #ffffff;
+      background: rgba(var(--lh-accent-rgb), 0.88);
+      color: var(--lh-accent-contrast);
       box-shadow: 0 2px 6px rgba(0, 0, 0, 0.45);
     }
 
@@ -1000,8 +1012,8 @@
       right: 2px;
       padding: 1px 4px;
       border-radius: 6px;
-      background: var(--netflix-red);
-      color: #ffffff;
+      background: var(--lh-accent);
+      color: var(--lh-accent-contrast);
       font-size: 9.5px;
       font-weight: 800;
       line-height: 1.2;
@@ -1088,9 +1100,9 @@
     .speed-opt.selected {
       color: #ffffff;
       font-weight: 700;
-      background: rgba(229, 9, 20, 0.22);
-      border-color: rgba(229, 9, 20, 0.55);
-      box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.18), 0 2px 8px rgba(229, 9, 20, 0.25);
+      background: var(--lh-accent-soft);
+      border-color: var(--lh-accent-border);
+      box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.18), 0 2px 8px var(--lh-accent-glow);
     }
 
     .speed-opt.selected::after {
@@ -1098,8 +1110,8 @@
       width: 6px;
       height: 6px;
       border-radius: 50%;
-      background: #ff3b30;
-      box-shadow: 0 0 6px #ff3b30;
+      background: var(--lh-accent);
+      box-shadow: 0 0 6px var(--lh-accent);
       flex-shrink: 0;
     }
 
@@ -1112,7 +1124,7 @@
       border-radius: 9999px;
       background: rgba(229, 9, 20, 0.22);
       border: 1px solid rgba(229, 9, 20, 0.7);
-      color: var(--netflix-red);
+      color: #e50914;
       font-size: 11px;
       font-weight: 800;
       letter-spacing: 0.08em;
@@ -1125,8 +1137,8 @@
       width: 7px;
       height: 7px;
       border-radius: 50%;
-      background: var(--netflix-red);
-      box-shadow: 0 0 8px var(--netflix-red);
+      background: #e50914;
+      box-shadow: 0 0 8px #e50914;
       animation: livePulse 2s infinite ease-in-out;
     }
 
@@ -1380,9 +1392,9 @@
 
     .subtitle-sync-toggle-btn.active {
       color: #ffffff;
-      background: rgba(229, 9, 20, 0.25);
-      border-color: rgba(229, 9, 20, 0.6);
-      box-shadow: 0 1px 4px rgba(229, 9, 20, 0.25);
+      background: var(--lh-accent-soft);
+      border-color: var(--lh-accent-border);
+      box-shadow: 0 1px 4px var(--lh-accent-glow);
     }
 
     .subtitle-sync-panel {
@@ -1502,8 +1514,8 @@
 
     .sub-sync-adj-btn:active {
       transform: translateY(0);
-      background: rgba(229, 9, 20, 0.3);
-      border-color: rgba(229, 9, 20, 0.6);
+      background: var(--lh-accent-soft);
+      border-color: var(--lh-accent-border);
     }
 
     .subtitle-add-btn {
@@ -1587,16 +1599,16 @@
     }
 
     .track-option.selected {
-      background: var(--rowFocusFill);
-      border: 1px solid var(--rowFocusBorder);
+      background: var(--lh-accent-soft);
+      border: 1px solid var(--lh-accent-border);
       box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.10);
       outline: none;
       font-weight: 400;
     }
 
     .track-option:focus-visible {
-      background: var(--rowFocusFill);
-      border: 1px solid rgba(255, 255, 255, 0.24);
+      background: var(--lh-accent-soft);
+      border: 1px solid var(--lh-accent-border);
       box-shadow: none;
       outline: none;
       font-weight: 400;
@@ -1647,6 +1659,7 @@
 
     .track-option.selected .track-check {
       opacity: 1;
+      color: var(--lh-accent);
     }
 
     .track-actions-group {
@@ -1760,7 +1773,7 @@
       width: 100%;
       height: 4px;
       margin: 0;
-      accent-color: #ff3b30;
+      accent-color: var(--lh-accent);
       cursor: pointer;
     }
 
@@ -1883,8 +1896,8 @@
     }
 
     .season-dropdown-btn:focus-visible {
-      border-color: rgba(255, 255, 255, 0.5);
-      box-shadow: 0 0 0 2px rgba(229, 9, 20, 0.45);
+      border-color: var(--lh-accent-border);
+      box-shadow: 0 0 0 2px var(--lh-accent-glow);
     }
 
     .season-dropdown-label {
@@ -1980,7 +1993,7 @@
 
     .season-menu-item > svg {
       flex-shrink: 0;
-      color: #ffffff;
+      color: var(--lh-accent);
     }
 
     .season-menu-item:hover {
@@ -1989,8 +2002,8 @@
     }
 
     .season-menu-item.active {
-      background: rgba(229, 9, 20, 0.22);
-      border-color: rgba(229, 9, 20, 0.5);
+      background: var(--lh-accent-soft);
+      border-color: var(--lh-accent-border);
       font-weight: 700;
       color: #ffffff;
     }
@@ -2037,7 +2050,7 @@
     }
 
     .drawer-search-input:focus {
-      border-color: var(--netflix-red);
+      border-color: var(--lh-accent);
     }
 
     .drawer-search-input::placeholder {
@@ -2092,8 +2105,9 @@
     }
 
     .episode-card.current {
-      border-color: var(--netflix-red);
-      background: rgba(229, 9, 20, 0.15);
+      border-color: var(--lh-accent);
+      background: var(--lh-accent-soft);
+      box-shadow: 0 0 12px var(--lh-accent-glow);
     }
 
     .ep-thumb-box {
@@ -2165,15 +2179,14 @@
     }
 
     .ep-playing-badge {
-      background: var(--netflix-red);
-      color: #ffffff;
+      background: var(--lh-accent);
+      color: var(--lh-accent-contrast);
       font-size: 10px;
       font-weight: 800;
       padding: 2px 6px;
       border-radius: 3px;
       letter-spacing: 0.04em;
       text-transform: uppercase;
-      text-shadow: 0 1px 2px rgba(0, 0, 0, 0.8);
     }
 
     .ep-watched-label {
@@ -2350,15 +2363,16 @@
 
     .folder-item.kb-focused,
     .folder-item:focus-visible {
-      background: rgba(255, 255, 255, 0.10);
-      border-color: rgba(255, 255, 255, 0.18);
+      background: var(--lh-accent-soft);
+      border-color: var(--lh-accent-border);
       color: #ffffff;
       outline: none;
     }
 
     .folder-item.active {
-      background: rgba(229, 9, 20, 0.2);
-      border-color: rgba(229, 9, 20, 0.5);
+      background: var(--lh-accent-soft);
+      border-color: var(--lh-accent-border);
+      box-shadow: 0 0 10px var(--lh-accent-glow);
       color: #ffffff;
       font-weight: 600;
     }
@@ -2370,7 +2384,7 @@
 
     .folder-item.active .folder-icon {
       opacity: 1;
-      color: var(--netflix-red);
+      color: var(--lh-accent);
     }
 
     .folder-name {
@@ -2412,14 +2426,15 @@
 
     .channel-row.kb-focused,
     .channel-row:focus-visible {
-      background: rgba(255, 255, 255, 0.14);
-      border-color: rgba(255, 255, 255, 0.28);
+      background: var(--lh-accent-soft);
+      border-color: var(--lh-accent-border);
       outline: none;
     }
 
     .channel-row.current {
-      border-color: var(--netflix-red);
-      background: rgba(229, 9, 20, 0.2);
+      border-color: var(--lh-accent);
+      background: var(--lh-accent-soft);
+      box-shadow: 0 0 12px var(--lh-accent-glow);
     }
 
     .ch-logo-box {
@@ -2475,9 +2490,9 @@
       display: flex;
       align-items: center;
       gap: 4px;
-      background: rgba(229, 9, 20, 0.2);
-      border: 1px solid rgba(229, 9, 20, 0.6);
-      color: var(--netflix-red);
+      background: rgba(229, 9, 20, 0.22);
+      border: 1px solid rgba(229, 9, 20, 0.7);
+      color: #e50914;
       font-size: 10px;
       font-weight: 800;
       padding: 2px 6px;
@@ -2549,7 +2564,7 @@
     }
 
     .nerd-title-group svg {
-      color: #ff3b30;
+      color: var(--lh-accent);
     }
 
     .nerd-close-btn {
@@ -2617,7 +2632,7 @@
     }
 
     .nerd-value.highlight {
-      color: #38bdf8;
+      color: var(--lh-accent);
       font-weight: 700;
     }
 
@@ -2698,15 +2713,15 @@
     }
 
     .skip-segment-btn.contextual-selected {
-      outline: 2px solid rgba(255, 255, 255, 0.65);
+      outline: 2px solid var(--lh-accent);
       outline-offset: 2px;
-      box-shadow: 0 8px 24px rgba(0, 0, 0, 0.6), 0 0 0 1px rgba(255, 255, 255, 0.15);
+      box-shadow: 0 8px 24px rgba(0, 0, 0, 0.6), 0 0 0 1px rgba(var(--lh-accent-rgb), 0.3);
     }
 
     .up-next-btn-play.contextual-selected {
-      outline: 2px solid rgba(255, 255, 255, 0.65);
+      outline: 2px solid var(--lh-accent);
       outline-offset: 2px;
-      box-shadow: 0 0 0 1px rgba(255, 255, 255, 0.15);
+      box-shadow: 0 0 0 1px rgba(var(--lh-accent-rgb), 0.3);
     }
 
     .up-next-card:not([style*="display: none"]) ~ .skip-segment-btn,
@@ -2773,9 +2788,9 @@
       text-transform: uppercase;
       padding: 2px 7px;
       border-radius: 4px;
-      background: rgba(229, 9, 20, 0.2);
-      border: 1px solid rgba(229, 9, 20, 0.5);
-      color: #ff5252;
+      background: var(--lh-accent-soft);
+      border: 1px solid var(--lh-accent-border);
+      color: var(--lh-accent-hover);
       flex-shrink: 0;
     }
 
@@ -2995,8 +3010,8 @@
 
     .movie-rec-item.selected {
       opacity: 1;
-      border-color: #e50914;
-      box-shadow: 0 0 12px rgba(229, 9, 20, 0.6);
+      border-color: var(--lh-accent);
+      box-shadow: 0 0 12px var(--lh-accent-glow);
       transform: translateY(-2px);
     }
 
@@ -3614,6 +3629,8 @@
       let hideTimer = null;
       let hudTimer = null;
       let volumeHudTimer = null;
+      let volumeSaveTimer = null;
+      let pendingVolumeSave = null;
       let suppressHudUntil = Date.now() + 1500;
       let seekToastTimer = null;
       let subSyncToastTimer = null;
@@ -3718,6 +3735,9 @@
       const screenshotToastText = document.getElementById('screenshotToastText');
       let screenshotToastTimer = null;
       let screenshotInFlight = false;
+      let isLiveReconnecting = false;
+      let isLiveFailedIdle = false;
+      let isReconnectToastActive = false;
 
       const progressWrap = document.getElementById('progressWrap');
       const progressBuffer = document.getElementById('progressBuffer');
@@ -4316,6 +4336,23 @@
         volumeHudTimer = setTimeout(() => volumeHud.classList.remove('visible'), 1500);
       }
 
+      function flushSaveVolume() {
+        clearTimeout(volumeSaveTimer);
+        volumeSaveTimer = null;
+        if (pendingVolumeSave == null) return;
+        const vol = pendingVolumeSave;
+        pendingVolumeSave = null;
+        tauriEmit('save-player-volume', { volume: vol });
+      }
+
+      function scheduleSaveVolume(vol) {
+        pendingVolumeSave = Math.min(100, Math.max(0, Math.round(vol)));
+        clearTimeout(volumeSaveTimer);
+        volumeSaveTimer = setTimeout(() => {
+          flushSaveVolume();
+        }, 600);
+      }
+
       function applyVolumeChange(newVolume, source) {
         const clamped = Math.min(100, Math.max(0, Math.round(newVolume)));
         currentVolume = clamped;
@@ -4334,6 +4371,7 @@
         if (source !== 'mpv') {
           suppressHudUntil = Date.now() + 800;
           sendMpv(['set_property', 'volume', currentVolume]);
+          scheduleSaveVolume(currentVolume);
         }
       }
 
@@ -4885,6 +4923,90 @@
 
       const PREFERRED_SUBTITLE_LANG_STORAGE_KEY = 'fred_tv_preferred_subtitle_lang';
       let hasAppliedSubPreferenceForCurrentMedia = false;
+      let hasAppliedAudioPreferenceForCurrentMedia = false;
+      let defaultAudioLangPref = '';
+      let defaultSubtitleLangPref = '';
+      const DEFAULT_OVERLAY_KEYBINDINGS = {
+        togglePlay: 'Space',
+        seekBack: 'ArrowLeft',
+        seekForward: 'ArrowRight',
+        volumeUp: 'ArrowUp',
+        volumeDown: 'ArrowDown',
+        toggleMute: 'KeyM',
+        toggleFullscreen: 'KeyF',
+        toggleNerdStats: 'KeyI',
+        toggleChannelsDrawer: 'KeyC',
+        nextChannel: 'PageUp',
+        prevChannel: 'PageDown',
+        recallChannel: 'KeyL',
+        screenshot: 'Ctrl+Shift+KeyS',
+      };
+      let customOverlayKeybindings = { ...DEFAULT_OVERLAY_KEYBINDINGS };
+
+      function normalizeOverlayKeyEvent(e) {
+        const code = e.code || e.key;
+        if (!code) return null;
+        if (['ControlLeft', 'ControlRight', 'ShiftLeft', 'ShiftRight', 'AltLeft', 'AltRight', 'MetaLeft', 'MetaRight', 'Control', 'Shift', 'Alt', 'Meta', 'Escape'].includes(code)) {
+          return null;
+        }
+        const parts = [];
+        if (e.ctrlKey) parts.push('Ctrl');
+        if (e.altKey) parts.push('Alt');
+        if (e.shiftKey) parts.push('Shift');
+        if (e.metaKey) parts.push('Meta');
+        parts.push(code);
+        return parts.join('+');
+      }
+
+      function matchesOverlayAction(e, actionId) {
+        const target = customOverlayKeybindings[actionId] || DEFAULT_OVERLAY_KEYBINDINGS[actionId];
+        const norm = normalizeOverlayKeyEvent(e);
+        return !!norm && norm === target;
+      }
+
+      function deriveHexRgb(hex) {
+        if (typeof hex !== 'string') return '';
+        const clean = hex.replace('#', '').trim();
+        const full = clean.length === 3 ? clean.split('').map((c) => c + c).join('') : clean;
+        if (full.length !== 6) return '';
+        const num = parseInt(full, 16);
+        if (Number.isNaN(num)) return '';
+        return `${(num >> 16) & 255}, ${(num >> 8) & 255}, ${num & 255}`;
+      }
+
+      function deriveContrastColor(rgbStr) {
+        if (!rgbStr) return '#ffffff';
+        const [r, g, b] = rgbStr.split(',').map((v) => {
+          const c = Number(v.trim()) / 255;
+          return c <= 0.03928 ? c / 12.92 : Math.pow((c + 0.055) / 1.055, 2.4);
+        });
+        const lum = 0.2126 * r + 0.7152 * g + 0.0722 * b;
+        return lum > 0.34 ? '#0b1120' : '#ffffff';
+      }
+
+      function applyOverlayAppearance(p) {
+        if (!p || typeof p !== 'object') return;
+        const root = document.documentElement.style;
+        const blur = typeof p.blur === 'number' ? Math.max(0, Math.min(120, p.blur)) : 64;
+        const opPct = typeof p.opacity === 'number' ? Math.max(40, Math.min(100, p.opacity)) : 80;
+        const alpha = (opPct / 100).toFixed(2);
+        const fallbackAlpha = Math.min(0.98, opPct / 100 + 0.08).toFixed(2);
+        root.setProperty('--glassBlur', `${blur}px`);
+        root.setProperty('--glassTint', `linear-gradient(155deg, rgba(255, 255, 255, 0.08) 0%, rgba(255, 255, 255, 0.02) 38%, rgba(0, 0, 0, 0.14) 100%), rgba(18, 18, 18, ${alpha})`);
+        root.setProperty('--glassFallbackTint', `rgba(18, 18, 18, ${fallbackAlpha})`);
+        const rgb = p.accentRgb || deriveHexRgb(p.accent);
+        const soft = p.accentSoft || (rgb ? `rgba(${rgb}, 0.20)` : '');
+        const border = p.accentBorder || (rgb ? `rgba(${rgb}, 0.55)` : '');
+        const glow = p.accentGlow || (rgb ? `rgba(${rgb}, 0.45)` : '');
+        const contrast = p.accentContrast || (rgb ? deriveContrastColor(rgb) : '');
+        if (p.accent) root.setProperty('--lh-accent', p.accent);
+        root.setProperty('--lh-accent-hover', p.accentHover || p.accent || '');
+        if (rgb) root.setProperty('--lh-accent-rgb', rgb);
+        if (glow) root.setProperty('--lh-accent-glow', glow);
+        if (soft) root.setProperty('--lh-accent-soft', soft);
+        if (border) root.setProperty('--lh-accent-border', border);
+        if (contrast) root.setProperty('--lh-accent-contrast', contrast);
+      }
 
       function extractLanguageInfo(track) {
         if (!track) return null;
@@ -4997,15 +5119,25 @@
         return null;
       }
 
-      function showScreenshotToast(msg, isError = false) {
+      function showScreenshotToast(msg, isError = false, isReconnect = false) {
         if (!screenshotToast || !screenshotToastText) return;
+        isReconnectToastActive = !!isReconnect;
         screenshotToastText.textContent = msg;
         screenshotToast.classList.toggle('error', !!isError);
         screenshotToast.classList.add('visible');
         clearTimeout(screenshotToastTimer);
         screenshotToastTimer = setTimeout(() => {
           screenshotToast.classList.remove('visible');
+          isReconnectToastActive = false;
         }, isError ? 4200 : 2800);
+      }
+
+      function clearReconnectToast() {
+        if (!isReconnectToastActive || !screenshotToast) return;
+        clearTimeout(screenshotToastTimer);
+        screenshotToast.classList.remove('visible');
+        screenshotToast.classList.remove('error');
+        isReconnectToastActive = false;
       }
 
       async function captureScreenshot() {
@@ -5063,9 +5195,31 @@
         sendMpv(['set_property', 'sid', target], reqId);
       }
 
+      function restorePreferredAudioTrack() {
+        if (hasAppliedAudioPreferenceForCurrentMedia) return;
+        const prefLang = (defaultAudioLangPref || '').toLowerCase().trim();
+        if (!prefLang) {
+          if (tracks.length > 0) hasAppliedAudioPreferenceForCurrentMedia = true;
+          return;
+        }
+        const audioTracks = tracks.filter((t) => t.type === 'audio');
+        if (audioTracks.length === 0) return;
+
+        const prefObj = { lang: prefLang, name: ISO_LANG_MAP[prefLang] || '', title: '' };
+        const match = findMatchingSubTrack(audioTracks, prefObj);
+        hasAppliedAudioPreferenceForCurrentMedia = true;
+        if (match && match.id != null && match.id !== currentAid) {
+          selectAudioTrack(match.id);
+        }
+      }
+
       function restorePreferredSubtitleTrack() {
+        restorePreferredAudioTrack();
         if (hasAppliedSubPreferenceForCurrentMedia) return;
-        const pref = getSavedSubtitlePreference();
+        const prefSub = (defaultSubtitleLangPref || '').toLowerCase().trim();
+        const pref = prefSub === 'off'
+          ? { off: true }
+          : (prefSub ? { lang: prefSub, name: ISO_LANG_MAP[prefSub] || '', title: '' } : getSavedSubtitlePreference());
         if (!pref) return;
 
         if (pref.off) {
@@ -8100,9 +8254,41 @@
       tauriListen('screenshot-feedback', (event) => {
         const payload = event && event.payload;
         if (payload && payload.message) {
-          showScreenshotToast(payload.message, !!payload.isError);
+          showScreenshotToast(payload.message, !!payload.isError, !!payload.isReconnect);
         }
       });
+
+      tauriListen('live-reconnect-state', (event) => {
+        const p = (event && event.payload) || {};
+        isLiveReconnecting = !!p.reconnecting;
+        isLiveFailedIdle = !!p.failedIdle;
+        if (!isLiveReconnecting) {
+          clearReconnectToast();
+        }
+      });
+
+      tauriListen('overlay-appearance', (event) => {
+        if (event && event.payload) {
+          applyOverlayAppearance(event.payload);
+        }
+      });
+
+      tauriListen('overlay-keybindings', (event) => {
+        const p = event && event.payload;
+        if (p && typeof p === 'object') {
+          if (p.bindings && typeof p.bindings === 'object') {
+            customOverlayKeybindings = { ...DEFAULT_OVERLAY_KEYBINDINGS, ...p.bindings };
+          }
+          if (typeof p.defaultAudioLang === 'string') {
+            defaultAudioLangPref = p.defaultAudioLang;
+          }
+          if (typeof p.defaultSubtitleLang === 'string') {
+            defaultSubtitleLangPref = p.defaultSubtitleLang;
+          }
+        }
+      });
+
+      tauriEmit('request-overlay-preferences');
 
       tauriListen('player-channel-next', () => {
         if (currentContentMode === 'live') {
@@ -8356,7 +8542,7 @@
           return;
         }
 
-        if (e.ctrlKey && e.shiftKey && !e.altKey && !e.metaKey && (e.key === 's' || e.key === 'S' || e.code === 'KeyS')) {
+        if (matchesOverlayAction(e, 'screenshot')) {
           e.preventDefault();
           e.stopPropagation();
           if (!e.repeat) {
@@ -8367,7 +8553,7 @@
 
         if (isTextInput) return;
 
-        if (e.key === ' ' || e.code === 'Space') {
+        if (matchesOverlayAction(e, 'togglePlay')) {
           e.preventDefault();
           e.stopPropagation();
           if (contextualSelection) {
@@ -8378,25 +8564,25 @@
           } else {
             togglePlayPause();
           }
-        } else if (e.key === 'ArrowLeft') {
+        } else if (matchesOverlayAction(e, 'seekBack')) {
           handleArrowSeek(-10);
           e.preventDefault();
-        } else if (e.key === 'ArrowRight') {
+        } else if (matchesOverlayAction(e, 'seekForward')) {
           handleArrowSeek(10);
           e.preventDefault();
-        } else if (e.key === 'ArrowUp' || e.key === 'AudioVolumeUp') {
+        } else if (matchesOverlayAction(e, 'volumeUp') || e.key === 'AudioVolumeUp') {
           applyVolumeChange(currentVolume + 5, 'keyboard');
           e.preventDefault();
-        } else if (e.key === 'ArrowDown' || e.key === 'AudioVolumeDown') {
+        } else if (matchesOverlayAction(e, 'volumeDown') || e.key === 'AudioVolumeDown') {
           applyVolumeChange(currentVolume - 5, 'keyboard');
           e.preventDefault();
-        } else if (e.key === 'm' || e.key === 'M' || e.key === 'AudioVolumeMute') {
+        } else if (matchesOverlayAction(e, 'toggleMute') || e.key === 'AudioVolumeMute') {
           applyMuteToggle('keyboard');
           e.preventDefault();
-        } else if ((e.key === 'i' || e.key === 'I') && !e.ctrlKey && !e.altKey && !e.metaKey) {
+        } else if (matchesOverlayAction(e, 'toggleNerdStats')) {
           toggleNerdStats();
           e.preventDefault();
-        } else if (e.key === 'f' || e.key === 'F') {
+        } else if (matchesOverlayAction(e, 'toggleFullscreen')) {
           toggleFullscreen();
           e.preventDefault();
         } else if (
@@ -8422,19 +8608,19 @@
             executeSkipSegment();
             e.preventDefault();
           }
-        } else if (currentContentMode === 'live' && !e.ctrlKey && !e.altKey && !e.metaKey) {
-          if (e.key === 'PageUp' || e.key === 'ChannelUp') {
+        } else if (currentContentMode === 'live') {
+          if (matchesOverlayAction(e, 'nextChannel') || e.key === 'ChannelUp') {
             switchChannelByIndexDelta(1);
             showControls();
             e.preventDefault();
-          } else if (e.key === 'PageDown' || e.key === 'ChannelDown') {
+          } else if (matchesOverlayAction(e, 'prevChannel') || e.key === 'ChannelDown') {
             switchChannelByIndexDelta(-1);
             showControls();
             e.preventDefault();
-          } else if (e.key === 'l' || e.key === 'L') {
+          } else if (matchesOverlayAction(e, 'recallChannel')) {
             recallLastChannel();
             e.preventDefault();
-          } else if (e.key === 'c' || e.key === 'C') {
+          } else if (matchesOverlayAction(e, 'toggleChannelsDrawer')) {
             if (drawerChannels.classList.contains('open')) {
               closeChannelsMenu();
             } else {
@@ -8562,6 +8748,9 @@
 
           if (parsed.event === 'file-loaded') {
             isMediaLoaded = true;
+            isLiveReconnecting = false;
+            isLiveFailedIdle = false;
+            clearReconnectToast();
             hideSeekToast();
             requestTrackInfo();
             attachSavedExternalSubtitles();
@@ -8580,6 +8769,9 @@
 
           if (parsed.event === 'playback-restart') {
             isMediaLoaded = true;
+            isLiveReconnecting = false;
+            isLiveFailedIdle = false;
+            clearReconnectToast();
             hideSeekToast();
             pollNerdStats();
             sendMpv(['get_property', 'demuxer-cache-duration'], 307);
@@ -8596,9 +8788,7 @@
           }
 
           if (parsed.event === 'end-file') {
-            if (currentContentMode === 'live' && parsed.reason === 'error') {
-              showScreenshotToast('Channel stream failed to load', true);
-            } else if (currentActiveChannelId && currentContentMode !== 'live' && parsed.reason === 'eof') {
+            if (currentActiveChannelId && currentContentMode !== 'live' && parsed.reason === 'eof') {
               const effDuration = duration > 0 ? duration : (cachedDuration > 0 ? cachedDuration : 0);
               tauriEmit('save-playback-progress', {
                 channelId: currentActiveChannelId,
@@ -9166,6 +9356,9 @@
       });
 
       tauriListen('embedded-player-started', (event) => {
+        isLiveReconnecting = false;
+        isLiveFailedIdle = false;
+        clearReconnectToast();
         hideUpNextCard(false);
         hideMovieRecsCard(false);
         if (contextualSelection) {
@@ -9244,6 +9437,7 @@
         if (progressBuffer) progressBuffer.style.width = '0%';
 
         hasAppliedSubPreferenceForCurrentMedia = false;
+        hasAppliedAudioPreferenceForCurrentMedia = false;
         tracks = [];
         currentAid = null;
         currentSid = 'no';
@@ -9275,6 +9469,7 @@
         }
         tauriEmit('request-player-mode');
         tauriEmit('request-overlay-top-crop');
+        tauriEmit('request-overlay-preferences');
         if (currentContentMode === 'episode') {
           tauriEmit('request-player-episodes');
         } else if (currentContentMode === 'live' && (!channelsData.channels || channelsData.channels.length === 0)) {
@@ -9285,6 +9480,10 @@
       });
 
       tauriListen('embedded-poc-stopped', () => {
+        if (isLiveReconnecting || isLiveFailedIdle) {
+          return;
+        }
+        clearReconnectToast();
         hideUpNextCard(false);
         hideMovieRecsCard(false);
         hideChannelInfoBanner();
@@ -9309,9 +9508,11 @@
         movieRecsState.items = [];
         clearTimeout(resumeSeekTimeout);
         flushSaveProgress();
+        flushSaveVolume();
         pendingResumeTime = 0;
         hasResumedForCurrentMedia = false;
         hasAppliedSubPreferenceForCurrentMedia = false;
+        hasAppliedAudioPreferenceForCurrentMedia = false;
         currentActiveChannelId = null;
         currentPlaybackSessionId = 0;
         isMediaLoaded = false;

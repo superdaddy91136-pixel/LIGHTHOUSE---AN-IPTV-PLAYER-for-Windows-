@@ -34,6 +34,38 @@ const MACOS_POTENTIAL_PATHS: [&str; 3] = [
 
 pub const DEFAULT_USER_AGENT: &str = "Fred TV";
 
+/// Builds a shared `reqwest::Client` applying optional `user_agent`, timeouts, and configured HTTP proxy.
+pub fn build_http_client(
+    user_agent: Option<&str>,
+    connect_timeout_secs: Option<u64>,
+    timeout_secs: Option<u64>,
+) -> Result<reqwest::Client> {
+    let mut builder = reqwest::Client::builder();
+    if let Some(ua) = user_agent {
+        builder = builder.user_agent(ua);
+    }
+    if let Some(ct) = connect_timeout_secs {
+        builder = builder.connect_timeout(std::time::Duration::from_secs(ct));
+    }
+    if let Some(to) = timeout_secs {
+        builder = builder.timeout(std::time::Duration::from_secs(to));
+    }
+    if let Ok(settings) = crate::settings::get_settings() {
+        if let Some(ref raw_proxy) = settings.http_proxy {
+            let trimmed = raw_proxy.trim();
+            if !trimmed.is_empty() {
+                let lower = trimmed.to_ascii_lowercase();
+                if lower.starts_with("http://") || lower.starts_with("https://") {
+                    if let Ok(proxy) = reqwest::Proxy::all(trimmed) {
+                        builder = builder.proxy(proxy);
+                    }
+                }
+            }
+        }
+    }
+    builder.build().map_err(Into::into)
+}
+
 static ILLEGAL_CHARS_REGEX: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r#"[<>:"/\\|?*\x00-\x1F]"#).unwrap());
 

@@ -10,6 +10,7 @@
 .search-glass-pill { position: relative; display: flex; align-items: center; height: 44px; width: 44px; border-radius: 9999px; background: rgba(255,255,255,.08); backdrop-filter: blur(24px) saturate(180%); border: 1px solid rgba(255,255,255,.15); box-shadow: 0 8px 24px rgba(0,0,0,.4), inset 0 1px 0 rgba(255,255,255,.16); overflow: hidden; cursor: pointer; transition: width .32s cubic-bezier(.4,0,.2,1), background .25s, border-color .25s, box-shadow .25s, transform .2s; }
 .search-glass-pill:hover { background: rgba(255,255,255,.14); border-color: rgba(255,255,255,.25); transform: scale(1.05); }
 .home-search-control-wrap.expanded .search-glass-pill { width: min(390px, calc(100vw - 120px)); background: rgba(20,24,32,.85); backdrop-filter: blur(28px) saturate(200%); border-color: rgba(255,255,255,.22); box-shadow: 0 12px 36px rgba(0,0,0,.6), inset 0 1px 0 rgba(255,255,255,.18); cursor: default; transform: none; }
+.home-search-control-wrap.expanded .search-glass-pill:focus-within { border-color: var(--lh-accent-border, rgba(255, 77, 109, 0.45)); box-shadow: 0 12px 36px rgba(0,0,0,.6), 0 0 0 2px var(--lh-accent-soft, rgba(255, 77, 109, 0.14)), inset 0 1px 0 rgba(255,255,255,.18); }
 .search-lens-btn { width: 44px; height: 44px; min-width: 44px; border-radius: 50%; border: none; background: transparent; color: #fff; display: flex; align-items: center; justify-content: center; cursor: pointer; padding: 0; outline: none; flex-shrink: 0; transition: opacity .2s; }
 .search-lens-svg { width: 20px; height: 20px; color: #fff; stroke: currentColor; }
 .search-glass-input { width: 0; opacity: 0; border: none; outline: none; background: transparent; color: #fff; font-size: .92rem; font-weight: 500; letter-spacing: .01em; padding: 0; pointer-events: none; transition: opacity .22s, width .32s cubic-bezier(.4,0,.2,1); box-shadow: none !important; }
@@ -27,9 +28,9 @@
 
 /* View Mode Pill Bar */
 .view-mode-pill-group { display: inline-flex; align-items: center; border-radius: 9999px; padding: 4px; gap: 4px; background: rgba(30,33,40,.68); backdrop-filter: blur(12px); border: 1px solid rgba(255,255,255,.08); box-shadow: 0 4px 16px rgba(0,0,0,.25); }
-.view-mode-pill { display: inline-flex; align-items: center; background: transparent; border: none; border-radius: 9999px; color: rgba(255,255,255,.65); font-weight: 600; cursor: pointer; transition: all .2s; line-height: 1.2; user-select: none; padding: 6px 18px; font-size: .85rem; gap: 6px; }
+.view-mode-pill { display: inline-flex; align-items: center; background: transparent; border: 1px solid transparent; border-radius: 9999px; color: rgba(255,255,255,.65); font-weight: 600; cursor: pointer; transition: all .2s; line-height: 1.2; user-select: none; padding: 6px 18px; font-size: .85rem; gap: 6px; }
 .view-mode-pill:hover { background: rgba(255,255,255,.08); color: #fff; }
-.view-mode-pill.active { background: rgba(255,255,255,.2); color: #fff; box-shadow: 0 4px 14px rgba(0,0,0,.35), inset 0 1px 0 rgba(255,255,255,.25); }
+.view-mode-pill.active { background: var(--lh-accent-soft, rgba(255, 77, 109, 0.14)); border-color: var(--lh-accent-border, rgba(255, 77, 109, 0.45)); color: #fff; box-shadow: 0 4px 14px rgba(0,0,0,.35), inset 0 1px 0 rgba(255,255,255,.18); }
 .view-pill-icon { width: 16px; height: 16px; flex-shrink: 0; }
 
 /* Universal Search Header Groupings */

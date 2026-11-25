@@ -232,11 +232,7 @@ pub async fn get_xtream(app: Option<&AppHandle>, mut source: Source, wipe: bool)
 
     let url = build_xtream_url(&mut source)?;
     let user_agent = get_user_agent_from_source(&source)?;
-    let client = Client::builder()
-        .user_agent(user_agent)
-        .connect_timeout(Duration::from_secs(20))
-        .timeout(Duration::from_secs(180))
-        .build()?;
+    let client = crate::utils::build_http_client(Some(&user_agent), Some(20), Some(180))?;
 
     // Step 1: Explicit Authentication & Account Verification
     let _auth_status = authenticate_xtream(&client, &url).await?;
@@ -619,11 +615,7 @@ async fn get_xtream_http_data<T>(url: Url, action: &str, user_agent: &String) ->
 where
     T: serde::de::DeserializeOwned,
 {
-    let client = Client::builder()
-        .user_agent(user_agent)
-        .connect_timeout(Duration::from_secs(15))
-        .timeout(Duration::from_secs(60))
-        .build()?;
+    let client = crate::utils::build_http_client(Some(user_agent), Some(15), Some(60))?;
     get_xtream_http_data_with_client(&client, url, action).await
 }
 
@@ -1311,7 +1303,7 @@ fn get_timeshift_url(mut url: Url, start: String, end: String, stream_id: &str) 
 async fn get_status(source: &mut Source) -> Result<(i64, XtreamStatus)> {
     let url = build_xtream_url(source)?;
     let user_agent = get_user_agent_from_source(&source)?;
-    let client = Client::builder().user_agent(user_agent).build()?;
+    let client = crate::utils::build_http_client(Some(&user_agent), None, None)?;
     let data = client.get(url).send().await?.json::<XtreamStatus>().await?;
     Ok((source.id.context("no id")?, data))
 }

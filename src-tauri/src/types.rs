@@ -117,17 +117,55 @@ impl XtreamStatusUserInfo {
 pub struct Settings {
     pub mpv_params: Option<String>,
     pub use_stream_caching: Option<bool>,
-    pub default_view: Option<u8>,
     pub volume: Option<u8>,
+    #[serde(default)]
+    pub remember_volume: Option<bool>,
     pub refresh_on_start: Option<bool>,
     pub restream_port: Option<u16>,
-    pub enable_tray_icon: Option<bool>,
     pub zoom: Option<u16>,
     pub default_sort: Option<u8>,
     pub enable_hwdec: Option<bool>,
     pub enable_gpu: Option<bool>,
     #[serde(default)]
     pub screenshot_path: Option<String>,
+    #[serde(default)]
+    pub auto_reconnect: Option<bool>,
+    #[serde(default)]
+    pub reconnect_attempts: Option<u8>,
+    #[serde(default)]
+    pub default_audio_lang: Option<String>,
+    #[serde(default)]
+    pub default_subtitle_lang: Option<String>,
+    #[serde(default)]
+    pub enable_deinterlace: Option<bool>,
+    #[serde(default)]
+    pub buffer_preset: Option<String>,
+    #[serde(default)]
+    pub live_start_last_channel: Option<bool>,
+    #[serde(default)]
+    pub default_live_folder: Option<String>,
+    #[serde(default)]
+    pub auto_refresh_hours: Option<u16>,
+    #[serde(default)]
+    pub epg_refresh_hours: Option<u16>,
+    #[serde(default)]
+    pub remember_window_state: Option<bool>,
+    #[serde(default)]
+    pub clear_history_on_exit: Option<bool>,
+    #[serde(default)]
+    pub pin_lock_enabled: Option<bool>,
+    #[serde(default)]
+    pub app_pin_hash: Option<String>,
+    #[serde(default)]
+    pub http_proxy: Option<String>,
+    #[serde(default)]
+    pub overlay_glass_blur: Option<u16>,
+    #[serde(default)]
+    pub overlay_glass_opacity: Option<u8>,
+    #[serde(default)]
+    pub accent_color: Option<String>,
+    #[serde(default)]
+    pub keybindings: Option<String>,
 }
 
 #[derive(Clone, PartialEq, Debug, Deserialize, Serialize)]
@@ -258,6 +296,67 @@ pub struct ChannelPreserve {
     pub hidden: Option<bool>,
     #[serde(default)]
     pub is_group: bool,
+}
+
+#[derive(Clone, PartialEq, Debug, Deserialize, Serialize)]
+pub struct FavoriteMapping {
+    pub name: String,
+    #[serde(default)]
+    pub media_type: u8,
+    #[serde(default)]
+    pub stream_id: Option<u64>,
+    #[serde(default)]
+    pub series_id: Option<u64>,
+    #[serde(default)]
+    pub season_id: Option<i64>,
+    #[serde(default)]
+    pub episode_num: Option<i64>,
+    #[serde(default)]
+    pub favorite_added: Option<i64>,
+}
+
+#[derive(Clone, PartialEq, Debug, Deserialize, Serialize)]
+pub struct SourceFavoritesBackup {
+    pub source_name: String,
+    #[serde(default)]
+    pub source_type: Option<u8>,
+    pub favorites: Vec<FavoriteMapping>,
+}
+
+#[derive(Clone, PartialEq, Debug, Deserialize, Serialize)]
+pub struct SettingsBackup {
+    pub version: u32,
+    pub exported_at: u64,
+    pub settings: Settings,
+    #[serde(default)]
+    pub startup_page: Option<String>,
+    #[serde(default)]
+    pub favorites_by_source: Vec<SourceFavoritesBackup>,
+}
+
+#[derive(Clone, PartialEq, Debug, Deserialize, Serialize)]
+pub struct BackupRestoreSummary {
+    pub settings: Settings,
+    pub startup_page: Option<String>,
+    pub restored_favorites: usize,
+    pub skipped_sources: usize,
+}
+
+#[derive(Clone, PartialEq, Debug, Deserialize, Serialize)]
+pub struct StorageStats {
+    pub sqlite_bytes: u64,
+    pub history_count: u64,
+    pub hidden_count: u64,
+    pub favorites_count: u64,
+}
+
+#[derive(Clone, PartialEq, Debug, Deserialize, Serialize)]
+pub struct WindowBoundsState {
+    pub x: i32,
+    pub y: i32,
+    pub width: u32,
+    pub height: u32,
+    pub maximized: bool,
 }
 
 #[derive(Clone, PartialEq, Debug, Deserialize, Serialize, Default)]

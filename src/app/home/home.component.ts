@@ -220,11 +220,12 @@ export class HomeComponent implements AfterViewInit, OnDestroy {
   liveCategoryByIdMap: Map<number, CategoryOption> = new Map();
   startingPlayChannelId?: number;
   liveSidebarSelection: {
-    type: 'favorites' | 'category';
+    type: 'favorites' | 'all' | 'recent' | 'category';
     id?: number;
     name?: string;
     sourceId?: number;
   } | null = null;
+  private cachedSettingsSnapshot?: Settings;
   selectedSourceId: number | 'all' = 'all';
   selectedCategoryId?: number;
   selectedSort: SortOption = 'default';
@@ -570,6 +571,12 @@ export class HomeComponent implements AfterViewInit, OnDestroy {
     if (this.liveSidebarSelection.type === 'favorites') {
       return 'Favorites';
     }
+    if (this.liveSidebarSelection.type === 'all') {
+      return 'All Channels';
+    }
+    if (this.liveSidebarSelection.type === 'recent') {
+      return 'Recent Channels';
+    }
     if (this.liveSidebarSelection.type === 'category') {
       return cleanMediaTitle(this.liveSidebarSelection.name || 'Category');
     }
@@ -582,6 +589,12 @@ export class HomeComponent implements AfterViewInit, OnDestroy {
     }
     if (this.liveSidebarSelection.type === 'favorites') {
       return 'No favorite channels yet. Click the heart on any channel to favorite it.';
+    }
+    if (this.liveSidebarSelection.type === 'all') {
+      return 'No live channels available.';
+    }
+    if (this.liveSidebarSelection.type === 'recent') {
+      return 'No recently watched channels yet.';
     }
     if (this.liveSidebarSelection.type === 'category') {
       return `No channels found in ${cleanMediaTitle(this.liveSidebarSelection.name || 'this folder')}.`;
@@ -773,12 +786,24 @@ export class HomeComponent implements AfterViewInit, OnDestroy {
   }
 
   selectLiveSidebarFavorites(): void {
+    this.selectLiveBuiltInFolder('favorites', ViewMode.Favorites);
+  }
+
+  selectLiveSidebarAll(): void {
+    this.selectLiveBuiltInFolder('all', ViewMode.All);
+  }
+
+  selectLiveSidebarRecent(): void {
+    this.selectLiveBuiltInFolder('recent', ViewMode.History);
+  }
+
+  private selectLiveBuiltInFolder(type: 'favorites' | 'all' | 'recent', viewType: ViewMode): void {
     EpgQueueManager.clearQueue();
-    this.liveSidebarSelection = { type: 'favorites' };
+    this.liveSidebarSelection = { type };
     this.selectedCategoryId = undefined;
     if (this.filters) {
       this.filters.group_id = undefined;
-      this.filters.view_type = ViewMode.Favorites;
+      this.filters.view_type = viewType;
       this.filters.page = 1;
     }
     this.nodeStack.clear();
@@ -787,6 +812,43 @@ export class HomeComponent implements AfterViewInit, OnDestroy {
     this.load();
     if (this.liveTvContent?.nativeElement) {
       this.liveTvContent.nativeElement.scrollTop = 0;
+    }
+  }
+
+  private resolveDefaultLiveView(): { type: 'favorites' | 'all' | 'recent'; viewType: ViewMode } {
+    const pref = this.cachedSettingsSnapshot?.default_live_folder;
+    if (pref === 'all') return { type: 'all', viewType: ViewMode.All };
+    if (pref === 'recent') return { type: 'recent', viewType: ViewMode.History };
+    return { type: 'favorites', viewType: ViewMode.Favorites };
+  }
+
+  private async tryAutoStartLastLiveChannel(): Promise<void> {
+    if (
+      this.cachedSettingsSnapshot?.live_start_last_channel !== true ||
+      this.embeddedPlayer.isPlayingEmbedded ||
+      sessionStorage.getItem('lighthouse_live_autostarted')
+    ) {
+      return;
+    }
+    const sourceIds = Array.from(this.memory.Sources.keys());
+    if (sourceIds.length === 0) return;
+    sessionStorage.setItem('lighthouse_live_autostarted', 'true');
+    try {
+      const recent = (await invoke('search', {
+        filters: {
+          source_ids: sourceIds,
+          media_types: [MediaType.livestream],
+          view_type: ViewMode.History,
+          page: 1,
+          use_keywords: false,
+          sort: SortType.provider,
+        },
+      })) as Channel[];
+      if (recent && recent.length > 0 && recent[0]?.id != null && !this.embeddedPlayer.isPlayingEmbedded && this.isLiveTvTab) {
+        await this.playMedia(recent[0]);
+      }
+    } catch (e) {
+      console.warn('Auto-start last live channel skipped:', e);
     }
   }
 
@@ -1932,9 +1994,9 @@ export class HomeComponent implements AfterViewInit, OnDestroy {
     Promise.all([get_settings, get_sources])
       .then((data) => {
         let settings = data[0] as Settings;
+        this.cachedSettingsSnapshot = settings;
         let sources = data[1] as Source[];
         if (settings.zoom) getCurrentWebview().setZoom(Math.trunc(settings.zoom! * 100) / 10000);
-        this.memory.trayEnabled = settings.enable_tray_icon ?? true;
         this.memory.Sources = new Map(sources.filter((x) => x.enabled).map(s => [s.id!, s]));
         if (sources.length == 0) this.reset();
         else {
@@ -1948,12 +2010,18 @@ export class HomeComponent implements AfterViewInit, OnDestroy {
           this.memory.XtreamSourceIds = new Set(
             sources.filter((x) => x.source_type == SourceType.Xtream).map((x) => x.id!)
           );
+          const epgHours = settings.epg_refresh_hours ?? 24;
           if (
             this.memory.XtreamSourceIds.size > 0 &&
+            epgHours > 0 &&
             !sessionStorage.getItem("epgCheckedOnStart")
           ) {
-            sessionStorage.setItem("epgCheckedOnStart", "true");
-            invoke("on_start_check_epg");
+            const lastEpgAt = parseInt(localStorage.getItem("lighthouse_last_epg_check") || "0", 10) || 0;
+            if (Date.now() - lastEpgAt >= epgHours * 3600 * 1000) {
+              sessionStorage.setItem("epgCheckedOnStart", "true");
+              localStorage.setItem("lighthouse_last_epg_check", String(Date.now()));
+              invoke("on_start_check_epg");
+            }
           }
           const currentTab = this.memory.activeNavTab.value;
           const savedSearch = this.searchStateService.getSearchState(currentTab);
@@ -1981,15 +2049,17 @@ export class HomeComponent implements AfterViewInit, OnDestroy {
           }
 
           let initialMediaTypes = [MediaType.livestream, MediaType.movie, MediaType.serie];
-          let initialViewType = settings.default_view ?? ViewMode.All;
+          let initialViewType = ViewMode.All;
           if (currentTab === NavTab.LiveTV) {
             initialMediaTypes = [MediaType.livestream];
             this.chkLiveStream = true;
             this.chkMovie = false;
             this.chkSerie = false;
-            initialViewType = ViewMode.Favorites;
-            this.liveSidebarSelection = { type: 'favorites' };
+            const defLive = this.resolveDefaultLiveView();
+            initialViewType = defLive.viewType;
+            this.liveSidebarSelection = { type: defLive.type };
             this.memory.activeNavTab.next(NavTab.LiveTV);
+            void this.tryAutoStartLastLiveChannel();
           } else if (currentTab === NavTab.Movies) {
             initialMediaTypes = [MediaType.movie];
             this.chkLiveStream = false;
@@ -2912,13 +2982,17 @@ export class HomeComponent implements AfterViewInit, OnDestroy {
         this.chkMovie = false;
         this.chkSerie = false;
         this.filters.media_types = [MediaType.livestream];
-        this.liveSidebarSelection = { type: 'favorites' };
-        this.filters.view_type = ViewMode.Favorites;
+        {
+          const defLive = this.resolveDefaultLiveView();
+          this.liveSidebarSelection = { type: defLive.type };
+          this.filters.view_type = defLive.viewType;
+        }
         this.filters.group_id = undefined;
         this.selectedCategoryId = undefined;
         if (this.liveTvContent?.nativeElement) {
           this.liveTvContent.nativeElement.scrollTop = 0;
         }
+        void this.tryAutoStartLastLiveChannel();
         break;
       case NavTab.Movies:
         this.chkLiveStream = false;

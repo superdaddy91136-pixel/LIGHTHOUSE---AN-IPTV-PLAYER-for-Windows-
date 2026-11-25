@@ -3,6 +3,24 @@
 @import "@angular/material/prebuilt-themes/pink-bluegrey.css";
 @import "./assets/css/roboto.css";
 
+:root {
+  color-scheme: dark;
+  --lh-accent: #ff4d6d;
+  --lh-accent-hover: #ff758f;
+  --lh-accent-rgb: 255, 77, 109;
+  --lh-accent-glow: rgba(255, 77, 109, 0.35);
+  --lh-accent-soft: rgba(255, 77, 109, 0.14);
+  --lh-accent-border: rgba(255, 77, 109, 0.45);
+  --lh-accent-contrast: #ffffff;
+  accent-color: var(--lh-accent);
+  caret-color: var(--lh-accent);
+}
+
+::selection {
+  background: rgba(var(--lh-accent-rgb, 255, 77, 109), 0.32);
+  color: #ffffff;
+}
+
 body {
   background-color: #07080c;
   color: white;
@@ -935,6 +953,9 @@ body::-webkit-scrollbar-thumb:active {
 .media-card:hover {
   transform: translateY(-6px);
 }
+.media-card:focus-visible {
+  outline: none;
+}
 
 /* Continue Watching Landscape Card (16:9) */
 .media-card.cw-card {
@@ -958,6 +979,10 @@ body::-webkit-scrollbar-thumb:active {
   box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.2);
   border-color: rgba(255, 255, 255, 0.46);
 }
+.media-card:focus-visible .poster-container {
+  border-color: var(--lh-accent);
+  box-shadow: 0 0 0 2px var(--lh-accent-border);
+}
 
 .poster-container.cw-poster-container {
   aspect-ratio: 16 / 9;
@@ -972,6 +997,10 @@ body::-webkit-scrollbar-thumb:active {
 .media-card.cw-card:hover .poster-container.cw-poster-container {
   box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.2);
   border-color: rgba(255, 255, 255, 0.46);
+}
+.media-card.cw-card:focus-visible .poster-container.cw-poster-container {
+  border-color: var(--lh-accent);
+  box-shadow: 0 0 0 2px var(--lh-accent-border);
 }
 
 /* Thin playback progress bar for Continue Watching */
@@ -1004,16 +1033,16 @@ body::-webkit-scrollbar-thumb:active {
   background: rgba(15, 23, 42, 0.82);
   backdrop-filter: blur(14px) saturate(160%);
   -webkit-backdrop-filter: blur(14px) saturate(160%);
-  border: 1px solid rgba(56, 189, 248, 0.45);
+  border: 1px solid var(--lh-accent-border);
   border-radius: 6px;
-  color: #38bdf8;
+  color: var(--lh-accent);
   font-size: 0.64rem;
   font-weight: 700;
   letter-spacing: 0.05em;
   text-transform: uppercase;
   z-index: 3;
   pointer-events: none;
-  box-shadow: 0 4px 14px rgba(0, 0, 0, 0.5), 0 0 10px rgba(56, 189, 248, 0.2);
+  box-shadow: 0 4px 14px rgba(0, 0, 0, 0.5), 0 0 10px var(--lh-accent-soft);
   line-height: 1;
 }
 
@@ -1021,16 +1050,16 @@ body::-webkit-scrollbar-thumb:active {
   width: 12px;
   height: 12px;
   flex-shrink: 0;
-  color: #38bdf8;
+  color: var(--lh-accent);
 }
 
 .media-card.cw-card.cw-next-episode-card .poster-container.cw-poster-container {
-  border-color: rgba(56, 189, 248, 0.35);
+  border-color: rgba(var(--lh-accent-rgb), 0.35);
 }
 
 .media-card.cw-card.cw-next-episode-card:hover .poster-container.cw-poster-container {
-  border-color: rgba(56, 189, 248, 0.65);
-  box-shadow: inset 0 0 0 1px rgba(56, 189, 248, 0.3);
+  border-color: rgba(var(--lh-accent-rgb), 0.65);
+  box-shadow: inset 0 0 0 1px rgba(var(--lh-accent-rgb), 0.3);
 }
 
 .media-card.cw-card.cw-next-episode-card .card-cw-remove-btn {
@@ -1938,8 +1967,8 @@ body:has(app-tv-detail)::-webkit-scrollbar {
   border-color: rgba(255, 255, 255, 0.1);
 }
 .version-menu-item.selected {
-  background: rgba(255, 255, 255, 0.12);
-  border-color: rgba(255, 255, 255, 0.28);
+  background: var(--lh-accent-soft);
+  border-color: var(--lh-accent-border);
 }
 
 .version-item-header {
@@ -1960,11 +1989,11 @@ body:has(app-tv-detail)::-webkit-scrollbar {
   flex-shrink: 0;
 }
 .version-check-circle.checked {
-  background: #ffffff;
-  border-color: #ffffff;
+  background: var(--lh-accent);
+  border-color: var(--lh-accent);
 }
 .version-check-circle.checked svg {
-  color: #0f172a;
+  color: var(--lh-accent-contrast);
 }
 .version-check-circle svg {
   width: 11px;
@@ -2503,8 +2532,8 @@ body:has(app-tv-detail)::-webkit-scrollbar {
 
 .season-dropdown-btn.active,
 .season-dropdown-btn:focus-visible {
-  border-color: rgba(255, 255, 255, 0.5);
-  box-shadow: 0 0 0 2px rgba(229, 9, 20, 0.45);
+  border-color: var(--lh-accent-border);
+  box-shadow: 0 0 0 2px var(--lh-accent-border);
 }
 
 .season-dropdown-label {
@@ -2613,7 +2642,7 @@ body:has(app-tv-detail)::-webkit-scrollbar {
 
 .season-menu-item .season-check-icon {
   flex-shrink: 0;
-  color: #ffffff;
+  color: var(--lh-accent);
 }
 
 .season-menu-item:hover {
@@ -2622,8 +2651,8 @@ body:has(app-tv-detail)::-webkit-scrollbar {
 }
 
 .season-menu-item.active {
-  background: rgba(229, 9, 20, 0.22);
-  border-color: rgba(229, 9, 20, 0.5);
+  background: var(--lh-accent-soft);
+  border-color: var(--lh-accent-border);
   font-weight: 700;
   color: #ffffff;
 }
@@ -2728,17 +2757,17 @@ body:has(app-tv-detail)::-webkit-scrollbar {
   transform: translateX(4px);
 }
 .episode-card.highlighted {
-  background: linear-gradient(180deg, rgba(56, 189, 248, 0.14) 0%, rgba(255, 255, 255, 0.03) 100%);
-  border-color: rgba(56, 189, 248, 0.45);
-  box-shadow: 0 2px 6px rgba(0, 0, 0, 0.3), 0 8px 24px rgba(0, 0, 0, 0.4), 0 0 16px rgba(56, 189, 248, 0.15), inset 0 1px 0 rgba(255, 255, 255, 0.25), inset 0 0 0 1px rgba(56, 189, 248, 0.25);
+  background: linear-gradient(180deg, rgba(var(--lh-accent-rgb), 0.14) 0%, rgba(255, 255, 255, 0.03) 100%);
+  border-color: var(--lh-accent-border);
+  box-shadow: 0 2px 6px rgba(0, 0, 0, 0.3), 0 8px 24px rgba(0, 0, 0, 0.4), 0 0 16px var(--lh-accent-soft), inset 0 1px 0 rgba(255, 255, 255, 0.25), inset 0 0 0 1px rgba(var(--lh-accent-rgb), 0.25);
 }
 .episode-card.highlighted:hover {
-  background: linear-gradient(180deg, rgba(56, 189, 248, 0.2) 0%, rgba(255, 255, 255, 0.05) 100%);
-  border-color: rgba(56, 189, 248, 0.7);
-  box-shadow: 0 4px 10px rgba(0, 0, 0, 0.35), 0 12px 32px rgba(0, 0, 0, 0.45), 0 0 20px rgba(56, 189, 248, 0.25), inset 0 1px 0 rgba(255, 255, 255, 0.35), inset 0 0 0 1px rgba(56, 189, 248, 0.35);
+  background: linear-gradient(180deg, rgba(var(--lh-accent-rgb), 0.2) 0%, rgba(255, 255, 255, 0.05) 100%);
+  border-color: var(--lh-accent);
+  box-shadow: 0 4px 10px rgba(0, 0, 0, 0.35), 0 12px 32px rgba(0, 0, 0, 0.45), 0 0 20px var(--lh-accent-glow), inset 0 1px 0 rgba(255, 255, 255, 0.35), inset 0 0 0 1px rgba(var(--lh-accent-rgb), 0.35);
 }
 .episode-card.highlighted .episode-title {
-  color: #38bdf8;
+  color: var(--lh-accent);
 }
 .episode-card:hover .episode-play-circle {
   transform: scale(1.05);
@@ -3547,8 +3576,8 @@ body:has(app-tv-detail)::-webkit-scrollbar {
 }
 
 .setting-desc code {
-  color: #f43f5e;
-  background: rgba(244, 63, 94, 0.1);
+  color: var(--lh-accent-hover);
+  background: var(--lh-accent-soft);
   padding: 2px 5px;
   border-radius: 4px;
   font-size: 0.8em;
@@ -3587,8 +3616,8 @@ body:has(app-tv-detail)::-webkit-scrollbar {
 }
 
 .form-select-glass:focus {
-  border-color: rgba(244, 63, 94, 0.5);
-  box-shadow: 0 0 0 3px rgba(244, 63, 94, 0.15);
+  border-color: rgba(var(--lh-accent-rgb), 0.55);
+  box-shadow: 0 0 0 3px rgba(var(--lh-accent-rgb), 0.15);
   background-color: rgba(255, 255, 255, 0.08);
 }
 
@@ -3614,8 +3643,8 @@ body:has(app-tv-detail)::-webkit-scrollbar {
 }
 
 .form-control-glass:focus {
-  border-color: rgba(244, 63, 94, 0.5);
-  box-shadow: 0 0 0 3px rgba(244, 63, 94, 0.15);
+  border-color: rgba(var(--lh-accent-rgb), 0.55);
+  box-shadow: 0 0 0 3px rgba(var(--lh-accent-rgb), 0.15);
   background-color: rgba(255, 255, 255, 0.08);
 }
 
@@ -3671,15 +3700,15 @@ body:has(app-tv-detail)::-webkit-scrollbar {
   height: 18px;
   border-radius: 50%;
   background: #ffffff;
-  border: 2px solid #f43f5e;
-  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.4), 0 0 10px rgba(244, 63, 94, 0.35);
+  border: 2px solid var(--lh-accent);
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.4), 0 0 10px var(--lh-accent-glow);
   cursor: pointer;
   transition: transform 0.15s ease, box-shadow 0.15s ease;
 }
 
 .form-range-glass::-webkit-slider-thumb:hover {
   transform: scale(1.15);
-  box-shadow: 0 2px 10px rgba(0, 0, 0, 0.5), 0 0 14px rgba(244, 63, 94, 0.5);
+  box-shadow: 0 2px 10px rgba(0, 0, 0, 0.5), 0 0 14px rgba(var(--lh-accent-rgb), 0.5);
 }
 
 .value-badge {
@@ -3706,15 +3735,15 @@ body:has(app-tv-detail)::-webkit-scrollbar {
 }
 
 .settings-page .form-check-input:checked {
-  background-color: #f43f5e;
-  border-color: #f43f5e;
-  box-shadow: 0 0 14px rgba(244, 63, 94, 0.35);
+  background-color: var(--lh-accent);
+  border-color: var(--lh-accent);
+  box-shadow: 0 0 14px var(--lh-accent-glow);
   background-image: url("data:image/svg+xml,%3csvg xmlns='http://www.w3.org/2000/svg' viewBox='-4 -4 8 8'%3e%3ccircle r='3' fill='%23ffffff'/%3e%3c/svg%3e");
 }
 
 .settings-page .form-check-input:focus {
-  border-color: rgba(244, 63, 94, 0.5);
-  box-shadow: 0 0 0 3px rgba(244, 63, 94, 0.15);
+  border-color: rgba(var(--lh-accent-rgb), 0.55);
+  box-shadow: 0 0 0 3px rgba(var(--lh-accent-rgb), 0.15);
 }
 
 .folder-select-group {
@@ -3776,8 +3805,8 @@ body:has(app-tv-detail)::-webkit-scrollbar {
 }
 
 .token-input-wrapper:focus-within {
-  border-color: rgba(244, 63, 94, 0.5);
-  box-shadow: 0 0 0 3px rgba(244, 63, 94, 0.15);
+  border-color: rgba(var(--lh-accent-rgb), 0.55);
+  box-shadow: 0 0 0 3px rgba(var(--lh-accent-rgb), 0.15);
 }
 
 .token-field {
@@ -3902,20 +3931,20 @@ body:has(app-tv-detail)::-webkit-scrollbar {
   align-items: center;
   gap: 8px;
   padding: 9px 18px;
-  background: rgba(244, 63, 94, 0.85);
+  background: rgba(var(--lh-accent-rgb), 0.88);
   border: 1px solid rgba(255, 255, 255, 0.22);
   border-radius: 12px;
-  color: #ffffff;
+  color: var(--lh-accent-contrast);
   font-size: 0.88rem;
   font-weight: 600;
   cursor: pointer;
   transition: all 0.2s cubic-bezier(0.16, 1, 0.3, 1);
-  box-shadow: 0 4px 14px rgba(244, 63, 94, 0.3);
+  box-shadow: 0 4px 14px rgba(var(--lh-accent-rgb), 0.3);
 }
 
 .btn-primary-glass:hover:not(:disabled) {
-  background: rgba(244, 63, 94, 1);
-  box-shadow: 0 6px 20px rgba(244, 63, 94, 0.45);
+  background: var(--lh-accent);
+  box-shadow: 0 6px 20px var(--lh-accent-glow);
   transform: translateY(-1px);
 }
 
@@ -4153,14 +4182,14 @@ body:has(app-tv-detail)::-webkit-scrollbar {
 }
 
 .filter-sort-trigger-btn.has-active-filters {
-  background: rgba(56, 189, 248, 0.12);
-  border-color: rgba(56, 189, 248, 0.45);
-  color: #e0f2fe;
-  box-shadow: 0 4px 16px rgba(56, 189, 248, 0.2), inset 0 1px 0 rgba(255, 255, 255, 0.15);
+  background: var(--lh-accent-soft);
+  border-color: var(--lh-accent-border);
+  color: #ffffff;
+  box-shadow: 0 4px 16px var(--lh-accent-soft), inset 0 1px 0 rgba(255, 255, 255, 0.15);
 }
 
 .filter-sort-trigger-btn.has-active-filters .filter-sort-icon {
-  color: #38bdf8;
+  color: var(--lh-accent);
 }
 
 .filter-sort-trigger-btn.open {
@@ -4200,8 +4229,8 @@ body:has(app-tv-detail)::-webkit-scrollbar {
   height: 16px;
   padding: 0 4px;
   border-radius: 9999px;
-  background: #38bdf8;
-  color: #0b1120;
+  background: var(--lh-accent);
+  color: var(--lh-accent-contrast);
   font-size: 0.65rem;
   font-weight: 700;
   line-height: 1;
@@ -4257,7 +4286,7 @@ body:has(app-tv-detail)::-webkit-scrollbar {
 .popover-title-icon {
   width: 18px;
   height: 18px;
-  color: #60a5fa;
+  color: var(--lh-accent);
   flex-shrink: 0;
 }
 
@@ -4271,7 +4300,7 @@ body:has(app-tv-detail)::-webkit-scrollbar {
 .btn-reset-filters {
   background: transparent;
   border: none;
-  color: #93c5fd;
+  color: var(--lh-accent-hover);
   font-size: 0.78rem;
   font-weight: 600;
   cursor: pointer;
@@ -4281,8 +4310,8 @@ body:has(app-tv-detail)::-webkit-scrollbar {
 }
 
 .btn-reset-filters:hover {
-  background: rgba(59, 130, 246, 0.2);
-  color: #bfdbfe;
+  background: var(--lh-accent-soft);
+  color: #ffffff;
 }
 
 .btn-close-popover {
@@ -4354,10 +4383,10 @@ body:has(app-tv-detail)::-webkit-scrollbar {
 }
 
 .filter-pill.active {
-  background: rgba(59, 130, 246, 0.3);
-  border-color: rgba(96, 165, 250, 0.55);
+  background: rgba(var(--lh-accent-rgb), 0.24);
+  border-color: var(--lh-accent-border);
   color: #fff;
-  box-shadow: 0 2px 10px rgba(37, 99, 235, 0.3), inset 0 1px 0 rgba(255, 255, 255, 0.2);
+  box-shadow: 0 2px 10px var(--lh-accent-soft), inset 0 1px 0 rgba(255, 255, 255, 0.2);
 }
 
 .filter-pill .pill-badge {
@@ -4454,8 +4483,8 @@ body:has(app-tv-detail)::-webkit-scrollbar {
 
 .category-item-btn.active,
 .sort-option-btn.active {
-  background: rgba(59, 130, 246, 0.25);
-  color: #93c5fd;
+  background: rgba(var(--lh-accent-rgb), 0.22);
+  color: #ffffff;
   font-weight: 600;
 }
 
@@ -4492,7 +4521,7 @@ body:has(app-tv-detail)::-webkit-scrollbar {
 
 .sort-option-btn.active .sort-icon,
 .check-icon {
-  color: #60a5fa;
+  color: var(--lh-accent);
 }
 
 .sort-option-btn.active .sort-icon {
@@ -4511,10 +4540,10 @@ body:has(app-tv-detail)::-webkit-scrollbar {
 
 .filter-chip {
   gap: 6px;
-  background: rgba(59, 130, 246, 0.18);
-  border: 1px solid rgba(96, 165, 250, 0.35);
+  background: var(--lh-accent-soft);
+  border: 1px solid var(--lh-accent-border);
   padding: 3px 10px;
-  color: #bfdbfe;
+  color: #ffffff;
   font-size: 0.78rem;
 }
 
@@ -4528,7 +4557,7 @@ body:has(app-tv-detail)::-webkit-scrollbar {
 .chip-remove {
   background: transparent;
   border: none;
-  color: #93c5fd;
+  color: var(--lh-accent-hover);
   font-size: 0.75rem;
   font-weight: 700;
   cursor: pointer;
@@ -4769,7 +4798,7 @@ body:has(app-tv-detail)::-webkit-scrollbar {
 
 .card-epg-progress-fill {
   height: 100%;
-  background: linear-gradient(90deg, #ff4d6d, #ff758f);
+  background: linear-gradient(90deg, var(--lh-accent), var(--lh-accent-hover));
   border-radius: 2px;
   transition: width 0.3s ease;
 }
@@ -4839,7 +4868,7 @@ body:has(app-tv-detail)::-webkit-scrollbar {
   font-size: 0.85rem;
   font-weight: 700;
   font-variant-numeric: tabular-nums;
-  color: #38bdf8;
+  color: var(--lh-accent);
   letter-spacing: 0.02em;
 }
 
@@ -4850,8 +4879,8 @@ body:has(app-tv-detail)::-webkit-scrollbar {
 .progress-spinner-mini {
   width: 14px;
   height: 14px;
-  border: 2px solid rgba(56, 189, 248, 0.2);
-  border-top-color: #38bdf8;
+  border: 2px solid rgba(var(--lh-accent-rgb), 0.2);
+  border-top-color: var(--lh-accent);
   border-radius: 50%;
   animation: progress-spin 0.75s linear infinite;
   flex-shrink: 0;
@@ -4861,8 +4890,8 @@ body:has(app-tv-detail)::-webkit-scrollbar {
   width: 8px;
   height: 8px;
   border-radius: 50%;
-  background-color: #38bdf8;
-  box-shadow: 0 0 8px #38bdf8;
+  background-color: var(--lh-accent);
+  box-shadow: 0 0 8px var(--lh-accent);
   animation: pulse-glow 1.5s ease-in-out infinite;
   flex-shrink: 0;
 }
@@ -4873,7 +4902,7 @@ body:has(app-tv-detail)::-webkit-scrollbar {
 
 @keyframes pulse-glow {
   0%, 100% { opacity: 0.5; transform: scale(0.9); }
-  50% { opacity: 1; transform: scale(1.15); box-shadow: 0 0 12px #38bdf8; }
+  50% { opacity: 1; transform: scale(1.15); box-shadow: 0 0 12px var(--lh-accent); }
 }
 
 .btn-retry-glass {
@@ -4912,8 +4941,8 @@ body:has(app-tv-detail)::-webkit-scrollbar {
 .progress-fill-glow {
   height: 100%;
   border-radius: 9999px;
-  background: linear-gradient(90deg, #0284c7, #38bdf8);
-  box-shadow: 0 0 10px rgba(56, 189, 248, 0.55);
+  background: linear-gradient(90deg, rgba(var(--lh-accent-rgb), 0.78), var(--lh-accent));
+  box-shadow: 0 0 10px var(--lh-accent-glow);
   transition: width 0.3s cubic-bezier(0.4, 0, 0.2, 1);
 }
 
@@ -4934,8 +4963,8 @@ body:has(app-tv-detail)::-webkit-scrollbar {
 .progress-fill-glow.indeterminate {
   position: absolute;
   width: 40% !important;
-  background: linear-gradient(90deg, transparent, #38bdf8, transparent);
-  box-shadow: 0 0 14px rgba(56, 189, 248, 0.7);
+  background: linear-gradient(90deg, transparent, var(--lh-accent), transparent);
+  box-shadow: 0 0 14px var(--lh-accent-glow);
   animation: indeterminate-slide 1.5s ease-in-out infinite;
 }
 

@@ -12,6 +12,18 @@ use crate::utils;
 
 pub const AUTO_REFRESH_INTERVAL_SECS: i64 = 48 * 3600; // 48 hours (2 days)
 
+fn get_configured_refresh_interval_secs() -> Option<i64> {
+    let hours = crate::settings::get_settings()
+        .ok()
+        .and_then(|s| s.auto_refresh_hours)
+        .unwrap_or(48);
+    if hours == 0 {
+        None
+    } else {
+        Some((hours as i64) * 3600)
+    }
+}
+
 #[cfg(target_os = "windows")]
 pub mod network_cost {
     use std::ffi::c_void;
@@ -248,9 +260,10 @@ impl AutoRefreshCoordinator {
         }
 
         // Compute fallback from DB
+        let interval_secs = get_configured_refresh_interval_secs();
         let db_state = sql::get_source_refresh_state(source_id).ok().flatten();
         let last_success = db_state.as_ref().and_then(|s| s.last_successful_refresh);
-        let next_eligible = last_success.map(|t| t + AUTO_REFRESH_INTERVAL_SECS);
+        let next_eligible = interval_secs.and_then(|iv| last_success.map(|t| t + iv));
         let last_err = db_state.as_ref().and_then(|s| s.last_error.clone());
 
         let current_status = if last_success.is_none() {
@@ -317,6 +330,7 @@ impl AutoRefreshCoordinator {
 
         let db_states = sql::get_all_source_refresh_states().unwrap_or_default();
         let now = chrono::Utc::now().timestamp();
+        let interval_secs = get_configured_refresh_interval_secs();
 
         let mut due_sources: Vec<Source> = Vec::new();
 
@@ -332,9 +346,12 @@ impl AutoRefreshCoordinator {
             }
 
             let last_success = db_states.get(&id).and_then(|s| s.last_successful_refresh);
-            let is_due = match last_success {
-                None => true, // Never refreshed on this device!
-                Some(t) => (now - t) >= AUTO_REFRESH_INTERVAL_SECS,
+            let is_due = match interval_secs {
+                None => false,
+                Some(iv) => match last_success {
+                    None => true, // Never refreshed on this device!
+                    Some(t) => (now - t) >= iv,
+                },
             };
 
             if source.enabled && is_due {
@@ -355,7 +372,7 @@ impl AutoRefreshCoordinator {
                 };
                 let db_st = db_states.get(&id);
                 let last_success = db_st.and_then(|s| s.last_successful_refresh);
-                let next_eligible = last_success.map(|t| t + AUTO_REFRESH_INTERVAL_SECS);
+                let next_eligible = interval_secs.and_then(|iv| last_success.map(|t| t + iv));
                 let last_err = db_st.and_then(|s| s.last_error.clone());
 
                 let cur_status = if last_success.is_none() {
@@ -391,7 +408,7 @@ impl AutoRefreshCoordinator {
                 let is_this_due = due_sources.iter().any(|s| s.id == Some(id));
                 let db_st = db_states.get(&id);
                 let last_success = db_st.and_then(|s| s.last_successful_refresh);
-                let next_eligible = last_success.map(|t| t + AUTO_REFRESH_INTERVAL_SECS);
+                let next_eligible = interval_secs.and_then(|iv| last_success.map(|t| t + iv));
                 let last_err = db_st.and_then(|s| s.last_error.clone());
 
                 let (cur_status, deferred_pb) = if is_this_due {
@@ -427,7 +444,7 @@ impl AutoRefreshCoordinator {
                 let is_this_due = due_sources.iter().any(|s| s.id == Some(id));
                 let db_st = db_states.get(&id);
                 let last_success = db_st.and_then(|s| s.last_successful_refresh);
-                let next_eligible = last_success.map(|t| t + AUTO_REFRESH_INTERVAL_SECS);
+                let next_eligible = interval_secs.and_then(|iv| last_success.map(|t| t + iv));
                 let last_err = db_st.and_then(|s| s.last_error.clone());
 
                 let (cur_status, deferred_metered) = if is_this_due {
@@ -465,7 +482,7 @@ impl AutoRefreshCoordinator {
                 let db_states_fresh = sql::get_all_source_refresh_states().unwrap_or_default();
                 let db_st = db_states_fresh.get(&id);
                 let last_success = db_st.and_then(|s| s.last_successful_refresh);
-                let next_eligible = last_success.map(|t| t + AUTO_REFRESH_INTERVAL_SECS);
+                let next_eligible = interval_secs.and_then(|iv| last_success.map(|t| t + iv));
                 let status = SourceDeviceRefreshStatus {
                     source_id: id,
                     last_successful_refresh: last_success,
@@ -484,7 +501,7 @@ impl AutoRefreshCoordinator {
                 let db_states_fresh = sql::get_all_source_refresh_states().unwrap_or_default();
                 let db_st = db_states_fresh.get(&id);
                 let last_success = db_st.and_then(|s| s.last_successful_refresh);
-                let next_eligible = last_success.map(|t| t + AUTO_REFRESH_INTERVAL_SECS);
+                let next_eligible = interval_secs.and_then(|iv| last_success.map(|t| t + iv));
                 let status = SourceDeviceRefreshStatus {
                     source_id: id,
                     last_successful_refresh: last_success,
@@ -521,7 +538,7 @@ impl AutoRefreshCoordinator {
             let db_states_after = sql::get_all_source_refresh_states().unwrap_or_default();
             let db_st_after = db_states_after.get(&id);
             let last_success_after = db_st_after.and_then(|s| s.last_successful_refresh);
-            let next_eligible_after = last_success_after.map(|t| t + AUTO_REFRESH_INTERVAL_SECS);
+            let next_eligible_after = interval_secs.and_then(|iv| last_success_after.map(|t| t + iv));
             let last_err_after = db_st_after.and_then(|s| s.last_error.clone());
 
             let cur_status_after = match res {

@@ -38,7 +38,6 @@ export class SourceTileComponent implements OnInit, OnChanges, OnDestroy {
   sourceTypeEnum = SourceType;
   editing = false;
   editableSource: Source = {};
-  defaultUserAgent = "Fred TV";
 
   refreshing = false;
   refreshSuccess = false;

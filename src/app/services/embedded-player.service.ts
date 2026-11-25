@@ -26,6 +26,8 @@ import { TvDetailService } from './tv-detail.service';
 import { HomeDiscoveryStateService } from './home-discovery-state.service';
 import { TmdbEnrichmentService } from './tmdb-enrichment.service';
 import { PlaybackSegmentService, ResolveSegmentOptions } from './playback-segment.service';
+import { AppPreferencesService } from './app-preferences.service';
+import { Settings } from '../models/settings';
 
 export type ContentMode = 'movie' | 'episode' | 'live';
 
@@ -73,6 +75,12 @@ export interface EmbeddedPlayerOptions {
   channels?: (Channel | SwitcherChannelData)[];
   currentGroupId?: number;
   onSwitchChannel?: (channel: Channel) => void | Promise<void>;
+  skipHistory?: boolean;
+  isReconnect?: boolean;
+}
+
+export interface SwitchChannelOptions {
+  isReconnect?: boolean;
 }
 
 @Injectable({
@@ -147,11 +155,24 @@ export class EmbeddedPlayerService implements OnDestroy {
   private unlistenRequestChannels?: UnlistenFn;
   private unlistenSelectChannel?: UnlistenFn;
   private unlistenSaveProgress?: UnlistenFn;
+  private unlistenSaveVolume?: UnlistenFn;
+  private unlistenSettingsUpdated?: UnlistenFn;
   private unlistenRequestRecommendations?: UnlistenFn;
   private unlistenPlayRecommendedMovie?: UnlistenFn;
   private unlistenRequestSegments?: UnlistenFn;
   private unlistenContextualAction?: UnlistenFn;
   private unlistenPocEvent?: UnlistenFn;
+
+  private autoReconnectEnabled: boolean = true;
+  private reconnectMaxAttempts: number = 3;
+  private isStoppingPlayer: boolean = false;
+  private isReconnectingLive: boolean = false;
+  private isLiveStreamFailedIdle: boolean = false;
+  private reconnectAttemptCount: number = 0;
+  private reconnectGeneration: number = 0;
+  private pendingReconnectTimer: ReturnType<typeof setTimeout> | null = null;
+  private healthyPlaybackTimer: ReturnType<typeof setTimeout> | null = null;
+  private hasHandledLiveFailureStop: boolean = false;
 
   private hasContextualAction: boolean = false;
   private currentContextualAction: string | null = null;
@@ -171,6 +192,7 @@ export class EmbeddedPlayerService implements OnDestroy {
     private homeDiscoveryState: HomeDiscoveryStateService,
     private tmdbEnrichment: TmdbEnrichmentService,
     private playbackSegmentService: PlaybackSegmentService,
+    private appPreferences: AppPreferencesService,
   ) {
     this.initGlobalListeners();
     this.routerSubscription = this.router.events
@@ -191,7 +213,174 @@ export class EmbeddedPlayerService implements OnDestroy {
     }
   }
 
+  private applyReconnectSettings(settings?: Settings | null): void {
+    this.autoReconnectEnabled = settings?.auto_reconnect !== false;
+    const raw = settings?.reconnect_attempts;
+    this.reconnectMaxAttempts = raw === 1 || raw === 3 || raw === 5 ? raw : 3;
+  }
+
+  private async loadReconnectSettings(): Promise<void> {
+    try {
+      const settings = await invoke<Settings>('get_settings');
+      this.applyReconnectSettings(settings);
+    } catch (err) {
+      console.warn('Failed to load reconnect settings:', err);
+    }
+  }
+
+  private clearPendingReconnectTimers(): void {
+    if (this.pendingReconnectTimer !== null) {
+      clearTimeout(this.pendingReconnectTimer);
+      this.pendingReconnectTimer = null;
+    }
+    if (this.healthyPlaybackTimer !== null) {
+      clearTimeout(this.healthyPlaybackTimer);
+      this.healthyPlaybackTimer = null;
+    }
+  }
+
+  private cancelPendingReconnect(emitOverlayReset: boolean = true): void {
+    this.reconnectGeneration += 1;
+    this.clearPendingReconnectTimers();
+    this.isReconnectingLive = false;
+    this.isLiveStreamFailedIdle = false;
+    this.reconnectAttemptCount = 0;
+    if (emitOverlayReset) {
+      emit('live-reconnect-state', { reconnecting: false, failedIdle: false }).catch(console.warn);
+    }
+  }
+
+  private scheduleHealthyPlaybackReset(): void {
+    if (this.healthyPlaybackTimer !== null) {
+      clearTimeout(this.healthyPlaybackTimer);
+      this.healthyPlaybackTimer = null;
+    }
+    const gen = this.reconnectGeneration;
+    const channelId = this.currentChannel?.id;
+    this.healthyPlaybackTimer = setTimeout(() => {
+      this.healthyPlaybackTimer = null;
+      if (
+        gen === this.reconnectGeneration &&
+        this.isPlayingEmbedded &&
+        this.currentMode === 'live' &&
+        this.currentChannel?.id === channelId
+      ) {
+        this.reconnectAttemptCount = 0;
+        this.isReconnectingLive = false;
+        this.isLiveStreamFailedIdle = false;
+      }
+    }, 10000);
+  }
+
+  private failLiveStreamIdle(message: string): void {
+    this.reconnectGeneration += 1;
+    this.clearPendingReconnectTimers();
+    this.isReconnectingLive = false;
+    this.reconnectAttemptCount = 0;
+    this.isLiveStreamFailedIdle = true;
+    this.hasHandledLiveFailureStop = true;
+    emit('live-reconnect-state', { reconnecting: false, failedIdle: true }).catch(console.warn);
+    emit('screenshot-feedback', {
+      message,
+      isError: true,
+      isReconnect: false,
+    }).catch(console.warn);
+  }
+
+  private handleLiveStreamError(): void {
+    if (
+      !this.isPlayingEmbedded ||
+      this.currentMode !== 'live' ||
+      this.isStoppingPlayer ||
+      this.hasHandledLiveFailureStop ||
+      this.isLiveStreamFailedIdle
+    ) {
+      return;
+    }
+    if (this.pendingReconnectTimer !== null) {
+      return;
+    }
+    const targetChannel = this.currentChannel;
+    if (!targetChannel || targetChannel.id == null) {
+      return;
+    }
+
+    if (!this.autoReconnectEnabled) {
+      this.failLiveStreamIdle('Channel stream failed to load');
+      return;
+    }
+
+    if (this.reconnectAttemptCount >= this.reconnectMaxAttempts) {
+      this.failLiveStreamIdle('Channel stream failed to load');
+      return;
+    }
+
+    this.reconnectAttemptCount += 1;
+    const attempt = this.reconnectAttemptCount;
+    const maxAttempts = this.reconnectMaxAttempts;
+    const delayMs = Math.min(8000, 2000 * Math.pow(2, attempt - 1));
+    this.isReconnectingLive = true;
+    this.isLiveStreamFailedIdle = false;
+    if (this.healthyPlaybackTimer !== null) {
+      clearTimeout(this.healthyPlaybackTimer);
+      this.healthyPlaybackTimer = null;
+    }
+
+    const gen = this.reconnectGeneration;
+    const retryChannel = targetChannel;
+
+    emit('live-reconnect-state', { reconnecting: true, failedIdle: false, attempt, maxAttempts }).catch(console.warn);
+    emit('screenshot-feedback', {
+      message: `Reconnecting (${attempt}/${maxAttempts})...`,
+      isError: false,
+      isReconnect: true,
+    }).catch(console.warn);
+
+    this.pendingReconnectTimer = setTimeout(() => {
+      this.pendingReconnectTimer = null;
+      if (
+        gen !== this.reconnectGeneration ||
+        !this.isPlayingEmbedded ||
+        this.currentMode !== 'live' ||
+        this.isStoppingPlayer ||
+        this.currentChannel?.id !== retryChannel.id
+      ) {
+        return;
+      }
+      void this.executeReconnectAttempt(retryChannel, gen);
+    }, delayMs);
+  }
+
+  private async executeReconnectAttempt(channel: Channel, gen: number): Promise<void> {
+    if (
+      gen !== this.reconnectGeneration ||
+      !this.isPlayingEmbedded ||
+      this.currentMode !== 'live' ||
+      this.isStoppingPlayer
+    ) {
+      return;
+    }
+    try {
+      await this.switchChannel(channel, undefined, { isReconnect: true });
+    } catch (err) {
+      console.warn('Live stream reconnect attempt failed:', err);
+      if (
+        gen === this.reconnectGeneration &&
+        !this.isStoppingPlayer &&
+        this.pendingReconnectTimer === null &&
+        this.isPlayingEmbedded &&
+        this.currentMode === 'live'
+      ) {
+        this.handleLiveStreamError();
+      }
+    }
+  }
+
   private async initGlobalListeners(): Promise<void> {
+    this.loadReconnectSettings().catch(console.warn);
+    this.unlistenSettingsUpdated = await listen<Settings>('settings-updated', (event) => {
+      this.applyReconnectSettings(event?.payload);
+    });
     // Listen for stream started (captures stream info only if started outside service, e.g. movie screen)
     this.unlistenPlayerStarted = await listen('embedded-player-started', (event: any) => {
       this.ngZone.run(() => {
@@ -359,6 +548,18 @@ export class EmbeddedPlayerService implements OnDestroy {
       }
     });
 
+    // Listen for debounced volume updates from overlay (persisted only if remember_volume is enabled)
+    this.unlistenSaveVolume = await listen('save-player-volume', async (event: any) => {
+      const raw = event?.payload?.volume;
+      if (typeof raw !== 'number' || !Number.isFinite(raw)) return;
+      const clamped = Math.min(100, Math.max(0, Math.round(raw)));
+      try {
+        await invoke('set_remembered_volume', { volume: clamped });
+      } catch (err) {
+        console.warn('Failed to persist remembered volume:', err);
+      }
+    });
+
     // Listen for movie recommendations request from overlay
     this.unlistenRequestRecommendations = await listen('request-movie-recommendations', () => {
       if (this.currentMode === 'movie' && this.currentChannel) {
@@ -403,6 +604,28 @@ export class EmbeddedPlayerService implements OnDestroy {
         if (typeof event?.payload === 'string') {
           try {
             const parsed = JSON.parse(event.payload);
+            if (parsed.event === 'end-file' && parsed.reason === 'error') {
+              if (this.currentMode === 'live' && this.isPlayingEmbedded) {
+                this.ngZone.run(() => {
+                  this.handleLiveStreamError();
+                });
+              }
+              return;
+            }
+            if (parsed.event === 'file-loaded' || parsed.event === 'playback-restart') {
+              if (
+                this.currentMode === 'live' &&
+                this.isPlayingEmbedded &&
+                (this.isReconnectingLive || this.isLiveStreamFailedIdle || this.reconnectAttemptCount > 0)
+              ) {
+                this.ngZone.run(() => {
+                  this.isReconnectingLive = false;
+                  this.isLiveStreamFailedIdle = false;
+                  emit('live-reconnect-state', { reconnecting: false, failedIdle: false }).catch(console.warn);
+                  this.scheduleHealthyPlaybackReset();
+                });
+              }
+            }
             if (parsed.event === 'property-change') {
               if (parsed.name === 'time-pos' && typeof parsed.data === 'number') {
                 const now = Date.now();
@@ -576,21 +799,6 @@ export class EmbeddedPlayerService implements OnDestroy {
     if (!this.isPlayingEmbedded) return;
 
     if (
-      event.ctrlKey &&
-      event.shiftKey &&
-      !event.altKey &&
-      !event.metaKey &&
-      (event.key === 's' || event.key === 'S' || event.code === 'KeyS')
-    ) {
-      event.preventDefault();
-      event.stopPropagation();
-      if (!event.repeat && !this.screenshotInFlight) {
-        void this.captureScreenshot();
-      }
-      return;
-    }
-
-    if (
       event.key === 'Escape' ||
       event.key === 'BrowserBack' ||
       (event.key === 'Backspace' && !isInputFocused())
@@ -605,8 +813,18 @@ export class EmbeddedPlayerService implements OnDestroy {
       return;
     }
 
-    if (event.key === ' ' || event.code === 'Space') {
-      if (isInputFocused()) return;
+    if (this.appPreferences.matchesAction(event, 'screenshot')) {
+      event.preventDefault();
+      event.stopPropagation();
+      if (!event.repeat && !this.screenshotInFlight) {
+        void this.captureScreenshot();
+      }
+      return;
+    }
+
+    if (isInputFocused()) return;
+
+    if (this.appPreferences.matchesAction(event, 'togglePlay')) {
       event.preventDefault();
       event.stopPropagation();
       if (this.hasContextualAction) {
@@ -620,7 +838,7 @@ export class EmbeddedPlayerService implements OnDestroy {
       return;
     }
 
-    if (event.key === 'ArrowLeft') {
+    if (this.appPreferences.matchesAction(event, 'seekBack')) {
       if (this.currentMode !== 'live') {
         emit('player-seek-left').catch(console.warn);
       }
@@ -629,7 +847,7 @@ export class EmbeddedPlayerService implements OnDestroy {
       return;
     }
 
-    if (event.key === 'ArrowRight') {
+    if (this.appPreferences.matchesAction(event, 'seekForward')) {
       if (this.currentMode !== 'live') {
         emit('player-seek-right').catch(console.warn);
       }
@@ -638,41 +856,35 @@ export class EmbeddedPlayerService implements OnDestroy {
       return;
     }
 
-    if (event.key === 'ArrowUp' || event.key === 'AudioVolumeUp') {
+    if (this.appPreferences.matchesAction(event, 'volumeUp') || event.key === 'AudioVolumeUp') {
       emit('player-volume-up').catch(console.warn);
       event.preventDefault();
       event.stopPropagation();
       return;
     }
 
-    if (event.key === 'ArrowDown' || event.key === 'AudioVolumeDown') {
+    if (this.appPreferences.matchesAction(event, 'volumeDown') || event.key === 'AudioVolumeDown') {
       emit('player-volume-down').catch(console.warn);
       event.preventDefault();
       event.stopPropagation();
       return;
     }
 
-    if (event.key === 'f' || event.key === 'F') {
+    if (this.appPreferences.matchesAction(event, 'toggleFullscreen')) {
       invoke('toggle_player_fullscreen').catch(console.error);
       event.preventDefault();
       event.stopPropagation();
       return;
     }
 
-    if (event.key === 'm' || event.key === 'M' || event.key === 'AudioVolumeMute') {
+    if (this.appPreferences.matchesAction(event, 'toggleMute') || event.key === 'AudioVolumeMute') {
       emit('player-volume-mute').catch(console.warn);
       event.preventDefault();
       event.stopPropagation();
       return;
     }
 
-    if (
-      (event.key === 'i' || event.key === 'I') &&
-      !event.ctrlKey &&
-      !event.altKey &&
-      !event.metaKey &&
-      !isInputFocused()
-    ) {
+    if (this.appPreferences.matchesAction(event, 'toggleNerdStats')) {
       emit('toggle-nerd-stats').catch(console.warn);
       event.preventDefault();
       event.stopPropagation();
@@ -683,8 +895,7 @@ export class EmbeddedPlayerService implements OnDestroy {
       (event.key === '+' || event.key === '=' || event.code === 'NumpadAdd') &&
       !event.ctrlKey &&
       !event.altKey &&
-      !event.metaKey &&
-      !isInputFocused()
+      !event.metaKey
     ) {
       emit('player-sub-delay-up').catch(console.warn);
       event.preventDefault();
@@ -696,8 +907,7 @@ export class EmbeddedPlayerService implements OnDestroy {
       (event.key === '-' || event.key === '_' || event.code === 'NumpadSubtract') &&
       !event.ctrlKey &&
       !event.altKey &&
-      !event.metaKey &&
-      !isInputFocused()
+      !event.metaKey
     ) {
       emit('player-sub-delay-down').catch(console.warn);
       event.preventDefault();
@@ -705,26 +915,26 @@ export class EmbeddedPlayerService implements OnDestroy {
       return;
     }
 
-    if (this.currentMode === 'live' && !event.ctrlKey && !event.altKey && !event.metaKey && !isInputFocused()) {
-      if (event.key === 'PageUp' || event.key === 'ChannelUp') {
+    if (this.currentMode === 'live') {
+      if (this.appPreferences.matchesAction(event, 'nextChannel') || event.key === 'ChannelUp') {
         emit('player-channel-next').catch(console.warn);
         event.preventDefault();
         event.stopPropagation();
         return;
       }
-      if (event.key === 'PageDown' || event.key === 'ChannelDown') {
+      if (this.appPreferences.matchesAction(event, 'prevChannel') || event.key === 'ChannelDown') {
         emit('player-channel-prev').catch(console.warn);
         event.preventDefault();
         event.stopPropagation();
         return;
       }
-      if (event.key === 'l' || event.key === 'L') {
+      if (this.appPreferences.matchesAction(event, 'recallChannel')) {
         emit('player-channel-recall').catch(console.warn);
         event.preventDefault();
         event.stopPropagation();
         return;
       }
-      if (event.key === 'c' || event.key === 'C') {
+      if (this.appPreferences.matchesAction(event, 'toggleChannelsDrawer')) {
         emit('toggle-channels-drawer').catch(console.warn);
         event.preventDefault();
         event.stopPropagation();
@@ -832,9 +1042,11 @@ export class EmbeddedPlayerService implements OnDestroy {
   }
 
   private handlePlayerStopped(): void {
-    if (this.isRestartingPlayer) {
+    if (this.isRestartingPlayer || this.isReconnectingLive || this.isLiveStreamFailedIdle) {
       return;
     }
+    this.cancelPendingReconnect(false);
+    this.hasHandledLiveFailureStop = false;
     this.cleanupVideoResizeObserver();
     this.removeKeyHandler();
     this.cleanupTauriListeners();
@@ -869,48 +1081,56 @@ export class EmbeddedPlayerService implements OnDestroy {
   }
 
   public async stopPlayer(): Promise<void> {
-    this.cleanupVideoResizeObserver();
-    this.removeKeyHandler();
-    this.cleanupTauriListeners();
-
-    this.currentMode = 'movie';
-    emit('embedded-player-mode', { mode: 'movie' }).catch(console.warn);
-    emit('overlay-top-crop', { crop: 32 }).catch(console.warn);
-    this.playbackProgress$.next({ channelId: undefined, time: 0, duration: 0, percent: 0 });
-    this.hasContextualAction = false;
-    this.currentContextualAction = null;
-
-    if (this.isFullscreen) {
-      this.isFullscreenSubject.next(false);
-      document.body.classList.remove('fullscreen-player-active');
-      try {
-        await invoke('set_main_window_fullscreen', { fullscreen: false });
-      } catch {}
-    }
-
-    document.body.classList.remove('theater-mode-active');
-    document.body.classList.remove('fullscreen-player-active');
-
+    this.isStoppingPlayer = true;
+    this.cancelPendingReconnect(true);
     try {
-      await invoke('stop_embedded_poc');
-    } catch (e) {
-      console.warn('stop_embedded_poc error', e);
+      this.cleanupVideoResizeObserver();
+      this.removeKeyHandler();
+      this.cleanupTauriListeners();
+
+      this.currentMode = 'movie';
+      emit('embedded-player-mode', { mode: 'movie' }).catch(console.warn);
+      emit('overlay-top-crop', { crop: 32 }).catch(console.warn);
+      this.appPreferences.emitOverlayPreferences();
+      this.playbackProgress$.next({ channelId: undefined, time: 0, duration: 0, percent: 0 });
+      this.hasContextualAction = false;
+      this.currentContextualAction = null;
+
+      if (this.isFullscreen) {
+        this.isFullscreenSubject.next(false);
+        document.body.classList.remove('fullscreen-player-active');
+        try {
+          await invoke('set_main_window_fullscreen', { fullscreen: false });
+        } catch {}
+      }
+
+      document.body.classList.remove('theater-mode-active');
+      document.body.classList.remove('fullscreen-player-active');
+
+      try {
+        await invoke('stop_embedded_poc');
+      } catch (e) {
+        console.warn('stop_embedded_poc error', e);
+      }
+
+      this.currentChannel = undefined;
+      this.activeFallbackChannel = undefined;
+      this.seriesChannel = undefined;
+      this.seriesTitle = undefined;
+      this.lastPlayerOptions = undefined;
+      this.seasons = [];
+      this.episodes = [];
+      this.onSwitchEpisodeCallback = undefined;
+      this.liveChannels = [];
+      this.onSwitchChannelCallback = undefined;
+
+      this.isPlayingEmbeddedSubject.next(false);
+      this.tmdbEnrichment.setPlaybackActive(false);
+      this.restoreScrollPosition();
+    } finally {
+      this.isStoppingPlayer = false;
+      this.hasHandledLiveFailureStop = false;
     }
-
-    this.currentChannel = undefined;
-    this.activeFallbackChannel = undefined;
-    this.seriesChannel = undefined;
-    this.seriesTitle = undefined;
-    this.lastPlayerOptions = undefined;
-    this.seasons = [];
-    this.episodes = [];
-    this.onSwitchEpisodeCallback = undefined;
-    this.liveChannels = [];
-    this.onSwitchChannelCallback = undefined;
-
-    this.isPlayingEmbeddedSubject.next(false);
-    this.tmdbEnrichment.setPlaybackActive(false);
-    this.restoreScrollPosition();
   }
 
   public async startPlayer(
@@ -918,7 +1138,14 @@ export class EmbeddedPlayerService implements OnDestroy {
     hostElementOrId: HTMLElement | string,
     options?: EmbeddedPlayerOptions,
   ): Promise<void> {
-    if (channel?.id) {
+    if (!options?.isReconnect) {
+      this.cancelPendingReconnect(true);
+      this.hasHandledLiveFailureStop = false;
+      if ((options?.mode || this.currentMode) === 'live') {
+        this.loadReconnectSettings().catch(console.warn);
+      }
+    }
+    if (channel?.id && !options?.skipHistory && !options?.isReconnect) {
       await this.markLastWatched(channel.id);
     }
 
@@ -1050,6 +1277,7 @@ export class EmbeddedPlayerService implements OnDestroy {
         width,
         height,
         zOrder: 'top',
+        skipHistory: !!(options?.skipHistory || options?.isReconnect),
       });
 
       const stableMediaKey = this.computeStableMediaKey(playChannel, options);
@@ -1064,6 +1292,7 @@ export class EmbeddedPlayerService implements OnDestroy {
       }).catch(console.warn);
       emit('embedded-player-mode', { mode: this.currentMode, channelId: channel.id }).catch(console.warn);
       emit('overlay-top-crop', { crop: 32 }).catch(console.warn);
+      this.appPreferences.emitOverlayPreferences();
 
       // Safe fallback seek only if overlay hasn't already resumed after file-loaded
       if (startPos > 5 && this.currentMode !== 'live') {
@@ -1443,17 +1672,28 @@ export class EmbeddedPlayerService implements OnDestroy {
     }).catch(console.warn);
   }
 
-  public async switchChannel(channel: Channel, title?: string): Promise<void> {
+  public async switchChannel(
+    channel: Channel,
+    title?: string,
+    options?: SwitchChannelOptions,
+  ): Promise<void> {
     if (!channel || channel.id == null) return;
+    const isReconnect = !!options?.isReconnect;
+    if (!isReconnect) {
+      this.cancelPendingReconnect(true);
+      this.hasHandledLiveFailureStop = false;
+    }
     this.currentChannel = channel;
-    await this.markLastWatched(channel.id);
+    if (!isReconnect) {
+      await this.markLastWatched(channel.id);
+    }
     if (channel.group_id != null) {
       this.currentGroupId = channel.group_id;
     }
     const channelTitle = title || cleanMediaTitle(channel.name || 'Live TV');
     const playChannel = { ...channel, name: channelTitle };
 
-    if (this.onSwitchChannelCallback) {
+    if (!isReconnect && this.onSwitchChannelCallback) {
       try {
         await this.onSwitchChannelCallback(playChannel);
       } catch (e) {
@@ -1468,6 +1708,9 @@ export class EmbeddedPlayerService implements OnDestroy {
       await this.startPlayer(playChannel, this.hostTarget || this.resolveVideoCanvasId(), {
         mode: 'live',
         title: channelTitle,
+        currentGroupId: this.currentGroupId ?? channel.group_id,
+        skipHistory: true,
+        isReconnect,
       });
     }
 
@@ -2668,6 +2911,7 @@ export class EmbeddedPlayerService implements OnDestroy {
   }
 
   ngOnDestroy(): void {
+    this.cancelPendingReconnect(false);
     if (this.routerSubscription) {
       this.routerSubscription.unsubscribe();
     }
@@ -2681,6 +2925,8 @@ export class EmbeddedPlayerService implements OnDestroy {
     if (this.unlistenRequestChannels) this.unlistenRequestChannels();
     if (this.unlistenSelectChannel) this.unlistenSelectChannel();
     if (this.unlistenSaveProgress) this.unlistenSaveProgress();
+    if (this.unlistenSaveVolume) this.unlistenSaveVolume();
+    if (this.unlistenSettingsUpdated) this.unlistenSettingsUpdated();
     if (this.unlistenRequestRecommendations) this.unlistenRequestRecommendations();
     if (this.unlistenPlayRecommendedMovie) this.unlistenPlayRecommendedMovie();
     if (this.unlistenRequestSegments) this.unlistenRequestSegments();

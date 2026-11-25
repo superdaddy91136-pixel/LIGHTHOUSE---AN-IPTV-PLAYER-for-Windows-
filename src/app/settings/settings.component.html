@@ -26,12 +26,37 @@
       aria-orientation="vertical"
       aria-label="Settings categories"
       (keydown)="onSettingsNavKeydown($event)">
+
+      <div class="sidebar-search-wrapper">
+        <svg class="sidebar-search-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true">
+          <circle cx="11" cy="11" r="7" />
+          <path d="M21 21l-4.35-4.35" />
+        </svg>
+        <input
+          type="text"
+          class="sidebar-search-input"
+          placeholder="Search settings..."
+          aria-label="Search settings"
+          [ngModel]="settingsSearch"
+          (ngModelChange)="onSettingsSearchChange($event)" />
+        <button
+          *ngIf="settingsSearch"
+          type="button"
+          class="sidebar-search-clear"
+          title="Clear search"
+          aria-label="Clear search"
+          (click)="clearSettingsSearch()">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4">
+            <path d="M18 6L6 18M6 6l12 12" />
+          </svg>
+        </button>
+      </div>
       
       <div class="sidebar-category-list">
         <button
           type="button"
           class="settings-nav-item"
-          *ngFor="let category of categories; trackBy: trackByCategory"
+          *ngFor="let category of filteredCategories; trackBy: trackByCategory"
           [id]="'settings-tab-' + category.id"
           role="tab"
           [class.active]="activeCategory === category.id"
@@ -46,6 +71,9 @@
           </span>
           <span class="settings-nav-label">{{ category.label }}</span>
         </button>
+        <div *ngIf="filteredCategories.length === 0" class="sidebar-search-empty">
+          No matching settings
+        </div>
       </div>
 
       <div class="sidebar-footer">
@@ -77,11 +105,16 @@
           <p class="category-subtitle">Startup section, catalog ordering, and interface scale</p>
         </div>
 
-        <div class="settings-section">
-          <h3 class="section-title">Startup &amp; Catalog</h3>
+        <div class="settings-section" [hidden]="!matchesSearch('general startup page home discovery live tv movies tv shows default catalog sorting')">
+          <div class="section-header-row">
+            <h3 class="section-title">Startup &amp; Catalog</h3>
+            <button type="button" class="btn-subtle btn-reset-section" (click)="resetSection('general-startup')">
+              Reset section to default
+            </button>
+          </div>
           <div class="section-card">
             <!-- Startup Page -->
-            <div class="setting-item">
+            <div class="setting-item" [hidden]="!matchesSearch('general startup page shown at startup launch home discovery live tv movies tv shows')">
               <div class="setting-meta">
                 <label class="setting-title" for="startupPageSelect">Page Shown at Startup</label>
                 <p class="setting-hint">The primary screen opened when launching Lighthouse</p>
@@ -102,7 +135,7 @@
             </div>
 
             <!-- Default Sort -->
-            <div class="setting-item">
+            <div class="setting-item" [hidden]="!matchesSearch('general default catalog sorting ordering channels movies series')">
               <div class="setting-meta">
                 <label class="setting-title" for="defaultSortSelect">Default Catalog Sorting</label>
                 <p class="setting-hint">Initial ordering applied to channels, movies, and series lists</p>
@@ -123,8 +156,13 @@
           </div>
         </div>
 
-        <div class="settings-section">
-          <h3 class="section-title">Display &amp; Scale</h3>
+        <div class="settings-section" [hidden]="!matchesSearch('general display scale interface scaling zoom high-dpi')">
+          <div class="section-header-row">
+            <h3 class="section-title">Display &amp; Scale</h3>
+            <button type="button" class="btn-subtle btn-reset-section" (click)="resetSection('general-display')">
+              Reset section to default
+            </button>
+          </div>
           <div class="section-card">
             <!-- UI Zoom / Scale -->
             <div class="setting-item">
@@ -156,14 +194,37 @@
           <p class="category-subtitle">Audio volume, network buffer, and GPU video decoding</p>
         </div>
 
-        <div class="settings-section">
-          <h3 class="section-title">Audio &amp; Buffering</h3>
+        <div class="settings-section" [hidden]="!matchesSearch('playback audio buffering remember last volume startup volume level stream caching buffer preset low latency balanced smooth auto reconnect stream failure retry count')">
+          <div class="section-header-row">
+            <h3 class="section-title">Audio &amp; Buffering</h3>
+            <button type="button" class="btn-subtle btn-reset-section" (click)="resetSection('playback-audio')">
+              Reset section to default
+            </button>
+          </div>
           <div class="section-card">
+            <!-- Remember Last Volume -->
+            <div class="setting-item" [hidden]="!matchesSearch('playback audio remember last volume overlay')">
+              <div class="setting-meta">
+                <label class="setting-title" for="rememberVolumeSwitch">Remember Last Volume</label>
+                <p class="setting-hint">Automatically save overlay volume changes for future sessions. Turn off to always launch at the fixed startup volume below.</p>
+              </div>
+              <div class="setting-control">
+                <label class="modern-toggle" for="rememberVolumeSwitch">
+                  <input 
+                    id="rememberVolumeSwitch" 
+                    type="checkbox"
+                    [(ngModel)]="settings.remember_volume" 
+                    (ngModelChange)="updateSettings()" />
+                  <span class="toggle-slider"></span>
+                </label>
+              </div>
+            </div>
+
             <!-- Startup Volume -->
-            <div class="setting-item">
+            <div class="setting-item" [hidden]="!matchesSearch('playback audio startup volume level fixed remembered')">
               <div class="setting-meta">
                 <label class="setting-title" for="startVolumeSlider">Startup Volume Level</label>
-                <p class="setting-hint">Initial audio level applied when opening streams or recordings</p>
+                <p class="setting-hint">{{ settings.remember_volume ? 'Current remembered audio level (updated automatically from overlay changes). Applies on next playback.' : 'Fixed initial audio level applied when opening streams. Applies on next playback.' }}</p>
               </div>
               <div class="setting-control">
                 <div class="modern-slider-wrapper">
@@ -178,17 +239,17 @@
                     max="100" 
                     step="1"
                     [(ngModel)]="settings.volume" 
-                    (ngModelChange)="updateSettings()" />
+                    (ngModelChange)="onVolumeChange()" />
                   <span class="slider-badge">{{ settings.volume }}%</span>
                 </div>
               </div>
             </div>
 
             <!-- Stream Caching -->
-            <div class="setting-item">
+            <div class="setting-item" [hidden]="!matchesSearch('playback buffering stream caching buffer live delay')">
               <div class="setting-meta">
                 <label class="setting-title" for="streamCacheSwitch">Stream Caching Buffer</label>
-                <p class="setting-hint">Buffer incoming stream data to prevent playback stutter. Disabling lowers live stream delay</p>
+                <p class="setting-hint">Buffer incoming stream data to prevent playback stutter. Disabling skips large cache buffers and lowers live delay. Applies on next playback.</p>
               </div>
               <div class="setting-control">
                 <label class="modern-toggle" for="streamCacheSwitch">
@@ -201,17 +262,159 @@
                 </label>
               </div>
             </div>
+
+            <!-- Buffer Preset -->
+            <div class="setting-item" [class.opacity-50]="!settings.use_stream_caching" [hidden]="!matchesSearch('playback buffer preset low latency balanced smooth')">
+              <div class="setting-meta">
+                <label class="setting-title" for="bufferPresetSelect">Buffer Size Preset</label>
+                <p class="setting-hint">Choose low-latency zapping or larger readahead for unreliable networks. Applies on next playback.</p>
+              </div>
+              <div class="setting-control">
+                <div class="modern-select-wrapper">
+                  <select
+                    id="bufferPresetSelect"
+                    class="modern-select"
+                    [disabled]="!settings.use_stream_caching"
+                    [(ngModel)]="settings.buffer_preset"
+                    (ngModelChange)="updateSettings()">
+                    <option *ngFor="let opt of bufferPresetOptions" [value]="opt.value">{{ opt.label }}</option>
+                  </select>
+                  <svg class="select-chevron" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                    <path d="M6 9l6 6 6-6" />
+                  </svg>
+                </div>
+              </div>
+            </div>
+
+            <!-- Auto-reconnect on stream failure -->
+            <div class="setting-item" [hidden]="!matchesSearch('playback auto-reconnect auto reconnect stream failure live tv retry')">
+              <div class="setting-meta">
+                <label class="setting-title" for="autoReconnectSwitch">Auto-reconnect on stream failure</label>
+                <p class="setting-hint">Automatically retry failed live TV streams before stopping playback.</p>
+              </div>
+              <div class="setting-control">
+                <label class="modern-toggle" for="autoReconnectSwitch">
+                  <input 
+                    id="autoReconnectSwitch" 
+                    type="checkbox"
+                    [(ngModel)]="settings.auto_reconnect" 
+                    (ngModelChange)="updateSettings()" />
+                  <span class="toggle-slider"></span>
+                </label>
+              </div>
+            </div>
+
+            <!-- Reconnect Retry Count -->
+            <div class="setting-item" [hidden]="!matchesSearch('playback reconnect retry count attempts failure')">
+              <div class="setting-meta">
+                <label class="setting-title" for="reconnectAttemptsSelect">Reconnect Retry Count</label>
+                <p class="setting-hint">Maximum automatic retry attempts before showing an error and stopping.</p>
+              </div>
+              <div class="setting-control">
+                <div class="modern-select-wrapper">
+                  <select
+                    id="reconnectAttemptsSelect"
+                    class="modern-select"
+                    [(ngModel)]="settings.reconnect_attempts"
+                    (ngModelChange)="updateSettings()">
+                    <option *ngFor="let count of reconnectAttemptOptions" [ngValue]="count">
+                      {{ count }} {{ count === 1 ? 'Retry' : 'Retries' }}
+                    </option>
+                  </select>
+                  <svg class="select-chevron" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                    <path d="M6 9l6 6 6-6" />
+                  </svg>
+                </div>
+              </div>
+            </div>
           </div>
         </div>
 
-        <div class="settings-section">
-          <h3 class="section-title">Hardware Acceleration</h3>
+        <div class="settings-section" [hidden]="!matchesSearch('playback language audio subtitle default deinterlacing deinterlace video processing')">
+          <div class="section-header-row">
+            <h3 class="section-title">Languages &amp; Video Processing</h3>
+            <button type="button" class="btn-subtle btn-reset-section" (click)="resetSection('playback-lang')">
+              Reset section to default
+            </button>
+          </div>
+          <div class="section-card">
+            <div class="setting-item" [hidden]="!matchesSearch('playback default audio language alang track')">
+              <div class="setting-meta">
+                <label class="setting-title" for="defaultAudioLangSelect">Default Audio Language</label>
+                <p class="setting-hint">Preferred audio language automatically selected when available. Applies on next playback.</p>
+              </div>
+              <div class="setting-control">
+                <div class="modern-select-wrapper">
+                  <select
+                    id="defaultAudioLangSelect"
+                    class="modern-select"
+                    [(ngModel)]="settings.default_audio_lang"
+                    (ngModelChange)="updateSettings()">
+                    <option value="">Auto (Original)</option>
+                    <option *ngFor="let lang of languageOptions" [value]="lang.value">{{ lang.label }}</option>
+                  </select>
+                  <svg class="select-chevron" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                    <path d="M6 9l6 6 6-6" />
+                  </svg>
+                </div>
+              </div>
+            </div>
+
+            <div class="setting-item" [hidden]="!matchesSearch('playback default subtitle language slang track off')">
+              <div class="setting-meta">
+                <label class="setting-title" for="defaultSubtitleLangSelect">Default Subtitle Language</label>
+                <p class="setting-hint">Default subtitle language or Off for new streams. Applies on next playback.</p>
+              </div>
+              <div class="setting-control">
+                <div class="modern-select-wrapper">
+                  <select
+                    id="defaultSubtitleLangSelect"
+                    class="modern-select"
+                    [(ngModel)]="settings.default_subtitle_lang"
+                    (ngModelChange)="updateSettings()">
+                    <option value="">Follow Last Selection</option>
+                    <option value="off">Off</option>
+                    <option *ngFor="let lang of languageOptions" [value]="lang.value">{{ lang.label }}</option>
+                  </select>
+                  <svg class="select-chevron" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                    <path d="M6 9l6 6 6-6" />
+                  </svg>
+                </div>
+              </div>
+            </div>
+
+            <div class="setting-item" [hidden]="!matchesSearch('playback deinterlacing deinterlace auto interlaced live tv')">
+              <div class="setting-meta">
+                <label class="setting-title" for="deinterlaceSwitch">Deinterlacing</label>
+                <p class="setting-hint">Automatically deinterlace interlaced broadcast feeds (adds <code>--deinterlace=auto</code> to MPV). Applies on next playback.</p>
+              </div>
+              <div class="setting-control">
+                <label class="modern-toggle" for="deinterlaceSwitch">
+                  <input
+                    id="deinterlaceSwitch"
+                    type="checkbox"
+                    [(ngModel)]="settings.enable_deinterlace"
+                    (ngModelChange)="updateSettings()" />
+                  <span class="toggle-slider"></span>
+                </label>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <div class="settings-section" [hidden]="!matchesSearch('playback hardware acceleration video decoding hwdec modern gpu render pipeline vo gpu-next')">
+          <div class="section-header-row">
+            <h3 class="section-title">Hardware Acceleration</h3>
+            <button type="button" class="btn-subtle btn-reset-section" (click)="resetSection('playback-hw')">
+              Reset section to default
+            </button>
+          </div>
           <div class="section-card">
             <!-- Hardware Decoding -->
-            <div class="setting-item">
+            <div class="setting-item" [hidden]="!matchesSearch('playback hardware video decoding hwdec gpu cpu')">
               <div class="setting-meta">
                 <label class="setting-title" for="hwdecSwitch">Hardware Video Decoding</label>
-                <p class="setting-hint">Offload video decoding to your GPU (adds <code>--hwdec=auto</code> to MPV) to reduce CPU usage</p>
+                <p class="setting-hint">Offload video decoding to your GPU (adds <code>--hwdec=auto-safe</code> to MPV) to reduce CPU usage. Applies on next playback.</p>
               </div>
               <div class="setting-control">
                 <label class="modern-toggle" for="hwdecSwitch">
@@ -226,10 +429,10 @@
             </div>
 
             <!-- Modern GPU Pipeline -->
-            <div class="setting-item">
+            <div class="setting-item" [hidden]="!matchesSearch('playback hardware modern gpu render pipeline vo gpu-next hdr shader')">
               <div class="setting-meta">
                 <label class="setting-title" for="gpuNextSwitch">Modern GPU Render Pipeline</label>
-                <p class="setting-hint">Enable high-performance shader scaling and HDR tone mapping (adds <code>--vo=gpu-next</code> to MPV)</p>
+                <p class="setting-hint">Enable high-performance shader scaling and HDR tone mapping (adds <code>--vo=gpu-next</code> to MPV). Applies on next playback.</p>
               </div>
               <div class="setting-control">
                 <label class="modern-toggle" for="gpuNextSwitch">
@@ -245,21 +448,127 @@
           </div>
         </div>
 
-        <div class="settings-section">
-          <h3 class="section-title">Advanced Parameters</h3>
+        <div class="settings-section" [hidden]="!matchesSearch('playback advanced parameters mpv cli flags custom arguments')">
+          <div class="section-header-row">
+            <h3 class="section-title">Advanced Parameters</h3>
+            <button type="button" class="btn-subtle btn-reset-section" (click)="resetSection('playback-mpv')">
+              Reset section to default
+            </button>
+          </div>
           <div class="section-card">
             <div class="code-editor-block">
               <div class="code-editor-header">
                 <span class="code-editor-badge">MPV CLI</span>
-                <span class="code-editor-hint">Custom arguments passed directly to the embedded MPV playback process</span>
+                <span class="code-editor-hint">Custom arguments passed directly to the embedded MPV playback process. Applies on next playback.</span>
               </div>
               <textarea 
                 #mpvParams 
                 id="mpvParams" 
                 [(ngModel)]="settings.mpv_params"
-                placeholder="e.g. --hwdec=auto --demuxer-max-bytes=150M --cache-secs=30"
+                (ngModelChange)="onMpvParamsChange()"
+                placeholder="e.g. --demuxer-max-bytes=150M --cache-secs=30"
                 class="modern-textarea"
                 rows="3"></textarea>
+            </div>
+            <div *ngIf="mpvParamsError" class="status-banner status-banner-danger">
+              <svg class="alert-icon" viewBox="0 0 24 24" fill="currentColor">
+                <path d="M13,13H11V7H13M13,17H11V15H13M12,2A10,10 0 0,0 2,12A10,10 0 0,0 12,22A10,10 0 0,0 22,12A10,10 0 0,0 12,2Z"/>
+              </svg>
+              <span class="alert-text">{{ mpvParamsError }}</span>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- ========================================== -->
+      <!-- 2B. LIVE TV CATEGORY                       -->
+      <!-- ========================================== -->
+      <div class="settings-category" [hidden]="activeCategory !== 'livetv'">
+        <div class="category-header">
+          <h2 class="category-title">Live TV Preferences</h2>
+          <p class="category-subtitle">Default Live TV section, channel resume behavior, and hidden items</p>
+        </div>
+
+        <div class="settings-section" [hidden]="!matchesSearch('live tv startup navigation default folder favorites all channels recent resume last watched channel')">
+          <div class="section-header-row">
+            <h3 class="section-title">Startup &amp; Navigation</h3>
+            <button type="button" class="btn-subtle btn-reset-section" (click)="resetSection('livetv-prefs')">
+              Reset section to default
+            </button>
+          </div>
+          <div class="section-card">
+            <div class="setting-item" [hidden]="!matchesSearch('live tv default folder favorites all channels recent')">
+              <div class="setting-meta">
+                <label class="setting-title" for="defaultLiveFolderSelect">Default Live TV Folder</label>
+                <p class="setting-hint">Initial Live TV view opened when switching to the Live TV tab</p>
+              </div>
+              <div class="setting-control">
+                <div class="modern-select-wrapper">
+                  <select
+                    id="defaultLiveFolderSelect"
+                    class="modern-select"
+                    [(ngModel)]="settings.default_live_folder"
+                    (ngModelChange)="updateSettings()">
+                    <option *ngFor="let opt of liveFolderOptions" [value]="opt.value">{{ opt.label }}</option>
+                  </select>
+                  <svg class="select-chevron" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                    <path d="M6 9l6 6 6-6" />
+                  </svg>
+                </div>
+              </div>
+            </div>
+
+            <div class="setting-item" [hidden]="!matchesSearch('live tv start resume last watched channel auto play')">
+              <div class="setting-meta">
+                <label class="setting-title" for="liveStartLastSwitch">Start on Last Watched Channel</label>
+                <p class="setting-hint">Automatically play your most recently watched Live TV channel when first opening Live TV</p>
+              </div>
+              <div class="setting-control">
+                <label class="modern-toggle" for="liveStartLastSwitch">
+                  <input
+                    id="liveStartLastSwitch"
+                    type="checkbox"
+                    [(ngModel)]="settings.live_start_last_channel"
+                    (ngModelChange)="updateSettings()" />
+                  <span class="toggle-slider"></span>
+                </label>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <div class="settings-section" [hidden]="!matchesSearch('live tv hidden channels groups categories unhide filter manage')">
+          <div class="section-header-row">
+            <h3 class="section-title">Hidden Channels &amp; Categories</h3>
+            <div class="d-flex align-items-center gap-2">
+              <span class="section-badge" *ngIf="hiddenItems.length > 0">{{ hiddenItems.length }} Hidden</span>
+              <button type="button" class="btn-subtle btn-reset-section" (click)="loadHiddenItems()" [disabled]="loadingHiddenItems">
+                {{ loadingHiddenItems ? 'Loading...' : 'Refresh' }}
+              </button>
+            </div>
+          </div>
+          <div class="section-card">
+            <div class="hidden-list-toolbar" *ngIf="hiddenItems.length > 0">
+              <input
+                type="text"
+                class="hidden-search-input"
+                placeholder="Filter hidden channels or categories..."
+                [(ngModel)]="hiddenSearchQuery"
+                (ngModelChange)="filterHiddenItems()" />
+            </div>
+            <div class="hidden-items-scroll" *ngIf="filteredHiddenItems.length > 0">
+              <div class="setting-item" *ngFor="let item of filteredHiddenItems">
+                <div class="setting-meta">
+                  <span class="setting-title">{{ item.name }}</span>
+                  <p class="setting-hint">{{ getHiddenMediaLabel(item) }}</p>
+                </div>
+                <div class="setting-control">
+                  <button type="button" class="btn-subtle" (click)="unhideItem(item)">Unhide</button>
+                </div>
+              </div>
+            </div>
+            <div class="hidden-empty-row" *ngIf="!loadingHiddenItems && filteredHiddenItems.length === 0">
+              {{ hiddenItems.length === 0 ? 'No hidden channels or categories.' : 'No hidden items match your filter.' }}
             </div>
           </div>
         </div>
@@ -271,10 +580,62 @@
       <div class="settings-category" [hidden]="activeCategory !== 'library'">
         <div class="category-header">
           <h2 class="category-title">Library &amp; Sources</h2>
-          <p class="category-subtitle">Connected IPTV playlists, synchronization, and viewing history</p>
+          <p class="category-subtitle">Connected IPTV playlists, synchronization schedule, and updates</p>
         </div>
 
-        <div class="settings-section">
+        <div class="settings-section" [hidden]="!matchesSearch('library schedule auto-refresh interval hours epg sync frequency')">
+          <div class="section-header-row">
+            <h3 class="section-title">Automatic Scheduling</h3>
+            <button type="button" class="btn-subtle btn-reset-section" (click)="resetSection('library-schedule')">
+              Reset section to default
+            </button>
+          </div>
+          <div class="section-card">
+            <div class="setting-item" [hidden]="!matchesSearch('library playlist auto-refresh interval off 12h 24h 48h')">
+              <div class="setting-meta">
+                <label class="setting-title" for="autoRefreshSelect">Source Auto-Refresh Interval</label>
+                <p class="setting-hint">How often background sync checks eligible sources when idle</p>
+              </div>
+              <div class="setting-control">
+                <div class="modern-select-wrapper">
+                  <select
+                    id="autoRefreshSelect"
+                    class="modern-select"
+                    [(ngModel)]="settings.auto_refresh_hours"
+                    (ngModelChange)="onAutoRefreshHoursChange()">
+                    <option *ngFor="let opt of refreshIntervalOptions" [ngValue]="opt.value">{{ opt.label }}</option>
+                  </select>
+                  <svg class="select-chevron" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                    <path d="M6 9l6 6 6-6" />
+                  </svg>
+                </div>
+              </div>
+            </div>
+
+            <div class="setting-item" [hidden]="!matchesSearch('library epg sync frequency refresh interval')">
+              <div class="setting-meta">
+                <label class="setting-title" for="epgRefreshSelect">EPG Refresh Frequency</label>
+                <p class="setting-hint">Minimum interval between automatic EPG reminder checks on startup</p>
+              </div>
+              <div class="setting-control">
+                <div class="modern-select-wrapper">
+                  <select
+                    id="epgRefreshSelect"
+                    class="modern-select"
+                    [(ngModel)]="settings.epg_refresh_hours"
+                    (ngModelChange)="updateSettings()">
+                    <option *ngFor="let opt of refreshIntervalOptions" [ngValue]="opt.value">{{ opt.label }}</option>
+                  </select>
+                  <svg class="select-chevron" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                    <path d="M6 9l6 6 6-6" />
+                  </svg>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <div class="settings-section" [hidden]="!matchesSearch('library connected sources iptv playlist xtream m3u add refresh all')">
           <div class="section-header-row">
             <h3 class="section-title">Connected Sources</h3>
             <span class="section-badge" *ngIf="sources.length > 0">{{ sources.length }} {{ sources.length === 1 ? 'Source' : 'Sources' }}</span>
@@ -346,16 +707,21 @@
       </div>
 
       <!-- ========================================== -->
-      <!-- 4. DOWNLOADS CATEGORY                      -->
+      <!-- 4. STORAGE & DATA CATEGORY                 -->
       <!-- ========================================== -->
-      <div class="settings-category" [hidden]="activeCategory !== 'downloads'">
+      <div class="settings-category" [hidden]="activeCategory !== 'storage'">
         <div class="category-header">
-          <h2 class="category-title">Screenshots</h2>
-          <p class="category-subtitle">Storage destination for captured video screenshots</p>
+          <h2 class="category-title">Storage &amp; Data</h2>
+          <p class="category-subtitle">Storage destination for captured video screenshots, settings export, and favorites backup</p>
         </div>
 
-        <div class="settings-section">
-          <h3 class="section-title">Storage Location</h3>
+        <div class="settings-section" [hidden]="!matchesSearch('screenshots storage data location destination folder path browse reset')">
+          <div class="section-header-row">
+            <h3 class="section-title">Storage Location</h3>
+            <button type="button" class="btn-subtle btn-reset-section" (click)="resetSection('storage-location')">
+              Reset section to default
+            </button>
+          </div>
           <div class="section-card">
             <!-- Screenshot Destination -->
             <div class="setting-item">
@@ -365,11 +731,11 @@
               </div>
               <div class="setting-control">
                 <div class="modern-path-picker">
-                  <div class="path-display" [title]="settings.screenshot_path || 'Default (~/Pictures/Fred TV)'">
+                  <div class="path-display" [title]="settings.screenshot_path || 'Default (Pictures\\Fred TV)'">
                     <svg class="path-icon" viewBox="0 0 24 24" fill="currentColor">
                       <path d="M10 4H4c-1.1 0-1.99.9-1.99 2L2 18c0 1.1.9 2 2 2h16c1.1 0 2-.9 2-2V8c0-1.1-.9-2-2-2h-8l-2-2z" />
                     </svg>
-                    <span class="path-text">{{ settings.screenshot_path || 'Default (~/Pictures/Fred TV)' }}</span>
+                    <span class="path-text">{{ settings.screenshot_path || 'Default (Pictures\\Fred TV)' }}</span>
                   </div>
                   <button type="button" (click)="selectScreenshotFolder()" class="btn-subtle" title="Change screenshot destination">
                     <span>Browse...</span>
@@ -379,10 +745,83 @@
                     type="button"
                     (click)="resetScreenshotFolder()"
                     class="btn-subtle"
-                    title="Reset to default (~/Pictures/Fred TV)">
+                    title="Reset to default (Pictures\Fred TV)">
                     <span>Reset</span>
                   </button>
                 </div>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <div class="settings-section" [hidden]="!matchesSearch('storage data usage sqlite database size tmdb cache clear watch history')">
+          <div class="section-header-row">
+            <h3 class="section-title">Local Storage &amp; Cleanup</h3>
+            <button type="button" class="btn-subtle btn-reset-section" (click)="loadStorageStats(); loadTmdbCacheStats()">
+              Refresh stats
+            </button>
+          </div>
+          <div class="section-card">
+            <div class="setting-item" [hidden]="!matchesSearch('storage sqlite database disk size favorites hidden')">
+              <div class="setting-meta">
+                <span class="setting-title">Catalog Database</span>
+                <p class="setting-hint">{{ storageStats.favorites_count }} favorites &bull; {{ storageStats.hidden_count }} hidden items</p>
+              </div>
+              <div class="setting-control">
+                <span class="slider-badge">{{ formatBytes(storageStats.sqlite_bytes) }}</span>
+              </div>
+            </div>
+
+            <div class="setting-item" [hidden]="!matchesSearch('storage clear watch history count')">
+              <div class="setting-meta">
+                <span class="setting-title">Watch History</span>
+                <p class="setting-hint">{{ storageStats.history_count }} recently watched entries stored locally</p>
+              </div>
+              <div class="setting-control">
+                <button type="button" class="btn-secondary-glass" (click)="clearHistory()">
+                  <span>Clear Watch History</span>
+                </button>
+              </div>
+            </div>
+
+            <div class="setting-item" [hidden]="!matchesSearch('storage clear tmdb cache metadata')">
+              <div class="setting-meta">
+                <span class="setting-title">TMDB Metadata Cache</span>
+                <p class="setting-hint">{{ tmdbCacheStats.enrichedCount }} cached titles ({{ tmdbCacheStats.failedCount }} negative matches)</p>
+              </div>
+              <div class="setting-control">
+                <button type="button" class="btn-secondary-glass" (click)="clearTmdbCache()">
+                  <span>Clear TMDB Cache</span>
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <div class="settings-section" [hidden]="!matchesSearch('storage data backup export import restore settings favorites json')">
+          <h3 class="section-title">Backup &amp; Restore</h3>
+          <div class="section-card">
+            <div class="setting-item" [hidden]="!matchesSearch('storage data export backup settings favorites json')">
+              <div class="setting-meta">
+                <span class="setting-title">Export Backup (JSON)</span>
+                <p class="setting-hint">Save app settings and per-source favorites mappings to JSON (excludes provider URLs and passwords).</p>
+              </div>
+              <div class="setting-control">
+                <button type="button" class="btn-secondary-glass" (click)="exportBackup()">
+                  <span>Export Backup...</span>
+                </button>
+              </div>
+            </div>
+
+            <div class="setting-item" [hidden]="!matchesSearch('storage data import restore backup settings favorites json')">
+              <div class="setting-meta">
+                <span class="setting-title">Import Backup (JSON)</span>
+                <p class="setting-hint">Restore app settings and matching favorites mappings from a Lighthouse JSON backup file.</p>
+              </div>
+              <div class="setting-control">
+                <button type="button" class="btn-secondary-glass" (click)="importBackup()">
+                  <span>Import Backup...</span>
+                </button>
               </div>
             </div>
           </div>
@@ -398,8 +837,13 @@
           <p class="category-subtitle">Enrich media catalog with official artwork, backdrops, cast, and ratings</p>
         </div>
 
-        <div class="settings-section">
-          <h3 class="section-title">The Movie Database (TMDB)</h3>
+        <div class="settings-section" [hidden]="!matchesSearch('metadata tmdb the movie database enrichment api read access token test connection clear cache artwork posters backdrops cast')">
+          <div class="section-header-row">
+            <h3 class="section-title">The Movie Database (TMDB)</h3>
+            <button type="button" class="btn-subtle btn-reset-section" (click)="resetSection('metadata-tmdb')">
+              Reset section to default
+            </button>
+          </div>
           <div class="section-card">
             <!-- TMDB Toggle -->
             <div class="setting-item">
@@ -513,8 +957,13 @@
           <p class="category-subtitle">Local network streaming and sharing configuration</p>
         </div>
 
-        <div class="settings-section">
-          <h3 class="section-title">Local Re-Streaming</h3>
+        <div class="settings-section" [hidden]="!matchesSearch('network sharing local re-streaming http streaming port tcp lan')">
+          <div class="section-header-row">
+            <h3 class="section-title">Local Re-Streaming</h3>
+            <button type="button" class="btn-subtle btn-reset-section" (click)="resetSection('network-restream')">
+              Reset section to default
+            </button>
+          </div>
           <div class="section-card">
             <!-- Port -->
             <div class="setting-item">
@@ -531,9 +980,204 @@
                     min="1024"
                     max="65535"
                     [(ngModel)]="settings.restream_port" 
-                    (ngModelChange)="updateSettings()" />
+                    (ngModelChange)="onRestreamPortChange()" />
                   <span class="input-suffix">TCP</span>
                 </div>
+              </div>
+            </div>
+            <div *ngIf="restreamPortError" class="status-banner status-banner-danger">
+              <svg class="alert-icon" viewBox="0 0 24 24" fill="currentColor">
+                <path d="M13,13H11V7H13M13,17H11V15H13M12,2A10,10 0 0,0 2,12A10,10 0 0,0 12,22A10,10 0 0,0 22,12A10,10 0 0,0 12,2Z"/>
+              </svg>
+              <span class="alert-text">{{ restreamPortError }}</span>
+            </div>
+          </div>
+        </div>
+        <div class="settings-section" [hidden]="!matchesSearch('network http proxy server url stream playlist')">
+          <div class="section-header-row">
+            <h3 class="section-title">HTTP Proxy</h3>
+            <button type="button" class="btn-subtle btn-reset-section" (click)="resetSection('network-proxy')">
+              Reset section to default
+            </button>
+          </div>
+          <div class="section-card">
+            <div class="setting-item">
+              <div class="setting-meta">
+                <label class="setting-title" for="httpProxyInput">HTTP / HTTPS Proxy URL</label>
+                <p class="setting-hint">Optional proxy for playlist sync, EPG fetches, and embedded MPV streams (e.g. <code>http://127.0.0.1:8080</code>).</p>
+              </div>
+              <div class="setting-control">
+                <div class="proxy-input-wrapper">
+                  <input
+                    id="httpProxyInput"
+                    type="text"
+                    class="proxy-text-input"
+                    placeholder="http://127.0.0.1:8080"
+                    [(ngModel)]="settings.http_proxy"
+                    (ngModelChange)="onHttpProxyChange()" />
+                  <button
+                    *ngIf="settings.http_proxy"
+                    type="button"
+                    class="btn-subtle"
+                    (click)="clearHttpProxy()">
+                    Clear
+                  </button>
+                </div>
+              </div>
+            </div>
+            <div *ngIf="httpProxyError" class="status-banner status-banner-danger">
+              <svg class="alert-icon" viewBox="0 0 24 24" fill="currentColor">
+                <path d="M13,13H11V7H13M13,17H11V15H13M12,2A10,10 0 0,0 2,12A10,10 0 0,0 12,22A10,10 0 0,0 22,12A10,10 0 0,0 12,2Z"/>
+              </svg>
+              <span class="alert-text">{{ httpProxyError }}</span>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- ========================================== -->
+      <!-- 6B. APPEARANCE CATEGORY                    -->
+      <!-- ========================================== -->
+      <div class="settings-category" [hidden]="activeCategory !== 'appearance'">
+        <div class="category-header">
+          <h2 class="category-title">Appearance &amp; Glass</h2>
+          <p class="category-subtitle">Accent theme colors and player overlay frosted glass tuning</p>
+        </div>
+
+        <div class="settings-section" [hidden]="!matchesSearch('appearance accent theme color crimson ocean emerald amber violet')">
+          <div class="section-header-row">
+            <h3 class="section-title">Accent Color</h3>
+            <button type="button" class="btn-subtle btn-reset-section" (click)="resetSection('appearance-theme')">
+              Reset section to default
+            </button>
+          </div>
+          <div class="section-card">
+            <div class="setting-item">
+              <div class="setting-meta">
+                <span class="setting-title">Highlight Accent</span>
+                <p class="setting-hint">Used across active tabs, toggles, sliders, and player overlay highlights</p>
+              </div>
+              <div class="setting-control">
+                <div class="accent-swatch-row">
+                  <button
+                    *ngFor="let preset of accentPresets"
+                    type="button"
+                    class="accent-swatch-btn"
+                    [class.active]="settings.accent_color === preset.id"
+                    (click)="onSelectAccent(preset.id)">
+                    <span class="accent-swatch-dot" [style.background]="preset.color"></span>
+                    <span>{{ preset.label }}</span>
+                  </button>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <div class="settings-section" [hidden]="!matchesSearch('appearance player overlay glass blur opacity frosted preview')">
+          <div class="section-header-row">
+            <h3 class="section-title">Player Overlay Glass</h3>
+            <button type="button" class="btn-subtle btn-reset-section" (click)="resetSection('appearance-glass')">
+              Reset section to default
+            </button>
+          </div>
+          <div class="section-card">
+            <div class="setting-item" [hidden]="!matchesSearch('appearance glass blur strength frosted')">
+              <div class="setting-meta">
+                <label class="setting-title" for="glassBlurSlider">Frosted Glass Blur</label>
+                <p class="setting-hint">Backdrop blur radius applied to player overlay pop-up cards and drawers</p>
+              </div>
+              <div class="setting-control">
+                <div class="modern-slider-wrapper">
+                  <input
+                    id="glassBlurSlider"
+                    type="range"
+                    class="modern-range"
+                    min="0"
+                    max="100"
+                    step="4"
+                    [(ngModel)]="settings.overlay_glass_blur"
+                    (ngModelChange)="onGlassChange()" />
+                  <span class="slider-badge">{{ settings.overlay_glass_blur }}px</span>
+                </div>
+              </div>
+            </div>
+
+            <div class="setting-item" [hidden]="!matchesSearch('appearance glass opacity tint overlay')">
+              <div class="setting-meta">
+                <label class="setting-title" for="glassOpacitySlider">Overlay Surface Opacity</label>
+                <p class="setting-hint">Surface tint density for player controls and pop-up cards over video</p>
+              </div>
+              <div class="setting-control">
+                <div class="modern-slider-wrapper">
+                  <input
+                    id="glassOpacitySlider"
+                    type="range"
+                    class="modern-range"
+                    min="45"
+                    max="95"
+                    step="5"
+                    [(ngModel)]="settings.overlay_glass_opacity"
+                    (ngModelChange)="onGlassChange()" />
+                  <span class="slider-badge">{{ settings.overlay_glass_opacity }}%</span>
+                </div>
+              </div>
+            </div>
+
+            <div class="glass-preview-stage">
+              <div
+                class="glass-preview-card"
+                [style.background]="getGlassPreviewBackground()"
+                [style.backdropFilter]="'blur(' + settings.overlay_glass_blur + 'px)'">
+                <div>
+                  <div class="glass-preview-title">Overlay Pop-Up Preview</div>
+                  <div class="glass-preview-sub">{{ settings.overlay_glass_blur }}px blur &bull; {{ settings.overlay_glass_opacity }}% surface</div>
+                </div>
+                <span class="glass-preview-pill" [style.background]="'var(--lh-accent, #ff4d6d)'">Active Accent</span>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- ========================================== -->
+      <!-- 6C. SHORTCUTS CATEGORY                     -->
+      <!-- ========================================== -->
+      <div class="settings-category" [hidden]="activeCategory !== 'shortcuts'">
+        <div class="category-header">
+          <h2 class="category-title">Keyboard Shortcuts</h2>
+          <p class="category-subtitle">Player cheat sheet and click-to-rebind shortcut customization</p>
+        </div>
+
+        <div class="settings-section" [hidden]="!matchesSearch('shortcuts keyboard cheat sheet keybindings rebind play pause seek volume mute fullscreen stats channels next previous recall screenshot')">
+          <div class="section-header-row">
+            <h3 class="section-title">Player Controls</h3>
+            <button type="button" class="btn-subtle btn-reset-section" (click)="resetSection('shortcuts-keys')">
+              Reset section to default
+            </button>
+          </div>
+          <div class="section-card">
+            <div *ngIf="shortcutConflictError" class="status-banner status-banner-danger">
+              <svg class="alert-icon" viewBox="0 0 24 24" fill="currentColor">
+                <path d="M13,13H11V7H13M13,17H11V15H13M12,2A10,10 0 0,0 2,12A10,10 0 0,0 12,22A10,10 0 0,0 22,12A10,10 0 0,0 12,2Z"/>
+              </svg>
+              <span class="alert-text">{{ shortcutConflictError }}</span>
+            </div>
+
+            <div class="setting-item" *ngFor="let sc of shortcutDefs" [hidden]="!matchesSearch('shortcuts ' + sc.label + ' ' + sc.description + ' ' + keybindingsMap[sc.id])">
+              <div class="setting-meta">
+                <span class="setting-title">{{ sc.label }}</span>
+                <p class="setting-hint">{{ sc.description }}</p>
+              </div>
+              <div class="setting-control">
+                <button
+                  type="button"
+                  class="shortcut-key-btn"
+                  [class.capturing]="capturingShortcutAction === sc.id"
+                  (click)="startShortcutCapture(sc.id)"
+                  title="Click and press a new key combination (Esc to cancel)">
+                  {{ capturingShortcutAction === sc.id ? 'Press any key...' : appPreferences.formatBindingLabel(keybindingsMap[sc.id]) }}
+                </button>
               </div>
             </div>
           </div>
@@ -546,14 +1190,19 @@
       <div class="settings-category" [hidden]="activeCategory !== 'system'">
         <div class="category-header">
           <h2 class="category-title">Application &amp; System</h2>
-          <p class="category-subtitle">Background behavior and launch sync</p>
+          <p class="category-subtitle">Window behavior, exit cleanup, and startup PIN lock</p>
         </div>
 
-        <div class="settings-section">
-          <h3 class="section-title">System Integration</h3>
+        <div class="settings-section" [hidden]="!matchesSearch('application system integration refresh sources on launch remember window size position clear history on exit')">
+          <div class="section-header-row">
+            <h3 class="section-title">System Integration</h3>
+            <button type="button" class="btn-subtle btn-reset-section" (click)="resetSection('system-integration')">
+              Reset section to default
+            </button>
+          </div>
           <div class="section-card">
             <!-- Refresh on Start -->
-            <div class="setting-item">
+            <div class="setting-item" [hidden]="!matchesSearch('system refresh sources on launch startup')">
               <div class="setting-meta">
                 <label class="setting-title" for="refreshStartSwitch">Refresh Sources on Launch</label>
                 <p class="setting-hint">Automatically check provider servers for playlist updates upon application startup</p>
@@ -567,6 +1216,141 @@
                     (ngModelChange)="updateSettings()" />
                   <span class="toggle-slider"></span>
                 </label>
+              </div>
+            </div>
+
+            <!-- Remember Window Position & Size -->
+            <div class="setting-item" [hidden]="!matchesSearch('system remember window size position geometry')">
+              <div class="setting-meta">
+                <label class="setting-title" for="rememberWindowSwitch">Remember Window Size &amp; Position</label>
+                <p class="setting-hint">Restore the main window bounds and maximized state when launching Lighthouse</p>
+              </div>
+              <div class="setting-control">
+                <label class="modern-toggle" for="rememberWindowSwitch">
+                  <input
+                    id="rememberWindowSwitch"
+                    type="checkbox"
+                    [(ngModel)]="settings.remember_window_state"
+                    (ngModelChange)="updateSettings()" />
+                  <span class="toggle-slider"></span>
+                </label>
+              </div>
+            </div>
+
+            <!-- Clear History on Exit -->
+            <div class="setting-item" [hidden]="!matchesSearch('system clear watch history on exit privacy')">
+              <div class="setting-meta">
+                <label class="setting-title" for="clearHistoryExitSwitch">Clear Watch History on Exit</label>
+                <p class="setting-hint">Automatically wipe local recently watched entries whenever Lighthouse closes</p>
+              </div>
+              <div class="setting-control">
+                <label class="modern-toggle" for="clearHistoryExitSwitch">
+                  <input
+                    id="clearHistoryExitSwitch"
+                    type="checkbox"
+                    [(ngModel)]="settings.clear_history_on_exit"
+                    (ngModelChange)="updateSettings()" />
+                  <span class="toggle-slider"></span>
+                </label>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <div class="settings-section" [hidden]="!matchesSearch('system security privacy startup pin lock password protect')">
+          <h3 class="section-title">Security &amp; PIN Lock</h3>
+          <div class="section-card">
+            <div class="setting-item">
+              <div class="setting-meta">
+                <div class="d-flex align-items-center gap-2">
+                  <span class="setting-title mb-0">Startup PIN Lock</span>
+                  <span class="status-dot-pill" [class.active]="settings.pin_lock_enabled">
+                    {{ settings.pin_lock_enabled ? 'Enabled' : 'Off' }}
+                  </span>
+                </div>
+                <p class="setting-hint">Require a local PIN code before unlocking Lighthouse on launch (stored as salted SHA-256 hash).</p>
+              </div>
+              <div class="setting-control">
+                <div class="pin-inline-form" *ngIf="!settings.pin_lock_enabled">
+                  <input
+                    type="password"
+                    inputmode="numeric"
+                    maxlength="12"
+                    class="pin-inline-input"
+                    placeholder="New PIN"
+                    [(ngModel)]="newPinInput" />
+                  <input
+                    type="password"
+                    inputmode="numeric"
+                    maxlength="12"
+                    class="pin-inline-input"
+                    placeholder="Confirm PIN"
+                    [(ngModel)]="confirmPinInput" />
+                  <button type="button" class="btn-primary-glass btn-sm" (click)="enableAppPin()">Enable PIN</button>
+                </div>
+
+                <div class="pin-inline-form" *ngIf="settings.pin_lock_enabled">
+                  <button type="button" class="btn-secondary-glass btn-sm" (click)="appPreferences.lockApp()">Lock Now</button>
+                  <input
+                    type="password"
+                    inputmode="numeric"
+                    maxlength="12"
+                    class="pin-inline-input"
+                    placeholder="Current PIN"
+                    [(ngModel)]="currentPinInput" />
+                  <button type="button" class="btn-danger-glass btn-sm" (click)="disableAppPin()">Disable PIN</button>
+                </div>
+              </div>
+            </div>
+            <div *ngIf="pinFormError" class="status-banner status-banner-danger">
+              <svg class="alert-icon" viewBox="0 0 24 24" fill="currentColor">
+                <path d="M13,13H11V7H13M13,17H11V15H13M12,2A10,10 0 0,0 2,12A10,10 0 0,0 12,22A10,10 0 0,0 22,12A10,10 0 0,0 12,2Z"/>
+              </svg>
+              <span class="alert-text">{{ pinFormError }}</span>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- ========================================== -->
+      <!-- 8. ABOUT CATEGORY                          -->
+      <!-- ========================================== -->
+      <div class="settings-category" [hidden]="activeCategory !== 'about'">
+        <div class="category-header">
+          <h2 class="category-title">About {{ appName }}</h2>
+          <p class="category-subtitle">Application version, runtime stack, and privacy</p>
+        </div>
+
+        <div class="settings-section">
+          <h3 class="section-title">Application Info</h3>
+          <div class="section-card">
+            <div class="setting-item" [hidden]="!matchesSearch('about lighthouse app version build')">
+              <div class="setting-meta">
+                <span class="setting-title">Version</span>
+                <p class="setting-hint">{{ appName }} desktop IPTV client</p>
+              </div>
+              <div class="setting-control">
+                <span class="slider-badge">v{{ appVersion }}</span>
+              </div>
+            </div>
+
+            <div class="setting-item" [hidden]="!matchesSearch('about mpv playback engine runtime tauri')">
+              <div class="setting-meta">
+                <span class="setting-title">Playback Engine</span>
+                <p class="setting-hint">Embedded native MPV video window controlled via JSON IPC</p>
+              </div>
+              <div class="setting-control">
+                <span class="section-badge">{{ tauriVersion ? 'Tauri v' + tauriVersion : 'Tauri v2' }}</span>
+              </div>
+            </div>
+
+            <div class="setting-item" [hidden]="!matchesSearch('about privacy local-only analytics telemetry')">
+              <div class="setting-meta">
+                <span class="setting-title">Privacy</span>
+                <p class="setting-hint">All sources, history, and preferences stay local on your device with no ads or analytics SDKs</p>
+              </div>
+              <div class="setting-control">
+                <span class="section-badge">Local-Only</span>
               </div>
             </div>
           </div>

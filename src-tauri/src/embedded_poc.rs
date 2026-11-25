@@ -1480,11 +1480,37 @@ pub fn build_embedded_mpv_args(
     args.push("--no-terminal".to_string());
     args.push("--osc=no".to_string());
 
-    // Robust stream caching & WAN buffer settings
-    args.push("--cache=yes".to_string());
-    args.push("--demuxer-max-bytes=256MiB".to_string());
-    args.push("--demuxer-max-back-bytes=64MiB".to_string());
-    args.push("--stream-buffer-size=2MiB".to_string());
+    // Robust stream caching & WAN buffer settings (skipped when user disables caching)
+    let use_stream_caching = settings
+        .as_ref()
+        .and_then(|s| s.use_stream_caching)
+        .unwrap_or(true);
+    let buffer_preset = settings
+        .as_ref()
+        .and_then(|s| s.buffer_preset.as_deref())
+        .unwrap_or("balanced");
+    if use_stream_caching {
+        args.push("--cache=yes".to_string());
+        match buffer_preset {
+            "low" => {
+                args.push("--demuxer-max-bytes=64MiB".to_string());
+                args.push("--demuxer-max-back-bytes=16MiB".to_string());
+                args.push("--stream-buffer-size=512KiB".to_string());
+            }
+            "smooth" => {
+                args.push("--demuxer-max-bytes=512MiB".to_string());
+                args.push("--demuxer-max-back-bytes=128MiB".to_string());
+                args.push("--stream-buffer-size=4MiB".to_string());
+            }
+            _ => {
+                args.push("--demuxer-max-bytes=256MiB".to_string());
+                args.push("--demuxer-max-back-bytes=64MiB".to_string());
+                args.push("--stream-buffer-size=2MiB".to_string());
+            }
+        }
+    } else {
+        args.push("--cache=no".to_string());
+    }
     // Prevent MPV from attempting multi-gigabyte remote seeks over HTTP for subtitle cues
     args.push("--demuxer-mkv-subtitle-preroll=no".to_string());
     args.push("--demuxer-mkv-subtitle-preroll-secs=0".to_string());
@@ -1497,10 +1523,24 @@ pub fn build_embedded_mpv_args(
 
     if is_live {
         args.push("--prefetch-playlist=yes".to_string());
-        args.push("--demuxer-readahead-secs=15".to_string());
+        if use_stream_caching {
+            let readahead = match buffer_preset {
+                "low" => "--demuxer-readahead-secs=5",
+                "smooth" => "--demuxer-readahead-secs=30",
+                _ => "--demuxer-readahead-secs=15",
+            };
+            args.push(readahead.to_string());
+        }
         args.push("--force-seekable=no".to_string());
     } else {
-        args.push("--demuxer-readahead-secs=30".to_string());
+        if use_stream_caching {
+            let readahead = match buffer_preset {
+                "low" => "--demuxer-readahead-secs=10",
+                "smooth" => "--demuxer-readahead-secs=60",
+                _ => "--demuxer-readahead-secs=30",
+            };
+            args.push(readahead.to_string());
+        }
         args.push("--save-position-on-quit".to_string());
     }
 
@@ -1522,27 +1562,102 @@ pub fn build_embedded_mpv_args(
     }
 
     if let Some(ref settings) = settings {
-        if settings.use_stream_caching == Some(false) {
-            args.push("--cache=no".to_string());
-        }
         if let Some(volume) = settings.volume {
             args.push(format!("--volume={}", volume));
         }
-        if let Some(ref mpv_params) = settings.mpv_params {
-            #[cfg(not(target_os = "windows"))]
-            if let Ok(params) = shell_words::split(mpv_params) {
-                args.extend(params);
+        if settings.enable_deinterlace == Some(true) {
+            args.push("--deinterlace=auto".to_string());
+        }
+        if let Some(ref alang) = settings.default_audio_lang {
+            let trimmed = alang.trim();
+            if !trimmed.is_empty() {
+                args.push(format!("--alang={}", trimmed));
             }
-            #[cfg(target_os = "windows")]
-            {
-                let params = winsplit::split(mpv_params);
-                args.extend(params);
+        }
+        if let Some(ref slang) = settings.default_subtitle_lang {
+            let trimmed = slang.trim();
+            if trimmed == "off" {
+                args.push("--sid=no".to_string());
+            } else if !trimmed.is_empty() {
+                args.push(format!("--slang={}", trimmed));
+            }
+        }
+        if let Some(ref proxy) = settings.http_proxy {
+            let trimmed = proxy.trim();
+            let lower = trimmed.to_ascii_lowercase();
+            if !trimmed.is_empty() && (lower.starts_with("http://") || lower.starts_with("https://")) {
+                args.push(format!("--http-proxy={}", trimmed));
+            }
+        }
+        if let Some(ref mpv_params) = settings.mpv_params {
+            match parse_safe_mpv_params(mpv_params) {
+                Ok(params) => args.extend(params),
+                Err(reason) => crate::log::log(format!("Skipping invalid mpv_params: {}", reason)),
             }
         }
     }
 
     args.push(stream.url.clone());
     args
+}
+
+fn has_balanced_mpv_quotes(input: &str) -> bool {
+    let mut active_quote: Option<char> = None;
+    let chars: Vec<char> = input.chars().collect();
+    let mut i = 0;
+    while i < chars.len() {
+        let ch = chars[i];
+        if ch == '\\' && i + 1 < chars.len() && (chars[i + 1] == '"' || chars[i + 1] == '\'') {
+            i += 2;
+            continue;
+        }
+        match active_quote {
+            Some(q) if ch == q => active_quote = None,
+            None if ch == '"' || ch == '\'' => active_quote = Some(ch),
+            _ => {}
+        }
+        i += 1;
+    }
+    active_quote.is_none()
+}
+
+fn is_reserved_mpv_flag(arg: &str) -> bool {
+    let lower = arg.trim().to_ascii_lowercase();
+    lower == "--wid"
+        || lower == "-wid"
+        || lower.starts_with("--wid=")
+        || lower.starts_with("-wid=")
+        || lower == "--input-ipc-server"
+        || lower == "-input-ipc-server"
+        || lower.starts_with("--input-ipc-server=")
+        || lower.starts_with("-input-ipc-server=")
+}
+
+fn parse_safe_mpv_params(raw: &str) -> Result<Vec<String>, &'static str> {
+    if !has_balanced_mpv_quotes(raw) {
+        return Err("Unbalanced quotes in mpv_params");
+    }
+    #[cfg(not(target_os = "windows"))]
+    let raw_tokens = shell_words::split(raw).map_err(|_| "Unbalanced quotes in mpv_params")?;
+    #[cfg(target_os = "windows")]
+    let raw_tokens = winsplit::split(raw);
+
+    let mut safe = Vec::with_capacity(raw_tokens.len());
+    let mut skip_next = false;
+    for token in raw_tokens {
+        if skip_next {
+            skip_next = false;
+            continue;
+        }
+        if is_reserved_mpv_flag(&token) {
+            if !token.contains('=') {
+                skip_next = true;
+            }
+            continue;
+        }
+        safe.push(token);
+    }
+    Ok(safe)
 }
 
 pub async fn start_embedded_player_internal(
@@ -1948,11 +2063,14 @@ pub async fn start_embedded_player(
     width: i32,
     height: i32,
     z_order: Option<String>,
+    skip_history: Option<bool>,
     state: State<'_, EmbeddedPocState>,
 ) -> Result<PocStreamInfo, String> {
     let stream = build_stream_info_from_channel(&channel)?;
-    if let Some(id) = channel.id {
-        let _ = crate::sql::add_last_watched(id);
+    if !skip_history.unwrap_or(false) {
+        if let Some(id) = channel.id {
+            let _ = crate::sql::add_last_watched(id);
+        }
     }
     start_embedded_player_internal(window, stream, x, y, width, height, z_order, state).await
 }
@@ -2590,9 +2708,7 @@ pub async fn remove_external_subtitle(
 
 #[tauri::command]
 pub async fn fetch_playback_segments(url: String) -> Result<String, String> {
-    let client = reqwest::Client::builder()
-        .user_agent("Lighthouse")
-        .build()
+    let client = crate::utils::build_http_client(Some("Lighthouse"), None, None)
         .map_err(|e| e.to_string())?;
     let resp = client.get(&url).send().await.map_err(|e| e.to_string())?;
     let text = resp.text().await.map_err(|e| e.to_string())?;

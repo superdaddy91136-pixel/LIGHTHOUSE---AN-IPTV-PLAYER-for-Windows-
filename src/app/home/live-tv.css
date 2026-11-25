@@ -80,8 +80,8 @@ app-home .live-sidebar-search-pill{
 
 app-home .live-sidebar-search-pill:focus-within{
   background: rgba(255, 255, 255, 0.1);
-  border-color: rgba(56, 189, 248, 0.55);
-  box-shadow: 0 0 12px rgba(56, 189, 248, 0.25);
+  border-color: var(--lh-accent-border, rgba(255, 77, 109, 0.55));
+  box-shadow: 0 0 12px var(--lh-accent-soft, rgba(255, 77, 109, 0.25));
 }
 
 app-home .live-search-icon{
@@ -165,10 +165,10 @@ app-home .live-sidebar-nav-item:hover{
 }
 
 app-home .live-sidebar-nav-item.active{
-  background: rgba(56, 189, 248, 0.18);
-  border-color: rgba(56, 189, 248, 0.45);
-  color: #38bdf8;
-  box-shadow: 0 4px 12px rgba(56, 189, 248, 0.15);
+  background: rgba(var(--lh-accent-rgb, 255, 77, 109), 0.18);
+  border-color: var(--lh-accent-border, rgba(255, 77, 109, 0.45));
+  color: var(--lh-accent, #ff4d6d);
+  box-shadow: 0 4px 12px var(--lh-accent-soft, rgba(255, 77, 109, 0.15));
 }
 
 app-home .sidebar-item-icon{
@@ -240,9 +240,9 @@ app-home .live-folder-filter-btn:hover, app-home .live-folder-filter-btn.open{
 }
 
 app-home .live-folder-filter-btn.has-active-filters{
-  background: rgba(56, 189, 248, 0.15);
-  border-color: rgba(56, 189, 248, 0.45);
-  color: #38bdf8;
+  background: var(--lh-accent-soft, rgba(255, 77, 109, 0.15));
+  border-color: var(--lh-accent-border, rgba(255, 77, 109, 0.45));
+  color: var(--lh-accent, #ff4d6d);
 }
 
 app-home .live-folder-popover{
@@ -351,8 +351,8 @@ app-home .sidebar-category-item:hover{
 }
 
 app-home .sidebar-category-item.active{
-  background: rgba(56, 189, 248, 0.16);
-  color: #38bdf8;
+  background: rgba(var(--lh-accent-rgb, 255, 77, 109), 0.16);
+  color: var(--lh-accent, #ff4d6d);
   font-weight: 600;
 }
 
@@ -364,11 +364,11 @@ app-home .category-item-icon{
 }
 
 app-home .sidebar-category-item.active .category-item-icon{
-  color: #38bdf8;
+  color: var(--lh-accent, #ff4d6d);
 }
 
 app-home .sidebar-category-item.pinned{
-  border-left: 2px solid #38bdf8;
+  border-left: 2px solid var(--lh-accent, #ff4d6d);
   padding-left: 8px;
 }
 
@@ -407,9 +407,9 @@ app-home .sidebar-category-item:hover .category-source-badge{
 }
 
 app-home .sidebar-category-item.active .category-source-badge{
-  color: #38bdf8;
-  background: rgba(56, 189, 248, 0.14);
-  border-color: rgba(56, 189, 248, 0.28);
+  color: var(--lh-accent, #ff4d6d);
+  background: var(--lh-accent-soft, rgba(255, 77, 109, 0.14));
+  border-color: rgba(var(--lh-accent-rgb, 255, 77, 109), 0.28);
 }
 
 app-home .category-item-count{
@@ -424,8 +424,8 @@ app-home .category-item-count{
 }
 
 app-home .sidebar-category-item.active .category-item-count{
-  color: #38bdf8;
-  background: rgba(56, 189, 248, 0.18);
+  color: var(--lh-accent, #ff4d6d);
+  background: rgba(var(--lh-accent-rgb, 255, 77, 109), 0.18);
 }
 
 app-home .sidebar-pin-btn{
@@ -449,12 +449,12 @@ app-home .sidebar-category-item:hover .sidebar-pin-btn{
 
 app-home .sidebar-pin-btn.active{
   opacity: 1;
-  color: #38bdf8;
+  color: var(--lh-accent, #ff4d6d);
 }
 
 app-home .sidebar-pin-btn:hover{
-  color: #38bdf8;
-  background: rgba(56, 189, 248, 0.15);
+  color: var(--lh-accent, #ff4d6d);
+  background: var(--lh-accent-soft, rgba(255, 77, 109, 0.15));
   transform: scale(1.1);
 }
 
@@ -657,10 +657,10 @@ app-home .live-search-source-bar .filter-pill:hover {
 }
 
 app-home .live-search-source-bar .filter-pill.active {
-  background: rgba(59, 130, 246, 0.25);
-  color: #93c5fd;
-  border-color: rgba(59, 130, 246, 0.5);
-  box-shadow: 0 0 12px rgba(59, 130, 246, 0.2);
+  background: rgba(var(--lh-accent-rgb, 255, 77, 109), 0.24);
+  color: #ffffff;
+  border-color: var(--lh-accent-border, rgba(255, 77, 109, 0.5));
+  box-shadow: 0 0 12px var(--lh-accent-soft, rgba(255, 77, 109, 0.2));
 }
 
 app-home .live-search-source-bar .filter-pill .pill-badge {
@@ -793,8 +793,8 @@ app-home .btn-subbar-folder:hover {
 /* Channel Highlight Pulse Animation */
 app-home .live-tv-content .channel-highlight-pulse .lh-card,
 app-home .live-tv-content .channel-highlight-pulse {
-  outline: 2px solid #3b82f6 !important;
-  box-shadow: 0 0 24px rgba(59, 130, 246, 0.8), inset 0 0 12px rgba(59, 130, 246, 0.4) !important;
+  outline: 2px solid var(--lh-accent, #ff4d6d) !important;
+  box-shadow: 0 0 24px rgba(var(--lh-accent-rgb, 255, 77, 109), 0.75), inset 0 0 12px rgba(var(--lh-accent-rgb, 255, 77, 109), 0.35) !important;
   border-radius: 12px;
   animation: liveChannelPulse 2.5s ease-in-out !important;
 }
@@ -802,18 +802,18 @@ app-home .live-tv-content .channel-highlight-pulse {
 @keyframes liveChannelPulse {
   0% {
     transform: scale(1);
-    box-shadow: 0 0 0 0 rgba(59, 130, 246, 0.9);
+    box-shadow: 0 0 0 0 rgba(var(--lh-accent-rgb, 255, 77, 109), 0.85);
   }
   30% {
     transform: scale(1.03);
-    box-shadow: 0 0 28px 8px rgba(59, 130, 246, 0.85);
+    box-shadow: 0 0 28px 8px rgba(var(--lh-accent-rgb, 255, 77, 109), 0.8);
   }
   60% {
     transform: scale(1);
-    box-shadow: 0 0 16px 4px rgba(59, 130, 246, 0.6);
+    box-shadow: 0 0 16px 4px rgba(var(--lh-accent-rgb, 255, 77, 109), 0.55);
   }
   100% {
     transform: scale(1);
-    box-shadow: 0 0 0 0 rgba(59, 130, 246, 0);
+    box-shadow: 0 0 0 0 rgba(var(--lh-accent-rgb, 255, 77, 109), 0);
   }
 }
