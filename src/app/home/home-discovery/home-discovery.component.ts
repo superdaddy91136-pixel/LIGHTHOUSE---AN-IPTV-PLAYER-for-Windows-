@@ -1324,6 +1324,7 @@ export class HomeDiscoveryComponent implements OnInit, AfterViewInit, OnDestroy 
         } else {
           this.masterHeroItems = [...eligible];
         }
+        const prevHeroCount = this.heroItems.length;
         this.heroItems = [...this.masterHeroItems];
 
         // Restore all TMDB rows (Recommended, Popular, Trending, Genre, Korean)
@@ -1338,6 +1339,9 @@ export class HomeDiscoveryComponent implements OnInit, AfterViewInit, OnDestroy 
         );
         this.cacheLocalRows();
         this.applyContentPreferences();
+        if (prevHeroCount <= 1 && this.heroItems.length > 1) {
+          this.startHeroTimer();
+        }
 
         // Select an active hero title: start at index 0 on fresh startup, or restore activeHeroId if returning to Home
         if (activeHeroId && !isManualRefresh) {
@@ -1396,8 +1400,12 @@ export class HomeDiscoveryComponent implements OnInit, AfterViewInit, OnDestroy 
         this.allLoadedSeries,
         this.allRecommended,
       );
+      const prevHeroCount = this.heroItems.length;
       this.heroItems = [...this.masterHeroItems];
       this.applyContentPreferences();
+      if (prevHeroCount <= 1 && this.heroItems.length > 1) {
+        this.startHeroTimer();
+      }
       this.currentHeroIndex = 0;
       this.recordHeroShown(this.currentHero?.channel?.id);
       this.discoveryState.setActiveHero(this.currentHero?.channel?.id);
@@ -1807,6 +1815,7 @@ export class HomeDiscoveryComponent implements OnInit, AfterViewInit, OnDestroy 
   }
 
   private applyContentPreferences(): void {
+    const prevHeroCount = this.heroItems.length;
     if (this.selectedContentPref === "all") {
       this.discoveryRows = this.masterDiscoveryRows;
       this.heroItems = this.masterHeroItems;
@@ -1815,6 +1824,9 @@ export class HomeDiscoveryComponent implements OnInit, AfterViewInit, OnDestroy 
       }
       this.rowCanScrollRight = {};
       this.debouncedCheckAllRowsScrollState();
+      if (prevHeroCount <= 1 && this.heroItems.length > 1) {
+        this.startHeroTimer();
+      }
       return;
     }
 
@@ -1844,6 +1856,9 @@ export class HomeDiscoveryComponent implements OnInit, AfterViewInit, OnDestroy 
     }
     this.rowCanScrollRight = {};
     this.debouncedCheckAllRowsScrollState();
+    if (prevHeroCount <= 1 && this.heroItems.length > 1) {
+      this.startHeroTimer();
+    }
   }
 
   matchesContentPreference(channel: Channel, pref: ContentPreference): boolean {
@@ -2570,6 +2585,7 @@ export class HomeDiscoveryComponent implements OnInit, AfterViewInit, OnDestroy 
     );
 
     if (newHeroPool.length > 0) {
+      const prevHeroCount = this.heroItems.length;
       this.masterHeroItems = newHeroPool;
       this.heroItems = [...this.masterHeroItems];
       this.discoveryState.setHeroPool(newHeroPool);
@@ -2603,6 +2619,9 @@ export class HomeDiscoveryComponent implements OnInit, AfterViewInit, OnDestroy 
 
       if (!this.isDestroyed) {
         this.applyContentPreferences();
+        if (prevHeroCount <= 1 && this.heroItems.length > 1) {
+          this.startHeroTimer();
+        }
         this.cdr.markForCheck();
       }
       if (this.currentHero?.imageUrl) {
@@ -3303,6 +3322,7 @@ export class HomeDiscoveryComponent implements OnInit, AfterViewInit, OnDestroy 
     } else {
       this.masterHeroItems = [...eligible];
     }
+    const prevHeroCount = this.heroItems.length;
     this.heroItems = [...this.masterHeroItems];
 
     const mergedRows: DiscoveryRow[] = (snapshot.localRows || []).map((row) => ({
@@ -3320,6 +3340,9 @@ export class HomeDiscoveryComponent implements OnInit, AfterViewInit, OnDestroy 
       (a, b) => this.getRowPriority(a.id) - this.getRowPriority(b.id)
     );
     this.applyContentPreferences();
+    if (prevHeroCount <= 1 && this.heroItems.length > 1) {
+      this.startHeroTimer();
+    }
     if (activeHeroId) {
       const activeIdx = this.heroItems.findIndex((h) => h.channel?.id === activeHeroId);
       this.currentHeroIndex = activeIdx !== -1 ? activeIdx : 0;
