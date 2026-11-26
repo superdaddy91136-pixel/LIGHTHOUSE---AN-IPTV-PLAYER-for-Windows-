@@ -9408,8 +9408,11 @@
 
         // Retrieve saved playback progress for this specific channel
         const saved = getSavedPlaybackStateForChannel(currentActiveChannelId);
-        const startTarget = (event?.payload?.startTime > 5)
-          ? Math.round(event.payload.startTime)
+        const hasAuthoritativeStart =
+          typeof event?.payload?.startTime === 'number' &&
+          Number.isFinite(event.payload.startTime);
+        const startTarget = hasAuthoritativeStart
+          ? (event.payload.startTime > 5 ? Math.round(event.payload.startTime) : 0)
           : saved.time;
         const knownDuration = (event?.payload?.duration > 0)
           ? Math.round(event.payload.duration)

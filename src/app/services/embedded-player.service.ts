@@ -58,6 +58,25 @@ export interface SwitcherChannelData {
   channel?: Channel;
 }
 
+export interface WatchProgressRecord {
+  identity_key: string;
+  channel_id?: number | null;
+  position_sec: number;
+  duration_sec: number;
+  progress_percent: number;
+  completed: boolean;
+  updated_at: number;
+  last_watched: number;
+  tmdb_id?: number | null;
+}
+
+export interface ResolvedPlaybackState {
+  positionSec: number;
+  durationSec: number;
+  completed: boolean;
+  source: 'watch_history' | 'legacy' | 'none';
+}
+
 export interface EmbeddedPlayerOptions {
   title?: string;
   mode?: ContentMode;
@@ -110,6 +129,7 @@ export class EmbeddedPlayerService implements OnDestroy {
   }
 
   private currentMode: ContentMode = 'movie';
+  private authoritativeProgressCache = new Map<number, WatchProgressRecord>();
   private lastDbProgressSync = new Map<
     number,
     { time: number; duration: number; completed: boolean; syncedAt: number }
@@ -117,6 +137,10 @@ export class EmbeddedPlayerService implements OnDestroy {
   private dbProgressErrorLogged = new Set<number>();
   private legacyMigrationPromise: Promise<void> | null = null;
   private legacyMigrationTimer: ReturnType<typeof setTimeout> | null = null;
+
+  protected invokeIpc<T>(cmd: string, args?: Record<string, unknown>): Promise<T> {
+    return invoke<T>(cmd, args);
+  }
   public get mode(): ContentMode {
     return this.currentMode;
   }
@@ -1152,11 +1176,28 @@ export class EmbeddedPlayerService implements OnDestroy {
         this.loadReconnectSettings().catch(console.warn);
       }
     }
+    const wasAlreadyPlaying = this.isPlayingEmbedded;
+    const resolvedMode: ContentMode =
+      options?.mode || (wasAlreadyPlaying ? this.currentMode : 'movie');
+    const isLive = this.isLiveContent(channel, resolvedMode);
+
+    let resolvedPlayback: ResolvedPlaybackState | undefined;
+    if (
+      !isLive &&
+      channel?.id &&
+      (options?.startTime === undefined || options?.duration === undefined)
+    ) {
+      resolvedPlayback = await this.resolveAuthoritativeProgress(
+        channel.id,
+        channel,
+        resolvedMode,
+      );
+    }
+
     if (channel?.id && !options?.skipHistory && !options?.isReconnect) {
       await this.markLastWatched(channel.id);
     }
 
-    const wasAlreadyPlaying = this.isPlayingEmbedded;
     if (wasAlreadyPlaying) {
       this.isRestartingPlayer = true;
       try {
@@ -1175,7 +1216,7 @@ export class EmbeddedPlayerService implements OnDestroy {
     }
 
     this.currentChannel = channel;
-    this.currentMode = options?.mode || (wasAlreadyPlaying ? this.currentMode : 'movie');
+    this.currentMode = resolvedMode;
 
     // TV episode switcher options
     if (options?.seriesChannel) this.seriesChannel = options.seriesChannel;
@@ -1232,17 +1273,17 @@ export class EmbeddedPlayerService implements OnDestroy {
     if (options?.onSwitchChannel) this.onSwitchChannelCallback = options.onSwitchChannel;
     this.lastPlayerOptions = options;
 
-    const startPos =
-      options?.startTime ??
-      (this.currentMode !== 'live' && channel.id
-        ? this.getSavedPosition(channel.id, channel)
-        : 0);
+    const startPos = isLive
+      ? 0
+      : (options?.startTime ??
+          resolvedPlayback?.positionSec ??
+          (channel.id ? this.getSavedPosition(channel.id, channel) : 0));
 
-    const savedDuration =
-      options?.duration ??
-      (this.currentMode !== 'live' && channel.id
-        ? this.getSavedDuration(channel.id, channel)
-        : 0);
+    const savedDuration = isLive
+      ? 0
+      : (options?.duration ??
+          resolvedPlayback?.durationSec ??
+          (channel.id ? this.getSavedDuration(channel.id, channel) : 0));
 
     const displayTitle = options?.title || cleanMediaTitle(channel.name);
     const playChannel: Channel = {
@@ -1945,58 +1986,333 @@ export class EmbeddedPlayerService implements OnDestroy {
     }
   }
 
+  private isLiveContent(channel?: Channel, modeHint?: ContentMode): boolean {
+    if (modeHint) return modeHint === 'live';
+    return channel?.media_type === MediaType.livestream;
+  }
+
+  private isEpisodeChannel(channel?: Channel, modeHint?: ContentMode): boolean {
+    if (modeHint === 'episode') return true;
+    if (modeHint === 'movie' && !channel) return false;
+    return Boolean(
+      channel &&
+        (channel.season_id != null ||
+          channel.series_id != null ||
+          channel.episode_num != null ||
+          (channel as any).media_type === MediaType.serie ||
+          this.extractSeasonNumber(channel) > 0),
+    );
+  }
+
+  private computeSafeResumeState(
+    rawPos: number,
+    rawDur: number,
+    rawPct: number | undefined,
+    rawCompleted: boolean | undefined,
+    isEpisode: boolean,
+  ): { positionSec: number; durationSec: number; completed: boolean } {
+    const pos = Number.isFinite(rawPos) && rawPos > 0 ? rawPos : 0;
+    const dur = Number.isFinite(rawDur) && rawDur > 0 ? rawDur : 0;
+    const thresholdPct = isEpisode ? 90 : 95;
+    const thresholdRatio = isEpisode ? 0.9 : 0.95;
+
+    const computedPct =
+      rawPct != null && Number.isFinite(rawPct) && rawPct >= 0
+        ? Math.min(100, rawPct)
+        : dur > 0
+          ? Math.min(100, (pos / dur) * 100)
+          : 0;
+
+    const completed =
+      rawCompleted === true ||
+      computedPct >= thresholdPct ||
+      (dur > 0 && ((dur > 30 && pos >= dur - 30) || pos / dur >= thresholdRatio));
+
+    let positionSec = 0;
+    if (!completed && pos > 5 && !(dur > 0 && pos >= dur)) {
+      positionSec = Math.round(pos);
+    }
+
+    return {
+      positionSec,
+      durationSec: dur > 0 ? Math.round(dur) : 0,
+      completed,
+    };
+  }
+
+  private parseLegacyUpdatedAtSec(raw: unknown): number | undefined {
+    const n = Number(raw);
+    if (!Number.isFinite(n) || n <= 0) return undefined;
+    return n > 1e11 ? Math.floor(n / 1000) : Math.floor(n);
+  }
+
+  private readLegacyProgressForChannel(
+    id: number,
+    channel?: Channel,
+    modeHint?: ContentMode,
+  ): {
+    pos: number;
+    dur: number;
+    pct?: number;
+    completed: boolean;
+    updatedAtSec?: number;
+  } | null {
+    if (!id || id <= 0 || this.isLiveContent(channel, modeHint)) return null;
+    if (typeof localStorage === 'undefined') return null;
+
+    let pos = 0;
+    let dur = 0;
+    let pct: number | undefined;
+    let completed = false;
+    let updatedAtSec: number | undefined;
+    let found = false;
+
+    const storeRaw = localStorage.getItem('fred_tv_watch_progress');
+    if (storeRaw) {
+      const store = JSON.parse(storeRaw);
+      if (store && typeof store === 'object' && store[id] != null) {
+        const entry = store[id];
+        if (typeof entry === 'number') {
+          if (Number.isFinite(entry) && entry > 0) {
+            pos = entry;
+            found = true;
+          }
+        } else if (entry && typeof entry === 'object') {
+          const t = Number(entry.time);
+          const d = Number(entry.duration);
+          const p = Number(entry.percent);
+          if (Number.isFinite(t) && t > 0) {
+            pos = t;
+            found = true;
+          }
+          if (Number.isFinite(d) && d > 0) {
+            dur = d;
+            found = true;
+          }
+          if (Number.isFinite(p) && p >= 0) {
+            pct = p;
+            found = true;
+          }
+          if (entry.completed === true) {
+            completed = true;
+            found = true;
+          }
+          updatedAtSec = this.parseLegacyUpdatedAtSec(entry.updatedAt);
+        }
+      }
+    }
+
+    const pctRaw = localStorage.getItem(`watch_progress_${id}`);
+    if (pctRaw != null) {
+      const parsedPct = parseFloat(pctRaw);
+      if (Number.isFinite(parsedPct) && parsedPct >= 0) {
+        pct = pct != null ? Math.max(pct, parsedPct) : parsedPct;
+        found = true;
+      }
+    }
+
+    const durRaw = localStorage.getItem(`playback_dur_${id}`);
+    if (durRaw != null) {
+      const parsedDur = parseFloat(durRaw);
+      if (Number.isFinite(parsedDur) && parsedDur > 0) {
+        dur = Math.max(dur, parsedDur);
+        found = true;
+      }
+    }
+
+    const posRaw = localStorage.getItem(`playback_pos_${id}`);
+    if (posRaw != null) {
+      const parsedPos = parseFloat(posRaw);
+      if (Number.isFinite(parsedPos) && parsedPos > 0) {
+        pos = Math.max(pos, parsedPos);
+        found = true;
+      }
+    }
+
+    const chAny = (channel || (this.currentChannel?.id === id ? this.currentChannel : undefined)) as any;
+    if (chAny?.duration && Number.isFinite(Number(chAny.duration)) && Number(chAny.duration) > 0 && dur <= 0) {
+      dur = Number(chAny.duration);
+      found = true;
+    }
+    if (chAny?.progress && Number.isFinite(Number(chAny.progress)) && Number(chAny.progress) > 0 && pos <= 0) {
+      pos = Number(chAny.progress);
+      found = true;
+    }
+
+    if (!found) return null;
+    if (dur > 0 && pos > dur * 1.05) {
+      // Guard against stale position from unrelated content with a much shorter duration
+      return null;
+    }
+    return { pos, dur, pct, completed, updatedAtSec };
+  }
+
+  public async resolveAuthoritativeProgress(
+    channelId?: number,
+    channel?: Channel,
+    modeHint?: ContentMode,
+  ): Promise<ResolvedPlaybackState> {
+    const id = channelId || channel?.id;
+    const targetChannel = channel || (id && this.currentChannel?.id === id ? this.currentChannel : undefined);
+    const effectiveMode = modeHint ?? (this.currentChannel?.id === id ? this.currentMode : undefined);
+
+    if (!id || id <= 0 || this.isLiveContent(targetChannel, effectiveMode)) {
+      return { positionSec: 0, durationSec: 0, completed: false, source: 'none' };
+    }
+
+    if (this.legacyMigrationPromise) {
+      try {
+        await this.legacyMigrationPromise;
+      } catch {}
+    }
+
+    const isEpisode = this.isEpisodeChannel(targetChannel, effectiveMode);
+    const chDuration = Number((targetChannel as any)?.duration);
+
+    let dbRecord: WatchProgressRecord | null | undefined;
+    let dbLookupSucceeded = false;
+    try {
+      dbRecord = await this.invokeIpc<WatchProgressRecord | null>('get_watch_progress', {
+        channelId: id,
+      });
+      dbLookupSucceeded = true;
+    } catch (err) {
+      if (!this.dbProgressErrorLogged.has(id)) {
+        this.dbProgressErrorLogged.add(id);
+        console.warn('get_watch_progress failed, using fallback:', err);
+      }
+    }
+
+    const hasMeaningfulDbProgress =
+      dbRecord != null &&
+      (dbRecord.completed ||
+        dbRecord.position_sec > 0 ||
+        dbRecord.duration_sec > 0 ||
+        dbRecord.progress_percent > 0);
+
+    if (dbRecord && hasMeaningfulDbProgress) {
+      this.authoritativeProgressCache.set(id, dbRecord);
+      const effectiveDur =
+        dbRecord.duration_sec > 0
+          ? dbRecord.duration_sec
+          : Number.isFinite(chDuration) && chDuration > 0
+            ? chDuration
+            : 0;
+      const state = this.computeSafeResumeState(
+        dbRecord.position_sec,
+        effectiveDur,
+        dbRecord.progress_percent,
+        dbRecord.completed,
+        isEpisode,
+      );
+      return { ...state, source: 'watch_history' };
+    }
+
+    try {
+      const legacy = this.readLegacyProgressForChannel(id, targetChannel, effectiveMode);
+      if (legacy) {
+        const state = this.computeSafeResumeState(
+          legacy.pos,
+          legacy.dur,
+          legacy.pct,
+          legacy.completed,
+          isEpisode,
+        );
+        if (dbLookupSucceeded && (legacy.pos > 5 || legacy.dur > 0 || state.completed)) {
+          const tmdbId = targetChannel
+            ? this.tmdbEnrichment.getEnrichmentSync(targetChannel)?.tmdbId
+            : undefined;
+          const pctToSync =
+            legacy.pct != null
+              ? legacy.pct
+              : legacy.dur > 0
+                ? Math.min(100, Math.round((legacy.pos / legacy.dur) * 100))
+                : 0;
+          const updatedAt = legacy.updatedAtSec ?? Math.floor(Date.now() / 1000);
+          void this.invokeIpc('upsert_watch_progress', {
+            payload: {
+              channel_id: id,
+              position_sec: legacy.pos,
+              duration_sec: legacy.dur,
+              progress_percent: pctToSync,
+              completed: state.completed,
+              tmdb_id: tmdbId ?? null,
+              updated_at: legacy.updatedAtSec ?? null,
+            },
+          }).catch(() => {});
+          this.authoritativeProgressCache.set(id, {
+            identity_key: dbRecord?.identity_key ?? '',
+            channel_id: id,
+            position_sec: legacy.pos,
+            duration_sec: legacy.dur,
+            progress_percent: pctToSync,
+            completed: state.completed,
+            updated_at: updatedAt,
+            last_watched: Math.floor(Date.now() / 1000),
+            tmdb_id: tmdbId ?? null,
+          });
+        }
+        return { ...state, source: 'legacy' };
+      }
+    } catch (e) {
+      console.warn('Error reading legacy fallback progress:', e);
+    }
+
+    if (dbRecord) {
+      this.authoritativeProgressCache.set(id, dbRecord);
+    }
+
+    return {
+      positionSec: 0,
+      durationSec: Number.isFinite(chDuration) && chDuration > 0 ? Math.round(chDuration) : 0,
+      completed: false,
+      source: dbRecord ? 'watch_history' : 'none',
+    };
+  }
+
   public getSavedPosition(channelId?: number, channel?: Channel): number {
     if (!channelId && !channel?.id) return 0;
     const id = channelId || channel?.id;
+    if (!id) return 0;
     try {
       const targetChannel = channel || (this.currentChannel?.id === id ? this.currentChannel : undefined);
-      const isEpisode = this.currentMode === 'episode' || (
-        targetChannel && (
-          targetChannel.season_id != null ||
-          targetChannel.series_id != null ||
-          targetChannel.episode_num != null ||
-          (targetChannel as any).media_type === MediaType.serie ||
-          this.extractSeasonNumber(targetChannel) > 0
-        )
-      );
-      const thresholdPct = isEpisode ? 90 : 95;
-      const thresholdRatio = isEpisode ? 0.90 : 0.95;
+      const effectiveMode = this.currentChannel?.id === id ? this.currentMode : undefined;
+      if (this.isLiveContent(targetChannel, effectiveMode)) return 0;
 
-      const storeRaw = localStorage.getItem('fred_tv_watch_progress');
-      if (storeRaw) {
-        const store = JSON.parse(storeRaw);
-        if (store && id && store[id]) {
-          const entry = store[id];
-          if (entry.completed === true) return 0;
-          const t = typeof entry === 'number' ? entry : (entry.time || 0);
-          const dur = entry.duration || 0;
-          const pct = entry.percent != null ? entry.percent : (dur > 0 ? (t / dur) * 100 : 0);
-          if (pct >= thresholdPct) return 0;
-          if (dur > 0 && (t >= dur - 30 || (t / dur) >= thresholdRatio)) {
-            return 0;
-          }
-          if (t > 5) return Math.round(t);
-        }
+      const isEpisode = this.isEpisodeChannel(targetChannel, effectiveMode);
+      const cached = this.authoritativeProgressCache.get(id);
+      if (
+        cached &&
+        (cached.completed ||
+          cached.position_sec > 0 ||
+          cached.duration_sec > 0 ||
+          cached.progress_percent > 0)
+      ) {
+        const chDuration = Number((targetChannel as any)?.duration);
+        const effDur =
+          cached.duration_sec > 0
+            ? cached.duration_sec
+            : Number.isFinite(chDuration) && chDuration > 0
+              ? chDuration
+              : 0;
+        return this.computeSafeResumeState(
+          cached.position_sec,
+          effDur,
+          cached.progress_percent,
+          cached.completed,
+          isEpisode,
+        ).positionSec;
       }
-      const pctRaw = localStorage.getItem(`watch_progress_${id}`);
-      if (pctRaw && parseFloat(pctRaw) >= thresholdPct) return 0;
 
-      const posRaw = localStorage.getItem(`playback_pos_${id}`);
-      if (posRaw) {
-        const pos = parseFloat(posRaw);
-        const durRaw = localStorage.getItem(`playback_dur_${id}`);
-        const dur = durRaw ? parseFloat(durRaw) : 0;
-        if (dur > 0 && (pos >= dur - 30 || (pos / dur) >= thresholdRatio)) {
-          return 0;
-        }
-        if (!isNaN(pos) && pos > 5) {
-          return Math.round(pos);
-        }
-      }
-      const chAny = (targetChannel || channel) as any;
-      if (chAny?.progress && chAny.progress > 5) {
-        return Math.round(chAny.progress);
-      }
+      const legacy = this.readLegacyProgressForChannel(id, targetChannel, effectiveMode);
+      if (!legacy) return 0;
+      return this.computeSafeResumeState(
+        legacy.pos,
+        legacy.dur,
+        legacy.pct,
+        legacy.completed,
+        isEpisode,
+      ).positionSec;
     } catch (e) {
       console.warn('Error reading saved position:', e);
     }
@@ -2006,22 +2322,20 @@ export class EmbeddedPlayerService implements OnDestroy {
   public getSavedDuration(channelId?: number, channel?: Channel): number {
     if (!channelId && !channel?.id) return 0;
     const id = channelId || channel?.id;
+    if (!id) return 0;
     try {
-      const storeRaw = localStorage.getItem('fred_tv_watch_progress');
-      if (storeRaw) {
-        const store = JSON.parse(storeRaw);
-        if (store && id && store[id]?.duration > 0) {
-          return Math.round(store[id].duration);
-        }
+      const targetChannel = channel || (this.currentChannel?.id === id ? this.currentChannel : undefined);
+      const effectiveMode = this.currentChannel?.id === id ? this.currentMode : undefined;
+      if (this.isLiveContent(targetChannel, effectiveMode)) return 0;
+
+      const cached = this.authoritativeProgressCache.get(id);
+      if (cached && cached.duration_sec > 0) {
+        return Math.round(cached.duration_sec);
       }
-      const durRaw = localStorage.getItem(`playback_dur_${id}`);
-      if (durRaw) {
-        const dur = parseFloat(durRaw);
-        if (!isNaN(dur) && dur > 0) return Math.round(dur);
-      }
-      const chAny = (channel || (this.currentChannel?.id === id ? this.currentChannel : undefined)) as any;
-      if (chAny?.duration && chAny.duration > 0) {
-        return Math.round(chAny.duration);
+
+      const legacy = this.readLegacyProgressForChannel(id, targetChannel, effectiveMode);
+      if (legacy && legacy.dur > 0) {
+        return Math.round(legacy.dur);
       }
     } catch (e) {
       console.warn('Error reading saved duration:', e);
@@ -2490,10 +2804,15 @@ export class EmbeddedPlayerService implements OnDestroy {
 
   public saveWatchProgress(channelId: number, time: number, duration: number, forceCompleted?: boolean): void {
     if (!channelId || time <= 0) return;
+    if (this.currentMode === 'live') return;
+    if (this.currentChannel?.id === channelId && this.currentChannel.media_type === MediaType.livestream) {
+      return;
+    }
     try {
       if (duration <= 0) {
+        const cachedDur = this.authoritativeProgressCache.get(channelId)?.duration_sec || 0;
         const prevDur = localStorage.getItem(`playback_dur_${channelId}`);
-        if (prevDur) duration = parseFloat(prevDur) || 0;
+        duration = cachedDur > 0 ? cachedDur : (prevDur ? parseFloat(prevDur) || 0 : 0);
       }
       const isEpisode = this.currentMode === 'episode' || (
         this.currentChannel?.id === channelId && (
@@ -2551,6 +2870,20 @@ export class EmbeddedPlayerService implements OnDestroy {
         finalPercent,
         isCompleted,
       );
+
+      const prevCached = this.authoritativeProgressCache.get(channelId);
+      const nowSec = Math.floor(Date.now() / 1000);
+      this.authoritativeProgressCache.set(channelId, {
+        identity_key: prevCached?.identity_key ?? '',
+        channel_id: channelId,
+        position_sec: finalTime,
+        duration_sec: finalDuration,
+        progress_percent: isCompleted ? 100 : Math.max(finalPercent, prevCached?.completed ? 100 : 0),
+        completed: Boolean(prevCached?.completed || isCompleted),
+        updated_at: nowSec,
+        last_watched: Math.max(prevCached?.last_watched ?? 0, nowSec),
+        tmdb_id: prevCached?.tmdb_id ?? null,
+      });
 
       if (isCompleted) {
         if (isEpisode) {
@@ -2610,7 +2943,7 @@ export class EmbeddedPlayerService implements OnDestroy {
       ? this.tmdbEnrichment.getEnrichmentSync(targetCh)?.tmdbId
       : undefined;
 
-    void invoke('upsert_watch_progress', {
+    void this.invokeIpc('upsert_watch_progress', {
       payload: {
         channel_id: channelId,
         position_sec: Number.isFinite(time) && time >= 0 ? time : 0,
@@ -2924,11 +3257,9 @@ export class EmbeddedPlayerService implements OnDestroy {
       throw new Error('No playable movie source is available.');
     }
 
-    const startPos = this.getSavedPosition(playChannel.id, playChannel);
     await this.startPlayer(playChannel, canvas, {
       title: cleanMediaTitle(channel.name || playChannel.name),
       mode: 'movie',
-      startTime: startPos,
     });
   }
 
@@ -3159,12 +3490,9 @@ export class EmbeddedPlayerService implements OnDestroy {
       };
     });
 
-    const startPos = this.getSavedPosition(targetEpisode.id, targetEpisode);
-
     await this.startPlayer(targetEpisode, canvas, {
       title: overlayTitle,
       mode: 'episode',
-      startTime: startPos,
       seriesChannel: seriesChannel,
       seriesTitle: seriesTitle,
       seasons: switcherSeasons,
@@ -3195,7 +3523,6 @@ export class EmbeddedPlayerService implements OnDestroy {
       } catch {}
     }
 
-    const startPos = this.getSavedPosition(playChannel.id, playChannel);
     const seriesTitle = this.extractSeriesTitle(playChannel);
     const seasonNum = this.extractSeasonNumber(playChannel);
     const epNum = this.extractEpisodeNumber(playChannel.name);
@@ -3205,7 +3532,6 @@ export class EmbeddedPlayerService implements OnDestroy {
     await this.startPlayer(playChannel, canvas, {
       title: overlayTitle,
       mode: 'episode',
-      startTime: startPos,
       seriesTitle: seriesTitle || undefined,
       currentSeasonNum: seasonNum,
       currentEpisodeNum: epNum,

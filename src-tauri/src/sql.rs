@@ -5,7 +5,8 @@ use crate::log::log;
 use crate::sort_type;
 use crate::types::{
     ChannelPreserve, CustomChannel, CustomChannelExtraData, EPGNotify, ExportedGroup,
-    FavoriteMapping, Group, IdName, LegacyWatchProgressEntry, Season, WatchProgressUpsert,
+    FavoriteMapping, Group, IdName, LegacyWatchProgressEntry, Season, WatchProgressRecord,
+    WatchProgressUpsert,
 };
 use crate::{
     media_type, source_type,
@@ -2819,14 +2820,18 @@ fn map_watch_history_source_channel_row(
     })
 }
 
-fn write_watch_history_row(
-    stmt: &mut rusqlite::Statement,
-    row: &WatchHistorySourceChannelRow,
-    fallback_timestamp: i64,
-) -> Result<()> {
-    if row.media_type == media_type::LIVESTREAM {
-        return Ok(());
-    }
+struct WatchHistoryRowMetadata {
+    identity: SourceIdentity,
+    is_episode: bool,
+    is_episode_flag: i64,
+    normalized_title: String,
+    normalized_show_title: Option<String>,
+    release_year: Option<i64>,
+    stream_url_path: Option<String>,
+    identity_key: String,
+}
+
+fn compute_row_watch_metadata(row: &WatchHistorySourceChannelRow) -> WatchHistoryRowMetadata {
     let src = Source {
         id: Some(row.source_id),
         name: row.source_name.clone(),
@@ -2864,31 +2869,52 @@ fn write_watch_history_row(
         stream_url_path.as_deref(),
         &normalized_title,
     );
+    WatchHistoryRowMetadata {
+        identity,
+        is_episode,
+        is_episode_flag,
+        normalized_title,
+        normalized_show_title,
+        release_year,
+        stream_url_path,
+        identity_key,
+    }
+}
+
+fn write_watch_history_row(
+    stmt: &mut rusqlite::Statement,
+    row: &WatchHistorySourceChannelRow,
+    fallback_timestamp: i64,
+) -> Result<()> {
+    if row.media_type == media_type::LIVESTREAM {
+        return Ok(());
+    }
+    let meta = compute_row_watch_metadata(row);
     let last_watched = row.last_watched.unwrap_or(fallback_timestamp);
     let updated_at = fallback_timestamp;
 
     let args: Vec<&dyn rusqlite::ToSql> = vec![
-        &identity_key,
+        &meta.identity_key,
         &row.channel_id,
         &row.source_id,
         &row.source_type,
-        &identity.source_fingerprint,
-        &identity.source_host,
-        &identity.source_username,
-        &identity.source_name,
+        &meta.identity.source_fingerprint,
+        &meta.identity.source_host,
+        &meta.identity.source_username,
+        &meta.identity.source_name,
         &row.media_type,
-        &is_episode_flag,
+        &meta.is_episode_flag,
         &row.stream_id,
         &row.series_id,
         &row.season_number,
         &row.episode_num,
-        &stream_url_path,
+        &meta.stream_url_path,
         &row.url,
         &row.channel_name,
-        &normalized_title,
+        &meta.normalized_title,
         &row.show_title,
-        &normalized_show_title,
-        &release_year,
+        &meta.normalized_show_title,
+        &meta.release_year,
         &last_watched,
         &updated_at,
     ];
@@ -3507,43 +3533,7 @@ fn upsert_watch_progress_row_on_conn(
     if row.media_type == media_type::LIVESTREAM {
         return Ok(());
     }
-    let src = Source {
-        id: Some(row.source_id),
-        name: row.source_name.clone(),
-        url: row.source_url.clone(),
-        url_origin: None,
-        username: row.source_username.clone(),
-        password: None,
-        source_type: row.source_type,
-        use_tvg_id: None,
-        enabled: true,
-        user_agent: None,
-        max_streams: None,
-        stream_user_agent: None,
-        last_updated: None,
-    };
-    let identity = compute_source_identity(&src);
-    let is_episode =
-        row.series_id.is_some() || row.season_id.is_some() || row.episode_num.is_some();
-    let is_episode_flag: i64 = if is_episode { 1 } else { 0 };
-    let normalized_title = normalize_text_key(&row.channel_name);
-    let normalized_show_title = row.show_title.as_deref().map(normalize_text_key);
-    let release_year = row
-        .show_title
-        .as_deref()
-        .and_then(extract_release_year)
-        .or_else(|| extract_release_year(&row.channel_name));
-    let stream_url_path = normalize_stream_url_path(row.url.as_deref());
-    let identity_key = build_watch_history_identity_key(
-        &identity.source_fingerprint,
-        is_episode,
-        row.stream_id,
-        row.series_id,
-        row.season_number,
-        row.episode_num,
-        stream_url_path.as_deref(),
-        &normalized_title,
-    );
+    let meta = compute_row_watch_metadata(row);
 
     let now = chrono::Utc::now().timestamp();
     let updated_at = input.updated_at.filter(|&t| t > 0).unwrap_or(now);
@@ -3553,7 +3543,7 @@ fn upsert_watch_progress_row_on_conn(
         input.duration_sec,
         input.progress_percent,
         input.completed,
-        is_episode,
+        meta.is_episode,
     );
 
     let mut stmt = conn.prepare_cached(
@@ -3594,19 +3584,22 @@ ON CONFLICT(identity_key) DO UPDATE SET
   tmdb_id = COALESCE(excluded.tmdb_id, watch_history.tmdb_id),
   last_watched = MAX(watch_history.last_watched, excluded.last_watched),
   position_sec = CASE
+    WHEN watch_history.updated_at > 0 AND excluded.updated_at < watch_history.updated_at THEN watch_history.position_sec
     WHEN excluded.position_sec > 0 THEN excluded.position_sec
     ELSE watch_history.position_sec
   END,
   duration_sec = CASE
-    WHEN excluded.duration_sec > 0 THEN excluded.duration_sec
+    WHEN excluded.duration_sec > 0 AND (watch_history.duration_sec <= 0 OR excluded.updated_at >= watch_history.updated_at OR watch_history.updated_at <= 0) THEN excluded.duration_sec
     ELSE watch_history.duration_sec
   END,
   progress_percent = CASE
+    WHEN watch_history.updated_at > 0 AND excluded.updated_at < watch_history.updated_at THEN watch_history.progress_percent
     WHEN watch_history.completed = 1 THEN MAX(watch_history.progress_percent, excluded.progress_percent)
     ELSE excluded.progress_percent
   END,
   completed = CASE
     WHEN watch_history.completed = 1 THEN 1
+    WHEN watch_history.updated_at > 0 AND excluded.updated_at < watch_history.updated_at THEN watch_history.completed
     ELSE excluded.completed
   END,
   updated_at = MAX(watch_history.updated_at, excluded.updated_at),
@@ -3618,27 +3611,27 @@ ON CONFLICT(identity_key) DO UPDATE SET
     )?;
 
     let args: Vec<&dyn rusqlite::ToSql> = vec![
-        &identity_key,
+        &meta.identity_key,
         &row.channel_id,
         &row.source_id,
         &row.source_type,
-        &identity.source_fingerprint,
-        &identity.source_host,
-        &identity.source_username,
-        &identity.source_name,
+        &meta.identity.source_fingerprint,
+        &meta.identity.source_host,
+        &meta.identity.source_username,
+        &meta.identity.source_name,
         &row.media_type,
-        &is_episode_flag,
+        &meta.is_episode_flag,
         &row.stream_id,
         &row.series_id,
         &row.season_number,
         &row.episode_num,
-        &stream_url_path,
+        &meta.stream_url_path,
         &row.url,
         &row.channel_name,
-        &normalized_title,
+        &meta.normalized_title,
         &row.show_title,
-        &normalized_show_title,
-        &release_year,
+        &meta.normalized_show_title,
+        &meta.release_year,
         &input.tmdb_id,
         &last_watched,
         &pos,
@@ -3679,6 +3672,106 @@ fn upsert_watch_progress_on_conn(
         return Ok(());
     };
     upsert_watch_progress_row_on_conn(conn, &row, input)
+}
+
+fn map_watch_progress_record(row: &Row) -> std::result::Result<WatchProgressRecord, rusqlite::Error> {
+    let raw_pos: f64 = row.get::<_, Option<f64>>("position_sec")?.unwrap_or(0.0);
+    let raw_dur: f64 = row.get::<_, Option<f64>>("duration_sec")?.unwrap_or(0.0);
+    let raw_pct: f64 = row.get::<_, Option<f64>>("progress_percent")?.unwrap_or(0.0);
+    Ok(WatchProgressRecord {
+        identity_key: row.get("identity_key")?,
+        channel_id: row.get("channel_id")?,
+        position_sec: if raw_pos.is_finite() && raw_pos > 0.0 {
+            raw_pos
+        } else {
+            0.0
+        },
+        duration_sec: if raw_dur.is_finite() && raw_dur > 0.0 {
+            raw_dur
+        } else {
+            0.0
+        },
+        progress_percent: if raw_pct.is_finite() {
+            raw_pct.clamp(0.0, 100.0)
+        } else {
+            0.0
+        },
+        completed: row.get::<_, Option<i64>>("completed")?.unwrap_or(0) != 0,
+        updated_at: row.get::<_, Option<i64>>("updated_at")?.unwrap_or(0),
+        last_watched: row.get::<_, Option<i64>>("last_watched")?.unwrap_or(0),
+        tmdb_id: row.get("tmdb_id")?,
+    })
+}
+
+pub fn get_watch_progress(channel_id: i64) -> Result<Option<WatchProgressRecord>> {
+    let sql = get_conn()?;
+    get_watch_progress_on_conn(&sql, channel_id)
+}
+
+fn get_watch_progress_on_conn(
+    conn: &rusqlite::Connection,
+    channel_id: i64,
+) -> Result<Option<WatchProgressRecord>> {
+    if channel_id <= 0 {
+        return Ok(None);
+    }
+    let select_sql = format!("{WATCH_HISTORY_SELECT_BASE}\nWHERE c.id = ?1");
+    let channel_row = conn
+        .query_row(
+            &select_sql,
+            params![channel_id],
+            map_watch_history_source_channel_row,
+        )
+        .optional()?;
+
+    const RECORD_SELECT_BY_KEY: &str = r#"
+SELECT identity_key, channel_id, position_sec, duration_sec, progress_percent,
+       completed, updated_at, last_watched, tmdb_id
+FROM watch_history
+WHERE identity_key = ?1 AND media_type != 0
+LIMIT 1
+"#;
+    const RECORD_SELECT_BY_CHANNEL: &str = r#"
+SELECT identity_key, channel_id, position_sec, duration_sec, progress_percent,
+       completed, updated_at, last_watched, tmdb_id
+FROM watch_history
+WHERE channel_id = ?1 AND media_type != 0 AND source_missing = 0
+ORDER BY updated_at DESC, id DESC
+LIMIT 1
+"#;
+
+    if let Some(row) = channel_row {
+        if row.media_type == media_type::LIVESTREAM {
+            return Ok(None);
+        }
+        let meta = compute_row_watch_metadata(&row);
+        if let Some(record) = conn
+            .query_row(
+                RECORD_SELECT_BY_KEY,
+                params![meta.identity_key],
+                map_watch_progress_record,
+            )
+            .optional()?
+        {
+            return Ok(Some(record));
+        }
+        return conn
+            .query_row(
+                RECORD_SELECT_BY_CHANNEL,
+                params![channel_id],
+                map_watch_progress_record,
+            )
+            .optional()
+            .map_err(Into::into);
+    }
+
+    conn.query_row(
+        RECORD_SELECT_BY_CHANNEL,
+        params![channel_id],
+        map_watch_progress_record,
+    )
+    .optional()
+    .map_err(Into::into)
 }
 
 pub fn migrate_legacy_watch_progress(entries: Vec<LegacyWatchProgressEntry>) -> Result<usize> {
@@ -5088,6 +5181,130 @@ mod tests {
         assert_eq!(legacy_remaining, 0);
         assert_eq!(post_clear_history_count, 0);
         assert!(search_history_on_conn(&conn, &mixed_filters).unwrap().is_empty());
+    }
+
+    #[test]
+    fn test_get_watch_progress_authoritative_resolution_and_edge_cases() {
+        let mut conn = setup_test_db();
+        conn.execute(
+            "INSERT INTO sources (id, name, source_type, url, username, enabled) VALUES (1, 'XtreamOne', 2, 'http://tv.example.com:8080', 'user1', 1)",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO channels (id, name, url, media_type, source_id, stream_id) VALUES (1, 'Live Sports', 'http://tv.example.com:8080/live/1.ts', 0, 1, 1)",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO channels (id, name, url, media_type, source_id, stream_id) VALUES (2, 'Inception (2010)', 'http://tv.example.com:8080/movie/u1/p1/555.mp4', 1, 1, 555)",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO channels (id, name, url, media_type, source_id, stream_id) VALUES (3, 'Unknown Dur Movie', 'http://tv.example.com:8080/movie/u1/p1/556.mp4', 1, 1, 556)",
+            [],
+        )
+        .unwrap();
+
+        // Non-positive or missing channel_id -> None
+        assert!(get_watch_progress_on_conn(&conn, 0).unwrap().is_none());
+        assert!(get_watch_progress_on_conn(&conn, 9999).unwrap().is_none());
+
+        // Live TV must always be excluded
+        upsert_watch_progress_on_conn(
+            &conn,
+            &WatchProgressUpsert {
+                channel_id: 1,
+                position_sec: 300.0,
+                duration_sec: 1200.0,
+                updated_at: Some(1000),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        assert!(get_watch_progress_on_conn(&conn, 1).unwrap().is_none());
+
+        // Movie with progress + tmdb_id
+        upsert_watch_progress_on_conn(
+            &conn,
+            &WatchProgressUpsert {
+                channel_id: 2,
+                position_sec: 1400.0,
+                duration_sec: 7200.0,
+                tmdb_id: Some(27205),
+                updated_at: Some(2000),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+
+        let rec = get_watch_progress_on_conn(&conn, 2).unwrap().unwrap();
+        assert_eq!(rec.channel_id, Some(2));
+        assert!((rec.position_sec - 1400.0).abs() < 0.01);
+        assert!((rec.duration_sec - 7200.0).abs() < 0.01);
+        assert_eq!(rec.tmdb_id, Some(27205));
+        assert!(!rec.completed);
+
+        // Stale older write must NOT overwrite newer DB progress
+        upsert_watch_progress_on_conn(
+            &conn,
+            &WatchProgressUpsert {
+                channel_id: 2,
+                position_sec: 45.0,
+                duration_sec: 7200.0,
+                updated_at: Some(1500),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        let after_stale = get_watch_progress_on_conn(&conn, 2).unwrap().unwrap();
+        assert!((after_stale.position_sec - 1400.0).abs() < 0.01);
+        assert_eq!(after_stale.updated_at, 2000);
+
+        // Unknown / zero duration still preserves resume position cleanly
+        upsert_watch_progress_on_conn(
+            &conn,
+            &WatchProgressUpsert {
+                channel_id: 3,
+                position_sec: 420.0,
+                duration_sec: 0.0,
+                updated_at: Some(2100),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        let unknown_dur = get_watch_progress_on_conn(&conn, 3).unwrap().unwrap();
+        assert!((unknown_dur.position_sec - 420.0).abs() < 0.01);
+        assert_eq!(unknown_dur.duration_sec, 0.0);
+        assert!(!unknown_dur.completed);
+
+        // Source delete -> re-add with regenerated channel_id & rotated password -> relink restores lookup
+        {
+            let tx = conn.transaction().unwrap();
+            detach_watch_history_for_source(&tx, 1).unwrap();
+            tx.execute("DELETE FROM channels WHERE source_id = 1", []).unwrap();
+            tx.execute("DELETE FROM sources WHERE id = 1", []).unwrap();
+            tx.commit().unwrap();
+        }
+        conn.execute(
+            "INSERT INTO sources (id, name, source_type, url, username, enabled) VALUES (2, 'XtreamOne', 2, 'http://tv.example.com:8080', 'user1', 1)",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO channels (id, name, url, media_type, source_id, stream_id) VALUES (502, 'Inception (2010)', 'http://tv.example.com:8080/movie/u1/NEWPASS/999.mp4', 1, 2, 999)",
+            [],
+        )
+        .unwrap();
+        let relinked = relink_watch_history_on_conn(&mut conn, 2).unwrap();
+        assert_eq!(relinked, 1);
+
+        let after_relink = get_watch_progress_on_conn(&conn, 502).unwrap().unwrap();
+        assert_eq!(after_relink.channel_id, Some(502));
+        assert!((after_relink.position_sec - 1400.0).abs() < 0.01);
+        assert!((after_relink.duration_sec - 7200.0).abs() < 0.01);
+        assert_eq!(after_relink.tmdb_id, Some(27205));
     }
 }
 

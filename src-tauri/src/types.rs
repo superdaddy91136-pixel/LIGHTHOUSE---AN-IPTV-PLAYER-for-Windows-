@@ -446,3 +446,16 @@ pub struct LegacyWatchProgressEntry {
     #[serde(default)]
     pub fallback_is_episode: Option<bool>,
 }
+
+#[derive(Clone, PartialEq, Debug, Deserialize, Serialize, Default)]
+pub struct WatchProgressRecord {
+    pub identity_key: String,
+    pub channel_id: Option<i64>,
+    pub position_sec: f64,
+    pub duration_sec: f64,
+    pub progress_percent: f64,
+    pub completed: bool,
+    pub updated_at: i64,
+    pub last_watched: i64,
+    pub tmdb_id: Option<i64>,
+}

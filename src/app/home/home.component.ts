@@ -1775,11 +1775,9 @@ export class HomeComponent implements AfterViewInit, OnDestroy {
 
     try {
       invoke("add_last_watched", { id: channel.id }).catch(console.error);
-      const savedPos = this.embeddedPlayer.getSavedPosition(channel.id, channel);
       await this.embeddedPlayer.startPlayer(playChannel, 'home-video-canvas', {
         title: cleanMediaTitle(channel.name || 'Video'),
         mode: 'movie',
-        startTime: savedPos,
       });
     } catch (e) {
       this.error.handleError(e);
@@ -1810,13 +1808,10 @@ export class HomeComponent implements AfterViewInit, OnDestroy {
 
     invoke("add_last_watched", { id: channel.id }).catch(console.error);
 
-    const savedPos = this.embeddedPlayer.getSavedPosition(channel.id, channel);
-
     try {
       await this.embeddedPlayer.startPlayer(playChannel, 'home-video-canvas', {
         title,
         mode: isTv ? 'episode' : 'movie',
-        startTime: savedPos,
         currentSeasonNum: seasonNum,
         seriesTitle: seriesTitle || undefined,
       });
