@@ -42,6 +42,7 @@ import { MovieDetailService } from "../../services/movie-detail.service";
 import { TvDetailService } from "../../services/tv-detail.service";
 import { VersionMatchingService } from "../../services/version-matching.service";
 import { TmdbCacheService, CURRENT_LOGO_ALGO_VERSION } from "../../services/tmdb-cache.service";
+import { ContinueWatchingEntry } from "../../services/home-discovery-state.service";
 import {
   HomeDiscoverySnapshot,
   HomeDiscoveryStateService,
@@ -190,6 +191,11 @@ export class HomeDiscoveryComponent implements OnInit, AfterViewInit, OnDestroy 
   private inFlightStillFetches: Set<number | string> = new Set();
   private failedStillFetches = new Set<number | string>();
   private nextEpisodeCardIds = new Set<number>();
+  private cwProgressByChannelId = new Map<number, ContinueWatchingEntry>();
+  private cwNextEpisodeByChannelId = new Map<number, Channel>();
+  private cwTmdbIdByChannelId = new Map<number, number>();
+  private cwProgressPctCache = new Map<number, number>();
+  private cwSyncedLegacyIds = new Set<number>();
 
   // Deduplication & cross-row tracking for dynamic recommendations
   private koreanRowNorms = new Set<string>();
@@ -204,6 +210,10 @@ export class HomeDiscoveryComponent implements OnInit, AfterViewInit, OnDestroy 
   private cwArtworkCache = new Map<number | string, string | undefined>();
   private cachedWatchProgressStore: Record<string, any> | null = null;
   private lastWatchProgressReadTime: number = 0;
+
+  protected invokeIpc<T>(cmd: string, args?: Record<string, unknown>): Promise<T> {
+    return invoke<T>(cmd, args);
+  }
 
   readonly BANNER_ROTATE_MS = BANNER_ROTATE_MS;
   private heroTimer?: any;
@@ -1273,6 +1283,7 @@ export class HomeDiscoveryComponent implements OnInit, AfterViewInit, OnDestroy 
     this.isTvShowCache.clear();
     this.cardArtworkCache.clear();
     this.cwArtworkCache.clear();
+    this.cwProgressPctCache.clear();
     this.cachedWatchProgressStore = null;
     this.seasonNumCache.clear();
     this.failedStillFetches.clear();
@@ -1356,15 +1367,8 @@ export class HomeDiscoveryComponent implements OnInit, AfterViewInit, OnDestroy 
       });
 
       // 1. Fetch display-critical catalog results without waiting for category metadata.
-      const [historyRes, favoritesRes, moviesRes, seriesRes] = await Promise.all([
-        this.fetchSafe({
-          source_ids: enabledSourceIds,
-          view_type: ViewMode.History,
-          media_types: baseMediaTypes,
-          page: 1,
-          sort: SortType.alphabeticalAscending,
-          use_keywords: false,
-        }),
+      const [cwEntries, favoritesRes, moviesRes, seriesRes] = await Promise.all([
+        this.fetchContinueWatchingEntries(enabledSourceIds),
         this.fetchSafe({
           source_ids: enabledSourceIds,
           view_type: ViewMode.Favorites,
@@ -1393,10 +1397,12 @@ export class HomeDiscoveryComponent implements OnInit, AfterViewInit, OnDestroy 
 
       if (this.isDestroyed || requestId !== this.discoveryLoadRequestId) return;
 
+      const historyRes = (cwEntries || []).map((entry) => entry.channel).filter(Boolean);
+
       // Index channels into fast in-memory catalog pool
       if (moviesRes) this.indexChannelsInPool(moviesRes);
       if (seriesRes) this.indexChannelsInPool(seriesRes);
-      if (historyRes) this.indexChannelsInPool(historyRes);
+      if (historyRes.length > 0) this.indexChannelsInPool(historyRes);
       if (favoritesRes) {
         this.indexChannelsInPool(favoritesRes);
         this.favoritesService.setInitialFavorites(favoritesRes);
@@ -1413,7 +1419,7 @@ export class HomeDiscoveryComponent implements OnInit, AfterViewInit, OnDestroy 
       ];
       await this.tmdbCache.preloadChannels(initialCandidateIds);
 
-      this.lastHistoryRes = historyRes || [];
+      this.lastHistoryRes = historyRes;
       this.lastFavoritesRes = favoritesRes || [];
       this.personalizedDiscoveryPromise = undefined;
 
@@ -1454,7 +1460,7 @@ export class HomeDiscoveryComponent implements OnInit, AfterViewInit, OnDestroy 
       this.clearMemoCaches();
 
       // Deduplicate Continue Watching: one card per grouped movie/TV title, keeping most recent version
-      const deduplicatedHistory = await this.deduplicateContinueWatching(historyRes);
+      const deduplicatedHistory = await this.deduplicateContinueWatching(cwEntries);
       const rows: DiscoveryRow[] = [];
 
       // 1. Continue Watching (always updated fresh from watch history)
@@ -1660,12 +1666,85 @@ export class HomeDiscoveryComponent implements OnInit, AfterViewInit, OnDestroy 
     }
   }
 
+  private async fetchContinueWatchingEntries(
+    enabledSourceIds: number[]
+  ): Promise<ContinueWatchingEntry[]> {
+    if (!enabledSourceIds || enabledSourceIds.length === 0) return [];
+    try {
+      if (
+        typeof localStorage !== "undefined" &&
+        localStorage.getItem("lh_watch_history_migrated_v1") !== "1"
+      ) {
+        await this.embeddedPlayer.runLegacyWatchHistoryMigrationIfNeeded().catch(() => {});
+      }
+      const entries = await this.invokeIpc<ContinueWatchingEntry[]>(
+        "get_continue_watching",
+        { sourceIds: enabledSourceIds, limit: 100 }
+      );
+      if (Array.isArray(entries)) {
+        this.discoveryState.setContinueWatchingEntries(entries);
+        return entries;
+      }
+      return [];
+    } catch (err) {
+      console.warn("Failed to fetch continue watching from watch_history:", err);
+      return [];
+    }
+  }
+
+  private seedContinueWatchingState(
+    entries: ContinueWatchingEntry[],
+    clearExisting: boolean = true
+  ): void {
+    if (clearExisting) {
+      this.cwProgressByChannelId.clear();
+      this.cwNextEpisodeByChannelId.clear();
+      this.cwTmdbIdByChannelId.clear();
+      this.cwProgressPctCache.clear();
+    }
+    for (const entry of entries || []) {
+      const ch = entry?.channel;
+      const chId = ch?.id;
+      if (!ch || chId == null) continue;
+      this.cwProgressByChannelId.set(chId, entry);
+      if (entry.tmdb_id && entry.tmdb_id > 0) {
+        this.cwTmdbIdByChannelId.set(chId, entry.tmdb_id);
+      }
+      if (entry.show_title) {
+        if (ch.series_id != null) {
+          this.seriesNameMap.set(`${ch.source_id}_${ch.series_id}`, entry.show_title);
+        }
+        if (entry.next_episode?.series_id != null) {
+          this.seriesNameMap.set(
+            `${entry.next_episode.source_id}_${entry.next_episode.series_id}`,
+            entry.show_title
+          );
+        }
+      }
+      if (entry.season_number != null && entry.season_number > 0 && ch.season_id != null) {
+        this.seasonNumCache.set(ch.season_id, entry.season_number);
+      }
+      if (entry.next_episode?.id != null) {
+        this.cwNextEpisodeByChannelId.set(chId, entry.next_episode);
+        if (
+          entry.season_number != null &&
+          entry.season_number > 0 &&
+          entry.next_episode.season_id != null &&
+          entry.next_episode.season_id === ch.season_id
+        ) {
+          this.seasonNumCache.set(entry.next_episode.season_id, entry.season_number);
+        }
+      }
+    }
+  }
+
   public async refreshContinueWatching(): Promise<void> {
     if (this.isDestroyed) return;
     const refreshId = ++this.continueWatchingRefreshId;
     this.cachedWatchProgressStore = null;
     this.cwTitleCache.clear();
     this.cwArtworkCache.clear();
+    this.cwProgressPctCache.clear();
     this.failedStillFetches.clear();
     this.episodeStillMap.clear();
     this.seasonNumCache.clear();
@@ -1673,18 +1752,16 @@ export class HomeDiscoveryComponent implements OnInit, AfterViewInit, OnDestroy 
       const enabledSourceIds = Array.from(this.memory.Sources.keys());
       if (enabledSourceIds.length === 0) return;
 
-      const historyRes = await this.fetchSafe({
-        source_ids: enabledSourceIds,
-        view_type: ViewMode.History,
-        media_types: [MediaType.movie, MediaType.serie],
-        page: 1,
-        sort: SortType.alphabeticalAscending,
-        use_keywords: false,
-      });
+      const cwEntries = await this.fetchContinueWatchingEntries(enabledSourceIds);
 
       if (this.isDestroyed || refreshId !== this.continueWatchingRefreshId) return;
       this.cwTitleCache.clear();
-      const deduplicatedHistory = await this.deduplicateContinueWatching(historyRes);
+      const historyChannels = cwEntries.map((entry) => entry.channel).filter(Boolean);
+      if (historyChannels.length > 0) {
+        this.indexChannelsInPool(historyChannels);
+        this.lastHistoryRes = historyChannels;
+      }
+      const deduplicatedHistory = await this.deduplicateContinueWatching(cwEntries);
       if (this.isDestroyed || refreshId !== this.continueWatchingRefreshId) return;
 
       const cwRowIndex = this.masterDiscoveryRows.findIndex(
@@ -3468,6 +3545,11 @@ export class HomeDiscoveryComponent implements OnInit, AfterViewInit, OnDestroy 
   private syncFromSnapshot(snapshot: HomeDiscoverySnapshot): void {
     if (this.isDestroyed || !snapshot) return;
 
+    const cachedCwEntries = this.discoveryState.getContinueWatchingEntries();
+    if (cachedCwEntries && cachedCwEntries.length > 0 && this.cwProgressByChannelId.size === 0) {
+      this.seedContinueWatchingState(cachedCwEntries, true);
+    }
+
     this.allRecommended = snapshot.allRecommended;
     this.allLoadedMovies =
       snapshot.allLoadedMovies.length > 0 ? snapshot.allLoadedMovies : this.allLoadedMovies;
@@ -4045,11 +4127,34 @@ export class HomeDiscoveryComponent implements OnInit, AfterViewInit, OnDestroy 
     }
   }
 
-  async deduplicateContinueWatching(history: Channel[]): Promise<Channel[]> {
+  async deduplicateContinueWatching(
+    historyInput: (ContinueWatchingEntry | Channel)[]
+  ): Promise<Channel[]> {
     const resolutionEpoch = ++this.cwResolutionEpoch;
     this.groupedHistoryIds.clear();
     this.nextEpisodeCardIds.clear();
-    if (!history || history.length === 0) return [];
+    if (!historyInput || historyInput.length === 0) {
+      this.cwProgressByChannelId.clear();
+      this.cwNextEpisodeByChannelId.clear();
+      this.cwTmdbIdByChannelId.clear();
+      this.cwProgressPctCache.clear();
+      return [];
+    }
+
+    const cwEntries: ContinueWatchingEntry[] = [];
+    const history: Channel[] = [];
+    for (const item of historyInput) {
+      if (!item) continue;
+      if ("channel" in item && item.channel) {
+        cwEntries.push(item);
+        history.push(item.channel);
+      } else {
+        history.push(item as Channel);
+      }
+    }
+    if (cwEntries.length > 0) {
+      this.seedContinueWatchingState(cwEntries, true);
+    }
 
     let didFinishDedup = false;
     const pendingNextEpRepIds = new Set<number>();
@@ -4061,6 +4166,7 @@ export class HomeDiscoveryComponent implements OnInit, AfterViewInit, OnDestroy 
       clean: string;
       norm: string;
       year?: string;
+      lastWatched: number;
       allHistoryIds: number[];
     }
 
@@ -4075,16 +4181,20 @@ export class HomeDiscoveryComponent implements OnInit, AfterViewInit, OnDestroy 
         normalizeForComparison(clean)
       );
       const year = extractYear(h.name);
+      const itemLastWatched = this.cwProgressByChannelId.get(h.id)?.last_watched ?? 0;
 
       // Check if this item matches an existing group of the same media type
       const match = groups.find((g) => {
         if (g.isTv !== isTv) return false;
 
-        // If both are TV episodes belonging to the exact same series_id, they match
+        // Same-source series_id match avoids colliding distinct providers sharing an integer ID
         if (
           isTv &&
           g.representative.series_id != null &&
           h.series_id != null &&
+          (g.representative.source_id == null ||
+            h.source_id == null ||
+            g.representative.source_id === h.source_id) &&
           g.representative.series_id === h.series_id
         ) {
           return true;
@@ -4123,6 +4233,9 @@ export class HomeDiscoveryComponent implements OnInit, AfterViewInit, OnDestroy 
         if (!match.allHistoryIds.includes(h.id)) {
           match.allHistoryIds.push(h.id);
         }
+        if (itemLastWatched > match.lastWatched) {
+          match.lastWatched = itemLastWatched;
+        }
         if (!match.year && year) {
           match.year = year;
         }
@@ -4134,6 +4247,7 @@ export class HomeDiscoveryComponent implements OnInit, AfterViewInit, OnDestroy 
           clean,
           norm,
           year,
+          lastWatched: itemLastWatched,
           allHistoryIds: [h.id],
         };
         groups.push(newGroup);
@@ -4145,22 +4259,40 @@ export class HomeDiscoveryComponent implements OnInit, AfterViewInit, OnDestroy 
     for (const g of groups) {
       if (g.isTv && g.representative?.id) {
         const rep = g.representative;
-        const isCompleted = this.embeddedPlayer.isEpisodeCompleted(rep);
+        const isCompleted = this.isCwEpisodeCompleted(rep);
 
         if (isCompleted && rep.id != null) {
           const seriesKey = this.embeddedPlayer.getSeriesKey(rep);
-          let nextEp = this.embeddedPlayer.getPersistedNextEpisode(seriesKey, rep.id);
+          let nextEp: Channel | null | undefined = this.cwNextEpisodeByChannelId.get(rep.id);
+          let lookupAnchor = rep;
+
+          if (nextEp && nextEp.id != null && this.isCwEpisodeCompleted(nextEp)) {
+            lookupAnchor = nextEp;
+            nextEp = undefined;
+          }
+
+          if (nextEp === undefined) {
+            const legacyNext = this.embeddedPlayer.getPersistedNextEpisode(seriesKey, rep.id);
+            if (legacyNext !== undefined) {
+              if (legacyNext && legacyNext.id != null && this.isCwEpisodeCompleted(legacyNext)) {
+                lookupAnchor = legacyNext;
+              } else {
+                nextEp = legacyNext;
+              }
+            }
+          }
 
           if (nextEp === undefined) {
             pendingNextEpRepIds.add(rep.id);
             // Asynchronously resolve next episode in the background without blocking initial Home render
-            void this.embeddedPlayer.findNextEpisode(rep).then((resolvedEp) => {
+            void this.embeddedPlayer.findNextEpisode(lookupAnchor).then((resolvedEp) => {
               if (this.isDestroyed || resolutionEpoch !== this.cwResolutionEpoch) return;
               if (seriesKey) {
                 this.embeddedPlayer.setPersistedNextEpisode(seriesKey, rep.id!, resolvedEp);
               }
+              this.syncNextEpisodeToWatchHistory(rep, resolvedEp);
               const validNext =
-                resolvedEp && resolvedEp.id != null && !this.embeddedPlayer.isEpisodeCompleted(resolvedEp)
+                resolvedEp && resolvedEp.id != null && !this.isCwEpisodeCompleted(resolvedEp)
                   ? resolvedEp
                   : null;
 
@@ -4189,7 +4321,7 @@ export class HomeDiscoveryComponent implements OnInit, AfterViewInit, OnDestroy 
               this.updateContinueWatchingNextEpisode(rep.id!, g.allHistoryIds, null);
             });
           } else if (nextEp && nextEp.id != null) {
-            const isNextCompleted = this.embeddedPlayer.isEpisodeCompleted(nextEp);
+            const isNextCompleted = this.isCwEpisodeCompleted(nextEp);
             if (!isNextCompleted) {
               g.representative = nextEp;
               const progress = this.getWatchProgress(nextEp);
@@ -4203,7 +4335,7 @@ export class HomeDiscoveryComponent implements OnInit, AfterViewInit, OnDestroy 
       }
     }
 
-    // Pre-resolve season numbers for TV items from SQLite seasons table
+    // Pre-resolve season numbers only for TV items missing season metadata from SQLite
     const seasonFetchPromises: Promise<void>[] = [];
     for (const g of groups) {
       if (g.isTv && g.representative?.id) {
@@ -4214,7 +4346,7 @@ export class HomeDiscoveryComponent implements OnInit, AfterViewInit, OnDestroy 
           item.series_id != null &&
           item.source_id != null
         ) {
-          const fetchPromise = invoke("search", {
+          const fetchPromise = this.invokeIpc("search", {
             filters: {
               source_ids: [item.source_id],
               series_id: item.series_id,
@@ -4262,14 +4394,13 @@ export class HomeDiscoveryComponent implements OnInit, AfterViewInit, OnDestroy 
         if (
           isNextEpisode ||
           isPendingNextEpisode ||
-          (this.hasMeaningfulWatchProgress(g.representative) && !this.embeddedPlayer.isEpisodeCompleted(g.representative))
+          (this.hasMeaningfulWatchProgress(g.representative) && !this.isCwEpisodeCompleted(g.representative))
         ) {
           activeGroups.push(g);
         }
       } else {
-        const isCompleted = this.embeddedPlayer.isMovieCompleted(
+        const isCompleted = this.isCwMovieCompleted(
           g.representative,
-          undefined,
           g.allHistoryIds
         );
         if (!isCompleted && this.hasMeaningfulWatchProgress(g.representative, g.allHistoryIds)) {
@@ -4277,6 +4408,8 @@ export class HomeDiscoveryComponent implements OnInit, AfterViewInit, OnDestroy 
         }
       }
     }
+
+    activeGroups.sort((a, b) => b.lastWatched - a.lastWatched);
 
     // Store history IDs for complete removal and watched check
     for (const g of activeGroups) {
@@ -5136,6 +5269,10 @@ export class HomeDiscoveryComponent implements OnInit, AfterViewInit, OnDestroy 
     const channelCached = this.tmdbEnrichment.getEnrichmentSync(channel);
     if (channelCached?.tmdbId) return channelCached.tmdbId;
 
+    if (channel.id != null && this.cwTmdbIdByChannelId.has(channel.id)) {
+      return this.cwTmdbIdByChannelId.get(channel.id);
+    }
+
     if (channel.series_id != null) {
       const sMatch =
         this.seriesLookupMap.get(`${channel.source_id}_${channel.series_id}`) ||
@@ -5339,18 +5476,129 @@ export class HomeDiscoveryComponent implements OnInit, AfterViewInit, OnDestroy 
     return undefined;
   }
 
-  getWatchProgress(channel: Channel): number {
-    if (!channel || channel.id == null) return 0;
-    const chAny = channel as any;
-    if (chAny.progress != null && chAny.duration != null && chAny.duration > 0) {
+  private hasDbProgressState(entry?: ContinueWatchingEntry): boolean {
+    return Boolean(
+      entry &&
+        (entry.completed ||
+          entry.position_sec > 0 ||
+          entry.duration_sec > 0 ||
+          entry.progress_percent > 0)
+    );
+  }
+
+  private computeDbProgressPercent(entry: ContinueWatchingEntry): number {
+    if (entry.completed) return 100;
+    if (Number.isFinite(entry.progress_percent) && entry.progress_percent > 0) {
+      return Math.min(100, Math.max(1, Math.round(entry.progress_percent)));
+    }
+    if (
+      Number.isFinite(entry.duration_sec) &&
+      entry.duration_sec > 0 &&
+      Number.isFinite(entry.position_sec) &&
+      entry.position_sec > 0
+    ) {
       return Math.min(
         100,
-        Math.max(0, Math.round((chAny.progress / chAny.duration) * 100))
+        Math.max(1, Math.round((entry.position_sec / entry.duration_sec) * 100))
       );
     }
-    if (chAny.progress_percent != null && !isNaN(chAny.progress_percent) && chAny.progress_percent > 0) {
-      return Math.min(100, Math.max(0, Math.round(chAny.progress_percent)));
+    return 0;
+  }
+
+  private isDbEntryCompleted(entry: ContinueWatchingEntry, isEpisode: boolean): boolean {
+    if (entry.completed) return true;
+    const threshold = isEpisode ? 90 : 95;
+    const ratio = isEpisode ? 0.9 : 0.95;
+    if (Number.isFinite(entry.progress_percent) && entry.progress_percent >= threshold) {
+      return true;
     }
+    if (entry.duration_sec > 0 && entry.position_sec > 0) {
+      if (entry.duration_sec > 30 && entry.position_sec >= entry.duration_sec - 30) {
+        return true;
+      }
+      if (entry.position_sec / entry.duration_sec >= ratio) {
+        return true;
+      }
+    }
+    return false;
+  }
+
+  private isCwEpisodeCompleted(channel?: Channel): boolean {
+    if (!channel) return false;
+    const db = channel.id != null ? this.cwProgressByChannelId.get(channel.id) : undefined;
+    if (this.hasDbProgressState(db)) {
+      return this.isDbEntryCompleted(db!, true);
+    }
+    if (db != null) {
+      // DB record has only a timestamp without saved progress metrics; avoid overriding newer DB state
+      const legacy = channel.id != null ? this.readLegacyStoreEntry(channel.id) : null;
+      if (
+        legacy &&
+        db.updated_at > 0 &&
+        legacy.updatedAtSec != null &&
+        legacy.updatedAtSec < db.updated_at
+      ) {
+        return false;
+      }
+    }
+    return this.embeddedPlayer.isEpisodeCompleted(channel);
+  }
+
+  private isCwMovieCompleted(channel?: Channel, alternateIds: number[] = []): boolean {
+    if (!channel && alternateIds.length === 0) return false;
+    const primaryId = channel?.id;
+    const primaryDb = primaryId != null ? this.cwProgressByChannelId.get(primaryId) : undefined;
+
+    if (this.hasDbProgressState(primaryDb)) {
+      if (this.isDbEntryCompleted(primaryDb!, false)) return true;
+      // Only let an alternate catalog version override as completed if its DB record is newer
+      for (const altId of alternateIds) {
+        if (altId === primaryId) continue;
+        const altDb = this.cwProgressByChannelId.get(altId);
+        if (
+          this.hasDbProgressState(altDb) &&
+          this.isDbEntryCompleted(altDb!, false) &&
+          altDb!.updated_at > primaryDb!.updated_at
+        ) {
+          return true;
+        }
+      }
+      return false;
+    }
+
+    let anyDbState = primaryDb != null;
+    for (const altId of alternateIds) {
+      const altDb = this.cwProgressByChannelId.get(altId);
+      if (altDb != null) anyDbState = true;
+      if (this.hasDbProgressState(altDb)) {
+        if (this.isDbEntryCompleted(altDb!, false)) return true;
+        return false;
+      }
+    }
+
+    if (anyDbState && primaryId != null) {
+      const legacy = this.readLegacyStoreEntry(primaryId);
+      if (
+        legacy &&
+        primaryDb &&
+        primaryDb.updated_at > 0 &&
+        legacy.updatedAtSec != null &&
+        legacy.updatedAtSec < primaryDb.updated_at
+      ) {
+        return false;
+      }
+    }
+
+    return this.embeddedPlayer.isMovieCompleted(channel, undefined, alternateIds);
+  }
+
+  private readLegacyStoreEntry(id: number): {
+    pct: number;
+    time: number;
+    dur: number;
+    completed: boolean;
+    updatedAtSec?: number;
+  } | null {
     try {
       const now = Date.now();
       if (!this.cachedWatchProgressStore || now - this.lastWatchProgressReadTime > 2000) {
@@ -5358,52 +5606,213 @@ export class HomeDiscoveryComponent implements OnInit, AfterViewInit, OnDestroy 
         this.cachedWatchProgressStore = storeRaw ? JSON.parse(storeRaw) : {};
         this.lastWatchProgressReadTime = now;
       }
-      const store = this.cachedWatchProgressStore;
-      if (store) {
-        const idsToCheck = [channel.id];
-        // Only check alternate grouped version IDs for movies, NOT TV shows,
-        // because TV shows have distinct episodes each with their own progress!
-        if (!this.isTvShow(channel) && this.groupedHistoryIds.has(channel.id)) {
-          const grouped = this.groupedHistoryIds.get(channel.id) || [];
-          for (const gId of grouped) {
-            if (!idsToCheck.includes(gId)) idsToCheck.push(gId);
-          }
-        }
+      const entry = this.cachedWatchProgressStore?.[id];
+      if (entry == null) return null;
+      if (typeof entry === "number") {
+        if (!Number.isFinite(entry) || entry <= 0) return null;
+        return { pct: Math.min(100, Math.round(entry)), time: 0, dur: 0, completed: false };
+      }
+      if (typeof entry !== "object") return null;
+      const t = Number(entry.time);
+      const d = Number(entry.duration);
+      const p = Number(entry.percent);
+      const rawTs = Number(entry.updatedAt);
+      const updatedAtSec =
+        Number.isFinite(rawTs) && rawTs > 0
+          ? rawTs > 1e11
+            ? Math.floor(rawTs / 1000)
+            : Math.floor(rawTs)
+          : undefined;
+      const time = Number.isFinite(t) && t > 0 ? t : 0;
+      const dur = Number.isFinite(d) && d > 0 ? d : 0;
+      const pct =
+        Number.isFinite(p) && p > 0
+          ? p
+          : dur > 0 && time > 0
+            ? (time / dur) * 100
+            : 0;
+      return {
+        pct: pct > 0 ? Math.min(100, Math.max(1, Math.round(pct))) : 0,
+        time,
+        dur,
+        completed: entry.completed === true,
+        updatedAtSec,
+      };
+    } catch {
+      return null;
+    }
+  }
 
-        for (const id of idsToCheck) {
-          if (store[id]) {
-            const entry = store[id];
-            const pct =
-              typeof entry === "number"
-                ? entry
-                : entry.percent ||
-                  (entry.time && entry.duration && entry.duration > 0
-                    ? (entry.time / entry.duration) * 100
-                    : 0);
-            if (pct > 0) return Math.min(100, Math.max(1, Math.round(pct)));
+  private syncLegacyEntryIfMissingInDb(
+    id: number,
+    channel: Channel | undefined,
+    legacy: { pct: number; time: number; dur: number; completed: boolean; updatedAtSec?: number }
+  ): void {
+    if (this.cwSyncedLegacyIds.has(id)) return;
+    if (legacy.time <= 5 && legacy.dur <= 0 && !legacy.completed) return;
+    this.cwSyncedLegacyIds.add(id);
+    const tmdbId = channel ? this.getTmdbIdSync(channel) : undefined;
+    void this.invokeIpc("upsert_watch_progress", {
+      payload: {
+        channel_id: id,
+        position_sec: legacy.time,
+        duration_sec: legacy.dur,
+        progress_percent: legacy.pct,
+        completed: legacy.completed,
+        tmdb_id: tmdbId ?? null,
+        updated_at: legacy.updatedAtSec ?? null,
+      },
+    }).catch(() => {});
+  }
+
+  private syncNextEpisodeToWatchHistory(
+    rep: Channel,
+    nextEp: Channel | null
+  ): void {
+    if (!rep?.id || !nextEp?.id) return;
+    const db = this.cwProgressByChannelId.get(rep.id);
+    if (!db) return;
+    const nextSeasonNum =
+      (nextEp as any).seasonNum ?? this.extractSeasonNumber(nextEp.name, 0);
+    const nextEpNum =
+      nextEp.episode_num ?? this.extractEpisodeNumber(nextEp.name, 0);
+    const tmdbId = this.getTmdbIdSync(rep);
+    void this.invokeIpc("upsert_watch_progress", {
+      payload: {
+        channel_id: rep.id,
+        position_sec: db.position_sec,
+        duration_sec: db.duration_sec,
+        progress_percent: db.progress_percent,
+        completed: true,
+        tmdb_id: tmdbId ?? db.tmdb_id ?? null,
+        next_ep_channel_id: nextEp.id,
+        next_ep_stream_id: nextEp.stream_id ?? null,
+        next_ep_season_number: nextSeasonNum > 0 ? nextSeasonNum : null,
+        next_ep_episode_number: nextEpNum > 0 ? nextEpNum : null,
+      },
+    }).catch(() => {});
+  }
+
+  getWatchProgress(channel: Channel): number {
+    if (!channel || channel.id == null) return 0;
+    const memo = this.cwProgressPctCache.get(channel.id);
+    if (memo !== undefined) return memo;
+
+    const chAny = channel as any;
+    if (chAny.progress != null && chAny.duration != null && chAny.duration > 0) {
+      const pct = Math.min(
+        100,
+        Math.max(0, Math.round((chAny.progress / chAny.duration) * 100))
+      );
+      this.cwProgressPctCache.set(channel.id, pct);
+      return pct;
+    }
+    if (
+      chAny.progress_percent != null &&
+      !isNaN(chAny.progress_percent) &&
+      chAny.progress_percent > 0
+    ) {
+      const pct = Math.min(100, Math.max(0, Math.round(chAny.progress_percent)));
+      this.cwProgressPctCache.set(channel.id, pct);
+      return pct;
+    }
+
+    const idsToCheck = [channel.id];
+    if (!this.isTvShow(channel) && this.groupedHistoryIds.has(channel.id)) {
+      const grouped = this.groupedHistoryIds.get(channel.id) || [];
+      for (const gId of grouped) {
+        if (!idsToCheck.includes(gId)) idsToCheck.push(gId);
+      }
+    }
+
+    const primaryDb = this.cwProgressByChannelId.get(channel.id);
+    if (this.hasDbProgressState(primaryDb)) {
+      const pct = this.computeDbProgressPercent(primaryDb!);
+      this.cwProgressPctCache.set(channel.id, pct);
+      return pct;
+    }
+
+    for (const id of idsToCheck) {
+      const dbEntry = this.cwProgressByChannelId.get(id);
+      if (this.hasDbProgressState(dbEntry)) {
+        const pct = this.computeDbProgressPercent(dbEntry!);
+        this.cwProgressPctCache.set(channel.id, pct);
+        return pct;
+      }
+    }
+
+    // Legacy localStorage fallback only when authoritative watch_history has no progress
+    for (const id of idsToCheck) {
+      const legacy = this.readLegacyStoreEntry(id);
+      if (legacy) {
+        const dbMeta = this.cwProgressByChannelId.get(id);
+        if (
+          dbMeta &&
+          dbMeta.updated_at > 0 &&
+          legacy.updatedAtSec != null &&
+          legacy.updatedAtSec < dbMeta.updated_at
+        ) {
+          continue;
+        }
+        if (legacy.pct > 0) {
+          if (dbMeta) {
+            this.syncLegacyEntryIfMissingInDb(id, id === channel.id ? channel : undefined, legacy);
           }
+          this.cwProgressPctCache.set(channel.id, legacy.pct);
+          return legacy.pct;
         }
       }
-    } catch {
-      // ignore
     }
+
+    this.cwProgressPctCache.set(channel.id, 0);
     return 0;
   }
 
   private hasMeaningfulWatchProgress(channel: Channel, alternateIds: number[] = []): boolean {
-    if (this.getWatchProgress(channel) > 0) return true;
+    if (channel?.id == null) return false;
+    const ids = [channel.id, ...alternateIds];
+    let coveredByDb = false;
 
-    try {
-      const storeRaw = localStorage.getItem("fred_tv_watch_progress");
-      const store = storeRaw ? JSON.parse(storeRaw) : undefined;
-      const ids = [channel.id, ...alternateIds];
-      return ids.some((id) => {
-        const entry = id != null ? store?.[id] : undefined;
-        return typeof entry === "object" && entry !== null && Number(entry.time) > 5;
-      });
-    } catch {
+    for (const id of ids) {
+      const dbEntry = this.cwProgressByChannelId.get(id);
+      if (this.hasDbProgressState(dbEntry)) {
+        coveredByDb = true;
+        if (
+          dbEntry!.position_sec > 5 ||
+          this.computeDbProgressPercent(dbEntry!) > 0
+        ) {
+          return true;
+        }
+      }
+    }
+
+    if (coveredByDb) {
       return false;
     }
+
+    if (this.getWatchProgress(channel) > 0) return true;
+
+    for (const id of ids) {
+      const legacy = this.readLegacyStoreEntry(id);
+      if (!legacy) continue;
+      const dbMeta = this.cwProgressByChannelId.get(id);
+      if (
+        dbMeta &&
+        dbMeta.updated_at > 0 &&
+        legacy.updatedAtSec != null &&
+        legacy.updatedAtSec < dbMeta.updated_at
+      ) {
+        continue;
+      }
+      if (legacy.time > 5) {
+        if (dbMeta) {
+          this.syncLegacyEntryIfMissingInDb(id, id === channel.id ? channel : undefined, legacy);
+        }
+        return true;
+      }
+    }
+
+    return false;
   }
 
   getCardYear(channel: Channel): string | undefined {
@@ -5659,7 +6068,23 @@ export class HomeDiscoveryComponent implements OnInit, AfterViewInit, OnDestroy 
         idsToRemove.map((id) => invoke("remove_from_history", { id }))
       );
 
-      // Remove from Continue Watching row
+      // Remove from Continue Watching row & in-memory DB caches
+      this.cwProgressPctCache.delete(channel.id!);
+      for (const id of idsToRemove) {
+        this.cwProgressByChannelId.delete(id);
+        this.cwNextEpisodeByChannelId.delete(id);
+        this.cwTmdbIdByChannelId.delete(id);
+        this.cwProgressPctCache.delete(id);
+      }
+      const prevCachedCw = this.discoveryState.getContinueWatchingEntries();
+      if (prevCachedCw) {
+        this.discoveryState.setContinueWatchingEntries(
+          prevCachedCw.filter(
+            (e) => !idsToRemove.includes(e.channel?.id!) && e.channel?.id !== channel.id
+          )
+        );
+      }
+
       const seriesKey = this.embeddedPlayer.getSeriesKey(channel);
       if (seriesKey) {
         this.embeddedPlayer.clearPersistedNextEpisode(seriesKey);

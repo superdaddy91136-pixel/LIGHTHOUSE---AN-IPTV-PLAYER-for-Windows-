@@ -23,6 +23,23 @@ export interface HomeDiscoverySnapshot {
   status: DiscoveryPipelineStatus;
 }
 
+export interface ContinueWatchingEntry {
+  channel: Channel;
+  identity_key: string;
+  position_sec: number;
+  duration_sec: number;
+  progress_percent: number;
+  completed: boolean;
+  last_watched: number;
+  updated_at: number;
+  tmdb_id?: number | null;
+  is_episode: boolean;
+  show_title?: string | null;
+  season_number?: number | null;
+  episode_number?: number | null;
+  next_episode?: Channel | null;
+}
+
 @Injectable({
   providedIn: 'root',
 })
@@ -41,6 +58,7 @@ export class HomeDiscoveryStateService {
 
   /** Stored in-memory snapshot surviving navigation across tabs and routes */
   private snapshot: HomeDiscoverySnapshot | null = null;
+  private cachedContinueWatchingEntries: ContinueWatchingEntry[] | null = null;
 
   /** Active banner identity survives Home's tab-driven component recreation. */
   private activeHeroChannelId?: number;
@@ -420,6 +438,16 @@ export class HomeDiscoveryStateService {
     }
   }
 
+  public setContinueWatchingEntries(entries: ContinueWatchingEntry[]): void {
+    this.cachedContinueWatchingEntries = entries ? [...entries] : null;
+  }
+
+  public getContinueWatchingEntries(): ContinueWatchingEntry[] | null {
+    return this.cachedContinueWatchingEntries
+      ? [...this.cachedContinueWatchingEntries]
+      : null;
+  }
+
   /**
    * Clears state on full catalog reload / source changes.
    */
@@ -429,6 +457,7 @@ export class HomeDiscoveryStateService {
       this.persistDebounceTimer = undefined;
     }
     this.snapshot = null;
+    this.cachedContinueWatchingEntries = null;
     this.activeHeroChannelId = undefined;
     this.resolvedCatalogMatches.clear();
     this.inFlightPipelinePromise = null;

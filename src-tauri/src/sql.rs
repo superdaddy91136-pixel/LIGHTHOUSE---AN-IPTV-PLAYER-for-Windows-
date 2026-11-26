@@ -4,9 +4,9 @@ use std::{collections::HashMap, sync::LazyLock};
 use crate::log::log;
 use crate::sort_type;
 use crate::types::{
-    ChannelPreserve, CustomChannel, CustomChannelExtraData, EPGNotify, ExportedGroup,
-    FavoriteMapping, Group, IdName, LegacyWatchProgressEntry, Season, WatchProgressRecord,
-    WatchProgressUpsert,
+    ChannelPreserve, ContinueWatchingEntry, CustomChannel, CustomChannelExtraData, EPGNotify,
+    ExportedGroup, FavoriteMapping, Group, IdName, LegacyWatchProgressEntry, Season,
+    WatchProgressRecord, WatchProgressUpsert,
 };
 use crate::{
     media_type, source_type,
@@ -1456,7 +1456,7 @@ fn row_to_channel(row: &Row) -> std::result::Result<Channel, rusqlite::Error> {
         media_type: row.get("media_type")?,
         source_id: row.get("source_id")?,
         url: row.get("url")?,
-        favorite: row.get("favorite")?,
+        favorite: row.get::<_, Option<bool>>("favorite")?.unwrap_or(false),
         episode_num: row.get("episode_num")?,
         series_id: row.get("series_id")?,
         group: None,
@@ -3774,6 +3774,272 @@ LIMIT 1
     .map_err(Into::into)
 }
 
+fn resolve_next_episode_channel_on_conn(
+    conn: &rusqlite::Connection,
+    source_id: i64,
+    series_id: Option<i64>,
+    next_ep_channel_id: Option<i64>,
+    next_ep_stream_id: Option<i64>,
+    next_ep_season_number: Option<i64>,
+    next_ep_episode_number: Option<i64>,
+) -> Result<Option<Channel>> {
+    if let Some(nid) = next_ep_channel_id.filter(|&id| id > 0) {
+        let mut stmt = conn.prepare_cached(
+            r#"
+SELECT c.*
+FROM channels c
+INNER JOIN sources s ON s.id = c.source_id
+WHERE c.id = ?1
+  AND c.source_id = ?2
+  AND c.media_type != 0
+  AND s.enabled = 1
+  AND COALESCE(c.hidden, 0) = 0
+LIMIT 1
+"#,
+        )?;
+        if let Some(ch) = stmt.query_row(params![nid, source_id], row_to_channel).optional()? {
+            return Ok(Some(ch));
+        }
+    }
+
+    if let (Some(ser_id), Some(stream_id)) = (series_id, next_ep_stream_id.filter(|&v| v > 0)) {
+        let mut stmt = conn.prepare_cached(
+            r#"
+SELECT c.*
+FROM channels c
+INNER JOIN sources s ON s.id = c.source_id
+WHERE c.source_id = ?1
+  AND c.series_id = ?2
+  AND c.stream_id = ?3
+  AND c.media_type != 0
+  AND s.enabled = 1
+  AND COALESCE(c.hidden, 0) = 0
+LIMIT 1
+"#,
+        )?;
+        if let Some(ch) = stmt
+            .query_row(params![source_id, ser_id, stream_id], row_to_channel)
+            .optional()?
+        {
+            return Ok(Some(ch));
+        }
+    }
+
+    if let (Some(ser_id), Some(ep_num)) = (series_id, next_ep_episode_number.filter(|&v| v > 0)) {
+        let mut stmt = conn.prepare_cached(
+            r#"
+SELECT c.*
+FROM channels c
+INNER JOIN sources s ON s.id = c.source_id
+LEFT JOIN seasons sn ON sn.id = c.season_id
+WHERE c.source_id = ?1
+  AND c.series_id = ?2
+  AND sn.season_number IS ?3
+  AND c.episode_num = ?4
+  AND c.media_type != 0
+  AND s.enabled = 1
+  AND COALESCE(c.hidden, 0) = 0
+LIMIT 1
+"#,
+        )?;
+        if let Some(ch) = stmt
+            .query_row(
+                params![source_id, ser_id, next_ep_season_number, ep_num],
+                row_to_channel,
+            )
+            .optional()?
+        {
+            return Ok(Some(ch));
+        }
+    }
+
+    Ok(None)
+}
+
+pub fn get_continue_watching(
+    source_ids: Vec<i64>,
+    limit: Option<u32>,
+) -> Result<Vec<ContinueWatchingEntry>> {
+    let sql = get_conn()?;
+    let eff_limit = limit.unwrap_or(100).clamp(1, 200) as usize;
+    get_continue_watching_on_conn(&sql, &source_ids, eff_limit)
+}
+
+fn get_continue_watching_on_conn(
+    conn: &rusqlite::Connection,
+    source_ids: &[i64],
+    limit: usize,
+) -> Result<Vec<ContinueWatchingEntry>> {
+    if source_ids.is_empty() || limit == 0 {
+        return Ok(Vec::new());
+    }
+    let src_placeholders = generate_placeholders(source_ids.len());
+    let query_sql = format!(
+        r#"
+SELECT
+  c.*,
+  wh.identity_key,
+  wh.position_sec,
+  wh.duration_sec,
+  wh.progress_percent,
+  wh.completed,
+  wh.last_watched AS wh_last_watched,
+  wh.updated_at AS wh_updated_at,
+  wh.tmdb_id AS wh_tmdb_id,
+  wh.is_episode AS wh_is_episode,
+  COALESCE(
+    NULLIF(TRIM(wh.show_title), ''),
+    CASE
+      WHEN c.series_id IS NOT NULL THEN (
+        SELECT p.name
+        FROM channels p
+        WHERE p.source_id = c.source_id
+          AND p.media_type = 2
+          AND p.series_id IS NULL
+          AND (p.stream_id = c.series_id OR p.url = CAST(c.series_id AS TEXT))
+        LIMIT 1
+      )
+      ELSE NULL
+    END
+  ) AS resolved_show_title,
+  COALESCE(sn.season_number, wh.season_number) AS resolved_season_number,
+  COALESCE(c.episode_num, wh.episode_number) AS resolved_episode_number,
+  wh.provider_series_id AS wh_series_id,
+  wh.next_ep_channel_id,
+  wh.next_ep_stream_id,
+  wh.next_ep_season_number,
+  wh.next_ep_episode_number
+FROM watch_history wh
+INNER JOIN channels c ON c.id = wh.channel_id
+INNER JOIN sources s ON s.id = c.source_id
+LEFT JOIN seasons sn ON sn.id = c.season_id
+WHERE wh.source_missing = 0
+  AND wh.media_type != 0
+  AND c.media_type != 0
+  AND s.enabled = 1
+  AND COALESCE(c.hidden, 0) = 0
+  AND s.id IN ({src_placeholders})
+ORDER BY wh.last_watched DESC, wh.updated_at DESC, wh.id DESC
+LIMIT ?
+"#
+    );
+
+    let limit_i64 = limit as i64;
+    let mut params: Vec<&dyn rusqlite::ToSql> = Vec::with_capacity(source_ids.len() + 1);
+    params.extend(to_to_sql(source_ids));
+    params.push(&limit_i64);
+
+    struct RawCwRow {
+        entry: ContinueWatchingEntry,
+        provider_series_id: Option<i64>,
+        next_ep_channel_id: Option<i64>,
+        next_ep_stream_id: Option<i64>,
+        next_ep_season_number: Option<i64>,
+        next_ep_episode_number: Option<i64>,
+    }
+
+    let raw_rows: Vec<RawCwRow> = {
+        let mut stmt = conn.prepare(&query_sql)?;
+        let mapped = stmt.query_map(params_from_iter(params), |row| {
+            let channel = row_to_channel(row)?;
+            let raw_pos: f64 = row.get::<_, Option<f64>>("position_sec")?.unwrap_or(0.0);
+            let raw_dur: f64 = row.get::<_, Option<f64>>("duration_sec")?.unwrap_or(0.0);
+            let raw_pct: f64 = row.get::<_, Option<f64>>("progress_percent")?.unwrap_or(0.0);
+            let pos = if raw_pos.is_finite() && raw_pos > 0.0 {
+                raw_pos
+            } else {
+                0.0
+            };
+            let dur = if raw_dur.is_finite() && raw_dur > 0.0 {
+                raw_dur
+            } else {
+                0.0
+            };
+            let computed_pct = if raw_pct.is_finite() && raw_pct > 0.0 {
+                raw_pct.clamp(0.0, 100.0)
+            } else if dur > 0.0 && pos > 0.0 {
+                ((pos / dur) * 100.0).clamp(0.0, 100.0)
+            } else {
+                0.0
+            };
+            let is_ep = row.get::<_, Option<i64>>("wh_is_episode")?.unwrap_or(0) != 0
+                || channel.series_id.is_some()
+                || channel.season_id.is_some()
+                || channel.episode_num.is_some();
+            let threshold = if is_ep { 90.0 } else { 95.0 };
+            let raw_completed = row.get::<_, Option<i64>>("completed")?.unwrap_or(0) != 0;
+            let completed = raw_completed
+                || computed_pct >= threshold
+                || (dur > 30.0 && pos >= dur - 30.0);
+
+            Ok(RawCwRow {
+                entry: ContinueWatchingEntry {
+                    channel,
+                    identity_key: row.get("identity_key")?,
+                    position_sec: pos,
+                    duration_sec: dur,
+                    progress_percent: if completed { 100.0 } else { computed_pct },
+                    completed,
+                    last_watched: row.get::<_, Option<i64>>("wh_last_watched")?.unwrap_or(0),
+                    updated_at: row.get::<_, Option<i64>>("wh_updated_at")?.unwrap_or(0),
+                    tmdb_id: row.get("wh_tmdb_id")?,
+                    is_episode: is_ep,
+                    show_title: row.get("resolved_show_title")?,
+                    season_number: row.get("resolved_season_number")?,
+                    episode_number: row.get("resolved_episode_number")?,
+                    next_episode: None,
+                },
+                provider_series_id: row.get("wh_series_id")?,
+                next_ep_channel_id: row.get("next_ep_channel_id")?,
+                next_ep_stream_id: row.get("next_ep_stream_id")?,
+                next_ep_season_number: row.get("next_ep_season_number")?,
+                next_ep_episode_number: row.get("next_ep_episode_number")?,
+            })
+        })?;
+        mapped.collect::<std::result::Result<Vec<RawCwRow>, _>>()?
+    };
+
+    let mut seen_channel_ids = std::collections::HashSet::with_capacity(raw_rows.len());
+    let mut results = Vec::with_capacity(raw_rows.len());
+    for mut item in raw_rows {
+        let Some(ch_id) = item.entry.channel.id else {
+            continue;
+        };
+        if !seen_channel_ids.insert(ch_id) {
+            continue;
+        }
+        if item.entry.is_episode
+            && item.entry.completed
+            && (item.next_ep_channel_id.is_some()
+                || item.next_ep_stream_id.is_some()
+                || item.next_ep_episode_number.is_some())
+        {
+            if let Some(src_id) = item.entry.channel.source_id {
+                let ser_id = item
+                    .entry
+                    .channel
+                    .series_id
+                    .map(|v| v as i64)
+                    .or(item.provider_series_id);
+                item.entry.next_episode = resolve_next_episode_channel_on_conn(
+                    conn,
+                    src_id,
+                    ser_id,
+                    item.next_ep_channel_id,
+                    item.next_ep_stream_id,
+                    item.next_ep_season_number,
+                    item.next_ep_episode_number,
+                )
+                .ok()
+                .flatten();
+            }
+        }
+        results.push(item.entry);
+    }
+
+    Ok(results)
+}
+
 pub fn migrate_legacy_watch_progress(entries: Vec<LegacyWatchProgressEntry>) -> Result<usize> {
     let mut sql = get_conn()?;
     migrate_legacy_watch_progress_on_conn(&mut sql, &entries)
@@ -5305,6 +5571,139 @@ mod tests {
         assert!((after_relink.position_sec - 1400.0).abs() < 0.01);
         assert!((after_relink.duration_sec - 7200.0).abs() < 0.01);
         assert_eq!(after_relink.tmdb_id, Some(27205));
+    }
+
+    #[test]
+    fn test_get_continue_watching_authoritative_aggregation_relink_and_filtering() {
+        let mut conn = setup_test_db();
+        conn.execute(
+            "INSERT INTO sources (id, name, source_type, url, username, enabled) VALUES (1, 'XtreamOne', 2, 'http://tv.example.com:8080', 'user1', 1)",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO sources (id, name, source_type, url, username, enabled) VALUES (9, 'DisabledSrc', 2, 'http://disabled.example.com:8080', 'u9', 0)",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO seasons (id, season_number, name, source_id) VALUES (10, 1, 'Season 1', 1)",
+            [],
+        )
+        .unwrap();
+        // Live, visible movie, hidden movie, disabled movie, completed movie
+        conn.execute("INSERT INTO channels (id, name, url, media_type, source_id, stream_id) VALUES (1, 'Live News', 'http://tv.example.com:8080/live/1.ts', 0, 1, 1)", []).unwrap();
+        conn.execute("INSERT INTO channels (id, name, url, media_type, source_id, stream_id) VALUES (2, 'Interstellar (2014)', 'http://tv.example.com:8080/movie/u1/p1/777.mp4', 1, 1, 777)", []).unwrap();
+        conn.execute("INSERT INTO channels (id, name, url, media_type, source_id, stream_id, hidden) VALUES (3, 'Hidden Movie', 'http://tv.example.com:8080/movie/u1/p1/778.mp4', 1, 1, 778, 1)", []).unwrap();
+        conn.execute("INSERT INTO channels (id, name, url, media_type, source_id, stream_id) VALUES (4, 'Disabled Src Movie', 'http://disabled.example.com:8080/movie/u9/p9/888.mp4', 1, 9, 888)", []).unwrap();
+        conn.execute("INSERT INTO channels (id, name, url, media_type, source_id, stream_id) VALUES (5, 'Done Movie (2020)', 'http://tv.example.com:8080/movie/u1/p1/779.mp4', 1, 1, 779)", []).unwrap();
+        // Series parent + episodes
+        conn.execute("INSERT INTO channels (id, name, url, media_type, source_id, stream_id) VALUES (20, 'Breaking Bad', '300', 2, 1, 300)", []).unwrap();
+        conn.execute("INSERT INTO channels (id, name, url, media_type, source_id, stream_id, series_id, season_id, episode_num) VALUES (31, 'S01E01 - Pilot', 'http://tv.example.com:8080/series/u1/p1/901.mkv', 2, 1, 901, 300, 10, 1)", []).unwrap();
+        conn.execute("INSERT INTO channels (id, name, url, media_type, source_id, stream_id, series_id, season_id, episode_num) VALUES (32, 'S01E02 - Cat Bag', 'http://tv.example.com:8080/series/u1/p1/902.mkv', 2, 1, 902, 300, 10, 2)", []).unwrap();
+
+        // Write progress rows with explicit last_watched ordering
+        upsert_watch_progress_on_conn(
+            &conn,
+            &WatchProgressUpsert {
+                channel_id: 2,
+                position_sec: 1800.0,
+                duration_sec: 3600.0,
+                tmdb_id: Some(157336),
+                updated_at: Some(2000),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        upsert_watch_progress_on_conn(
+            &conn,
+            &WatchProgressUpsert {
+                channel_id: 31,
+                position_sec: 2800.0,
+                duration_sec: 3000.0,
+                completed: Some(true),
+                tmdb_id: Some(1396),
+                updated_at: Some(3000),
+                next_ep_channel_id: Some(32),
+                next_ep_stream_id: Some(902),
+                next_ep_season_number: Some(1),
+                next_ep_episode_number: Some(2),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        upsert_watch_progress_on_conn(
+            &conn,
+            &WatchProgressUpsert {
+                channel_id: 5,
+                position_sec: 3580.0,
+                duration_sec: 3600.0,
+                completed: Some(true),
+                updated_at: Some(2500),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        // Ignored entries: live, hidden, disabled, detached
+        for &ignored_id in &[1_i64, 3, 4] {
+            upsert_watch_progress_on_conn(
+                &conn,
+                &WatchProgressUpsert {
+                    channel_id: ignored_id,
+                    position_sec: 300.0,
+                    duration_sec: 1200.0,
+                    updated_at: Some(4000),
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+        }
+        conn.execute(
+            "INSERT INTO watch_history (identity_key, channel_id, source_id, source_missing, source_type, source_fingerprint, media_type, is_episode, channel_name, normalized_title, position_sec, duration_sec, progress_percent, completed, last_watched, updated_at) VALUES ('detached_1', NULL, NULL, 1, 2, 'fp_missing', 1, 0, 'Detached Movie', 'detached movie', 600.0, 3600.0, 17.0, 0, 5000, 5000)",
+            [],
+        )
+        .unwrap();
+
+        let entries = get_continue_watching_on_conn(&conn, &[1, 9], 100).unwrap();
+        let entry_ids: Vec<i64> = entries.iter().filter_map(|e| e.channel.id).collect();
+        // Hidden (3), disabled (4), live (1), detached excluded; ordered by last_watched DESC: 31 (3000), 5 (2500), 2 (2000)
+        assert_eq!(entry_ids, vec![31, 5, 2]);
+        assert_eq!(entries[0].show_title.as_deref(), Some("Breaking Bad"));
+        assert_eq!(entries[0].season_number, Some(1));
+        assert_eq!(entries[0].episode_number, Some(1));
+        assert!(entries[0].completed);
+        assert_eq!(entries[0].next_episode.as_ref().and_then(|c| c.id), Some(32));
+        assert_eq!(entries[2].tmdb_id, Some(157336));
+        assert!((entries[2].progress_percent - 50.0).abs() < 0.01);
+
+        // Delete source 1 -> re-add source 2 with completely new channel IDs -> relink -> Continue Watching recovers everything including next_episode
+        {
+            let tx = conn.transaction().unwrap();
+            detach_watch_history_for_source(&tx, 1).unwrap();
+            tx.execute("DELETE FROM channels WHERE source_id = 1", []).unwrap();
+            tx.execute("DELETE FROM seasons WHERE source_id = 1", []).unwrap();
+            tx.execute("DELETE FROM sources WHERE id = 1", []).unwrap();
+            tx.commit().unwrap();
+        }
+        // Detached state must return 0 broken cards
+        assert!(get_continue_watching_on_conn(&conn, &[1, 9], 100).unwrap().is_empty());
+
+        conn.execute("INSERT INTO sources (id, name, source_type, url, username, enabled) VALUES (2, 'XtreamOne', 2, 'http://tv.example.com:8080', 'user1', 1)", []).unwrap();
+        conn.execute("INSERT INTO seasons (id, season_number, name, source_id) VALUES (20, 1, 'Season 1', 2)", []).unwrap();
+        conn.execute("INSERT INTO channels (id, name, url, media_type, source_id, stream_id) VALUES (1002, 'Interstellar (2014)', 'http://tv.example.com:8080/movie/u1/NEWPASS/777.mp4', 1, 2, 777)", []).unwrap();
+        conn.execute("INSERT INTO channels (id, name, url, media_type, source_id, stream_id) VALUES (1020, 'Breaking Bad', '300', 2, 2, 300)", []).unwrap();
+        conn.execute("INSERT INTO channels (id, name, url, media_type, source_id, stream_id, series_id, season_id, episode_num) VALUES (1031, 'S01E01 - Pilot', 'http://tv.example.com:8080/series/u1/NEWPASS/901.mkv', 2, 2, 901, 300, 20, 1)", []).unwrap();
+        conn.execute("INSERT INTO channels (id, name, url, media_type, source_id, stream_id, series_id, season_id, episode_num) VALUES (1032, 'S01E02 - Cat Bag', 'http://tv.example.com:8080/series/u1/NEWPASS/902.mkv', 2, 2, 902, 300, 20, 2)", []).unwrap();
+
+        let relinked = relink_watch_history_on_conn(&mut conn, 2).unwrap();
+        assert_eq!(relinked, 2);
+
+        let recovered = get_continue_watching_on_conn(&conn, &[2], 100).unwrap();
+        let rec_ids: Vec<i64> = recovered.iter().filter_map(|e| e.channel.id).collect();
+        assert_eq!(rec_ids, vec![1031, 1002]);
+        assert_eq!(recovered[0].next_episode.as_ref().and_then(|c| c.id), Some(1032));
+        assert!((recovered[1].position_sec - 1800.0).abs() < 0.01);
+        assert_eq!(recovered[1].tmdb_id, Some(157336));
     }
 }
 

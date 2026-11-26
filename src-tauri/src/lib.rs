@@ -7,9 +7,9 @@ use anyhow::Error;
 use tauri::{AppHandle, Emitter, Manager, State};
 use tokio::sync::Mutex;
 use types::{
-    AppState, Channel, CustomChannel, CustomChannelExtraData, EPG, EPGNotify, Filters, Group,
-    IdName, LegacyWatchProgressEntry, NetworkInfo, Settings, Source, SourceContentCounts,
-    WatchProgressRecord, WatchProgressUpsert,
+    AppState, Channel, ContinueWatchingEntry, CustomChannel, CustomChannelExtraData, EPG,
+    EPGNotify, Filters, Group, IdName, LegacyWatchProgressEntry, NetworkInfo, Settings, Source,
+    SourceContentCounts, WatchProgressRecord, WatchProgressUpsert,
 };
 
 pub mod auto_refresh;
@@ -103,6 +103,7 @@ pub fn run() {
             add_last_watched,
             upsert_watch_progress,
             get_watch_progress,
+            get_continue_watching,
             migrate_legacy_watch_progress,
             backup_favs,
             restore_favs,
@@ -643,6 +644,14 @@ fn upsert_watch_progress(payload: WatchProgressUpsert) -> Result<(), String> {
 #[tauri::command(async)]
 fn get_watch_progress(channel_id: i64) -> Result<Option<WatchProgressRecord>, String> {
     sql::get_watch_progress(channel_id).map_err(map_err_frontend)
+}
+
+#[tauri::command(async)]
+fn get_continue_watching(
+    source_ids: Vec<i64>,
+    limit: Option<u32>,
+) -> Result<Vec<ContinueWatchingEntry>, String> {
+    sql::get_continue_watching(source_ids, limit).map_err(map_err_frontend)
 }
 
 #[tauri::command(async)]

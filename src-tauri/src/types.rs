@@ -459,3 +459,21 @@ pub struct WatchProgressRecord {
     pub last_watched: i64,
     pub tmdb_id: Option<i64>,
 }
+
+#[derive(Clone, PartialEq, Debug, Deserialize, Serialize)]
+pub struct ContinueWatchingEntry {
+    pub channel: Channel,
+    pub identity_key: String,
+    pub position_sec: f64,
+    pub duration_sec: f64,
+    pub progress_percent: f64,
+    pub completed: bool,
+    pub last_watched: i64,
+    pub updated_at: i64,
+    pub tmdb_id: Option<i64>,
+    pub is_episode: bool,
+    pub show_title: Option<String>,
+    pub season_number: Option<i64>,
+    pub episode_number: Option<i64>,
+    pub next_episode: Option<Channel>,
+}
