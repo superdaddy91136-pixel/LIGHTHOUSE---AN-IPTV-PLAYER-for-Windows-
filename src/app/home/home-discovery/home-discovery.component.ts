@@ -12,7 +12,7 @@ import {
 } from "@angular/core";
 import { invoke } from "@tauri-apps/api/core";
 import { ToastrService } from "ngx-toastr";
-import { Subscription } from "rxjs";
+import { Subscription, debounceTime, tap } from "rxjs";
 import { MemoryService } from "../../memory.service";
 import { Channel } from "../../models/channel";
 import { DiscoveryRow, HeroItem } from "../../models/discovery";
@@ -555,34 +555,41 @@ export class HomeDiscoveryComponent implements OnInit, AfterViewInit, OnDestroy 
     );
 
     this.subs.push(
-      this.discoveryState.sourceDataInvalidated$.subscribe((event) => {
-        if (this.isDestroyed) return;
-        if (event.type === 'deleted' && event.sourceId != null) {
-          this.memory.Sources.delete(event.sourceId);
-        }
-        this.catalogPoolById.clear();
-        this.catalogPoolByNormTitle.clear();
-        this.catalogPoolByExactClean.clear();
-        this.negativeCatalogMatchKeys.clear();
-        this.inFlightCatalogMatches.clear();
-        if (event.type === 'deleted') {
-          this.stopHeroTimer(false);
-          this.heroItems = [];
-          this.masterHeroItems = [];
-          this.masterDiscoveryRows = [];
-          this.discoveryRows = [];
-          this.allRecommended = [];
-          this.allLoadedMovies = [];
-          this.allLoadedSeries = [];
-          this.loadedSeries = [];
-          this.seriesNameMap.clear();
-          this.seriesLookupMap.clear();
-          this.groupsMap.clear();
-          this.hasAnyContent = false;
-          this.cdr.markForCheck();
-        }
-        this.loadDiscovery(true);
-      }),
+      this.discoveryState.sourceDataInvalidated$
+        .pipe(
+          tap((event) => {
+            if (this.isDestroyed) return;
+            if (event.type === 'deleted' && event.sourceId != null) {
+              this.memory.Sources.delete(event.sourceId);
+            }
+            this.catalogPoolById.clear();
+            this.catalogPoolByNormTitle.clear();
+            this.catalogPoolByExactClean.clear();
+            this.negativeCatalogMatchKeys.clear();
+            this.inFlightCatalogMatches.clear();
+            if (event.type === 'deleted') {
+              this.stopHeroTimer(false);
+              this.heroItems = [];
+              this.masterHeroItems = [];
+              this.masterDiscoveryRows = [];
+              this.discoveryRows = [];
+              this.allRecommended = [];
+              this.allLoadedMovies = [];
+              this.allLoadedSeries = [];
+              this.loadedSeries = [];
+              this.seriesNameMap.clear();
+              this.seriesLookupMap.clear();
+              this.groupsMap.clear();
+              this.hasAnyContent = false;
+              this.cdr.markForCheck();
+            }
+          }),
+          debounceTime(400),
+        )
+        .subscribe(() => {
+          if (this.isDestroyed) return;
+          this.loadDiscovery(true);
+        }),
     );
 
     // Subscribe to immediate cross-component favorites synchronization
