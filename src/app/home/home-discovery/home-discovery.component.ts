@@ -527,10 +527,10 @@ export class HomeDiscoveryComponent implements OnInit, AfterViewInit, OnDestroy 
       this.syncFromSnapshot(cachedSnapshot);
       this.loading = false;
       this.hasAnyContent = true;
-      if (this.currentHero?.imageUrl || this.heroItems.length > 0) {
+      if (this.currentHero?.imageUrl || !this.tmdbConfig.isEnabled()) {
         this.splashScreen.markHeroReady();
       }
-      if (cachedSnapshot.tmdbRows && cachedSnapshot.tmdbRows.length > 0) {
+      if ((cachedSnapshot.tmdbRows && cachedSnapshot.tmdbRows.length > 0) || !this.tmdbConfig.isEnabled()) {
         this.splashScreen.markRowsReady();
       }
       this.cdr.markForCheck();
@@ -1457,10 +1457,10 @@ export class HomeDiscoveryComponent implements OnInit, AfterViewInit, OnDestroy 
         this.loading = false;
         this.cdr.markForCheck();
 
-        if (this.currentHero?.imageUrl || this.heroItems.length > 0) {
+        if (this.currentHero?.imageUrl || !this.tmdbConfig.isEnabled()) {
           this.splashScreen.markHeroReady();
         }
-        if (snapshot.tmdbRows && snapshot.tmdbRows.length > 0) {
+        if ((snapshot.tmdbRows && snapshot.tmdbRows.length > 0) || !this.tmdbConfig.isEnabled()) {
           this.splashScreen.markRowsReady();
         }
 
@@ -1523,11 +1523,11 @@ export class HomeDiscoveryComponent implements OnInit, AfterViewInit, OnDestroy 
       this.loading = false;
       this.cdr.markForCheck();
 
-      // Phase 2: Dismiss splash screen as soon as hero candidate is ready
-      if (this.heroItems.length > 0) {
-        this.splashScreen.markHeroReady();
-      } else if (!this.tmdbConfig.isEnabled()) {
+      // Phase 2: Dismiss splash screen as soon as hero image (or no-TMDB fallback) is ready
+      if (!this.tmdbConfig.isEnabled()) {
         this.splashScreen.markHomeReady();
+      } else if (this.currentHero?.imageUrl) {
+        this.splashScreen.markHeroReady();
       }
 
       // Phase 3: Progressive background TMDB discovery
@@ -2204,6 +2204,7 @@ export class HomeDiscoveryComponent implements OnInit, AfterViewInit, OnDestroy 
 
     if (!this.tmdbConfig.isEnabled()) {
       this.tmdbRecommendationsUnavailable = true;
+      this.splashScreen.markHomeReady();
       this.cdr.markForCheck();
       return;
     }
@@ -2251,7 +2252,7 @@ export class HomeDiscoveryComponent implements OnInit, AfterViewInit, OnDestroy 
         moviesPool,
         seriesPool
       ).then(() => {
-        if (this.currentHero?.imageUrl || this.heroItems.length > 0) {
+        if (this.currentHero?.imageUrl || !this.tmdbConfig.isEnabled()) {
           this.splashScreen.markHeroReady();
         }
       });
@@ -2309,13 +2310,16 @@ export class HomeDiscoveryComponent implements OnInit, AfterViewInit, OnDestroy 
 
       if (tmdbRows.length > 0) {
         this.splashScreen.markRowsReady();
+      } else {
+        this.splashScreen.markHomeReady();
       }
-      if (this.currentHero?.imageUrl) {
+      if (this.currentHero?.imageUrl || !this.tmdbConfig.isEnabled()) {
         this.splashScreen.markHeroReady();
       }
     } catch (err) {
       console.warn("Error in TMDB discovery pipeline:", err);
       this.tmdbRecommendationsUnavailable = true;
+      this.splashScreen.markHomeReady();
       this.cdr.markForCheck();
     }
   }
