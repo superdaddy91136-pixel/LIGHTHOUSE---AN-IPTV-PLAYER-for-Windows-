@@ -19,6 +19,7 @@ use r2d2_sqlite::SqliteConnectionManager;
 use rusqlite::{InterruptHandle, OptionalExtension, Row, Transaction, params, params_from_iter};
 use rusqlite_migration::{M, Migrations};
 use std::sync::atomic::{AtomicU64, Ordering};
+use url::Url;
 
 const PAGE_SIZE: u8 = 36;
 pub const DB_NAME: &str = "db.sqlite";
@@ -93,8 +94,7 @@ fn get_and_create_sqlite_db_path() -> String {
     return path.to_string_lossy().to_string();
 }
 
-fn create_structure() -> Result<()> {
-    let sql = get_conn()?;
+fn create_structure_on_conn(sql: &rusqlite::Connection) -> Result<()> {
     sql.execute_batch(
         r#"
 CREATE TABLE "sources" (
@@ -169,7 +169,7 @@ fn structure_exists() -> Result<bool> {
 }
 
 pub fn create_or_initialize_db() -> Result<()> {
-    let sql = get_conn()?;
+    let mut sql = get_conn()?;
     sql.execute_batch(
         "PRAGMA journal_mode = WAL;
          PRAGMA busy_timeout = 5000;
@@ -177,14 +177,16 @@ pub fn create_or_initialize_db() -> Result<()> {
          PRAGMA foreign_keys = ON;",
     )?;
     if !structure_exists()? {
-        create_structure()?;
+        create_structure_on_conn(&sql)?;
     }
-    apply_migrations()?;
+    apply_migrations_on_conn(&mut sql)?;
+    if let Err(e) = backfill_watch_history_on_conn(&mut sql) {
+        log(format!("Failed to backfill watch_history: {:?}", e));
+    }
     Ok(())
 }
 
-fn apply_migrations() -> Result<()> {
-    let mut sql = get_conn()?;
+fn apply_migrations_on_conn(sql: &mut rusqlite::Connection) -> Result<()> {
     let migrations = Migrations::new(vec![
         M::up(
             r#"
@@ -326,8 +328,62 @@ fn apply_migrations() -> Result<()> {
               );
             "#,
         ),
+        M::up(
+            r#"
+              CREATE TABLE IF NOT EXISTS "watch_history" (
+                "id"                     INTEGER PRIMARY KEY,
+                "identity_key"           TEXT NOT NULL UNIQUE,
+                "channel_id"             INTEGER,
+                "source_id"              INTEGER,
+                "source_missing"         INTEGER NOT NULL DEFAULT 0,
+                "source_type"            INTEGER NOT NULL,
+                "source_fingerprint"     TEXT NOT NULL,
+                "source_host"            TEXT,
+                "source_username"        TEXT,
+                "source_name"            TEXT,
+                "media_type"             INTEGER NOT NULL,
+                "is_episode"             INTEGER NOT NULL DEFAULT 0,
+                "provider_stream_id"     INTEGER,
+                "provider_series_id"     INTEGER,
+                "season_number"          INTEGER,
+                "episode_number"         INTEGER,
+                "stream_url_path"        TEXT,
+                "stream_url"             TEXT,
+                "channel_name"           TEXT NOT NULL,
+                "normalized_title"       TEXT NOT NULL,
+                "show_title"             TEXT,
+                "normalized_show_title"  TEXT,
+                "release_year"           INTEGER,
+                "tmdb_id"                INTEGER,
+                "last_watched"           INTEGER NOT NULL,
+                "position_sec"           REAL NOT NULL DEFAULT 0,
+                "duration_sec"           REAL NOT NULL DEFAULT 0,
+                "progress_percent"       REAL NOT NULL DEFAULT 0,
+                "completed"              INTEGER NOT NULL DEFAULT 0,
+                "updated_at"             INTEGER NOT NULL,
+                "next_ep_stream_id"      INTEGER,
+                "next_ep_season_number"  INTEGER,
+                "next_ep_episode_number" INTEGER,
+                "next_ep_channel_id"     INTEGER
+              );
+              CREATE INDEX IF NOT EXISTS index_wh_visible_recent
+                ON watch_history(source_missing, last_watched DESC);
+              CREATE INDEX IF NOT EXISTS index_wh_channel_id
+                ON watch_history(channel_id);
+              CREATE INDEX IF NOT EXISTS index_wh_source_id
+                ON watch_history(source_id);
+              CREATE INDEX IF NOT EXISTS index_wh_relink_stream
+                ON watch_history(source_fingerprint, media_type, provider_stream_id);
+              CREATE INDEX IF NOT EXISTS index_wh_relink_episode
+                ON watch_history(source_fingerprint, provider_series_id, season_number, episode_number);
+              CREATE INDEX IF NOT EXISTS index_wh_relink_title
+                ON watch_history(media_type, is_episode, normalized_title);
+              CREATE INDEX IF NOT EXISTS index_wh_relink_tmdb
+                ON watch_history(tmdb_id, is_episode, season_number, episode_number);
+            "#,
+        ),
     ]);
-    migrations.to_latest(&mut sql)?;
+    migrations.to_latest(sql)?;
     Ok(())
 }
 
@@ -2233,8 +2289,538 @@ pub fn analyze(tx: &Transaction) -> Result<()> {
     Ok(())
 }
 
+const WATCH_HISTORY_BACKFILL_KEY: &str = "watch_history_backfill_v1";
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct SourceIdentity {
+    source_fingerprint: String,
+    source_host: Option<String>,
+    source_username: Option<String>,
+    source_name: String,
+}
+
+struct WatchHistorySourceChannelRow {
+    channel_id: i64,
+    channel_name: String,
+    url: Option<String>,
+    media_type: u8,
+    source_id: i64,
+    series_id: Option<i64>,
+    season_id: Option<i64>,
+    stream_id: Option<i64>,
+    episode_num: Option<i64>,
+    last_watched: Option<i64>,
+    season_number: Option<i64>,
+    show_title: Option<String>,
+    source_name: String,
+    source_type: u8,
+    source_url: Option<String>,
+    source_username: Option<String>,
+}
+
+fn is_sensitive_query_param(key: &str) -> bool {
+    matches!(
+        key.to_ascii_lowercase().as_str(),
+        "password"
+            | "pass"
+            | "pwd"
+            | "token"
+            | "auth"
+            | "key"
+            | "secret"
+            | "sig"
+            | "signature"
+            | "expires"
+            | "exp"
+    )
+}
+
+fn parse_url_with_default_scheme(raw: &str) -> Option<Url> {
+    let trimmed = raw.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+    Url::parse(trimmed)
+        .ok()
+        .or_else(|| Url::parse(&format!("http://{trimmed}")).ok())
+}
+
+fn format_normalized_origin(parsed: &Url) -> Option<(String, String)> {
+    let host = parsed.host_str()?.to_ascii_lowercase();
+    let scheme = parsed.scheme().to_ascii_lowercase();
+    let port_suffix = match parsed.port() {
+        Some(port) => format!(":{port}"),
+        None => String::new(),
+    };
+    let origin = format!("{scheme}://{host}{port_suffix}");
+    let host_key = format!("{host}{port_suffix}");
+    Some((origin, host_key))
+}
+
+fn normalize_text_key(input: &str) -> String {
+    input
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ")
+        .to_ascii_lowercase()
+}
+
+fn extract_release_year(name: &str) -> Option<i64> {
+    let bytes = name.as_bytes();
+    let mut last_year: Option<i64> = None;
+    let mut i = 0;
+    while i + 4 <= bytes.len() {
+        let prev_ok = i == 0 || !bytes[i - 1].is_ascii_digit();
+        let next_ok = i + 4 == bytes.len() || !bytes[i + 4].is_ascii_digit();
+        if prev_ok && next_ok && bytes[i..i + 4].iter().all(|b| b.is_ascii_digit()) {
+            if let Ok(s) = std::str::from_utf8(&bytes[i..i + 4]) {
+                if let Ok(year) = s.parse::<i64>() {
+                    if (1920..=2035).contains(&year) {
+                        last_year = Some(year);
+                    }
+                }
+            }
+            i += 4;
+        } else {
+            i += 1;
+        }
+    }
+    last_year
+}
+
+fn fnv1a_64(input: &str) -> u64 {
+    let mut hash: u64 = 0xcbf29ce484222325;
+    for &b in input.as_bytes() {
+        hash ^= b as u64;
+        hash = hash.wrapping_mul(0x100000001b3);
+    }
+    hash
+}
+
+fn compute_source_identity(source: &Source) -> SourceIdentity {
+    let source_name = source.name.trim().to_string();
+    let raw_url = source.url.as_deref().unwrap_or("").trim();
+
+    match source.source_type {
+        source_type::XTREAM => {
+            let parsed = parse_url_with_default_scheme(raw_url);
+            let (origin, host_key) = parsed
+                .as_ref()
+                .and_then(format_normalized_origin)
+                .unwrap_or_else(|| {
+                    let fallback = raw_url.to_ascii_lowercase();
+                    (fallback.clone(), fallback)
+                });
+            let username = source
+                .username
+                .as_deref()
+                .map(str::trim)
+                .filter(|s| !s.is_empty())
+                .map(|s| s.to_ascii_lowercase())
+                .or_else(|| {
+                    parsed.as_ref().and_then(|u| {
+                        u.query_pairs()
+                            .find(|(k, _)| {
+                                k.eq_ignore_ascii_case("username") || k.eq_ignore_ascii_case("user")
+                            })
+                            .map(|(_, v)| v.trim().to_ascii_lowercase())
+                            .filter(|s| !s.is_empty())
+                    })
+                });
+            let user_part = username.as_deref().unwrap_or("");
+            SourceIdentity {
+                source_fingerprint: format!("xtream:{origin}|{user_part}"),
+                source_host: (!host_key.is_empty()).then_some(host_key),
+                source_username: username,
+                source_name,
+            }
+        }
+        source_type::M3U_LINK => {
+            if let Some(mut parsed) = parse_url_with_default_scheme(raw_url) {
+                let host_key = format_normalized_origin(&parsed).map(|(_, h)| h);
+                let username = parsed
+                    .query_pairs()
+                    .find(|(k, _)| {
+                        k.eq_ignore_ascii_case("username") || k.eq_ignore_ascii_case("user")
+                    })
+                    .map(|(_, v)| v.trim().to_ascii_lowercase())
+                    .filter(|s| !s.is_empty());
+                let kept_pairs: Vec<(String, String)> = parsed
+                    .query_pairs()
+                    .filter(|(k, _)| !is_sensitive_query_param(k.as_ref()))
+                    .map(|(k, v)| (k.into_owned(), v.into_owned()))
+                    .collect();
+                parsed.set_query(None);
+                if !kept_pairs.is_empty() {
+                    let mut pairs = parsed.query_pairs_mut();
+                    for (k, v) in kept_pairs {
+                        pairs.append_pair(&k, &v);
+                    }
+                }
+                let origin = format_normalized_origin(&parsed)
+                    .map(|(o, _)| o)
+                    .unwrap_or_default();
+                let query_suffix = parsed
+                    .query()
+                    .map(|q| format!("?{q}"))
+                    .unwrap_or_default();
+                let normalized_url = format!("{origin}{}{query_suffix}", parsed.path());
+                SourceIdentity {
+                    source_fingerprint: format!("m3u_link:{normalized_url}"),
+                    source_host: host_key,
+                    source_username: username,
+                    source_name,
+                }
+            } else {
+                SourceIdentity {
+                    source_fingerprint: format!("m3u_link:{}", raw_url.to_ascii_lowercase()),
+                    source_host: None,
+                    source_username: None,
+                    source_name,
+                }
+            }
+        }
+        source_type::M3U => {
+            let file_key = raw_url
+                .rsplit(['/', '\\'])
+                .find(|s| !s.is_empty())
+                .unwrap_or(raw_url)
+                .to_ascii_lowercase();
+            SourceIdentity {
+                source_fingerprint: format!("m3u_file:{file_key}"),
+                source_host: None,
+                source_username: None,
+                source_name,
+            }
+        }
+        _ => SourceIdentity {
+            source_fingerprint: format!("custom:{}", normalize_text_key(&source_name)),
+            source_host: None,
+            source_username: None,
+            source_name,
+        },
+    }
+}
+
+fn normalize_stream_url_path(raw_url: Option<&str>) -> Option<String> {
+    let trimmed = raw_url?.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+    if let Some(parsed) = parse_url_with_default_scheme(trimmed) {
+        let kept_pairs: Vec<(String, String)> = parsed
+            .query_pairs()
+            .filter(|(k, _)| !is_sensitive_query_param(k.as_ref()))
+            .map(|(k, v)| (k.into_owned(), v.into_owned()))
+            .collect();
+        let path = parsed.path().trim();
+        if kept_pairs.is_empty() {
+            Some(path.to_string())
+        } else {
+            let mut tmp = Url::parse("http://localhost").ok()?;
+            {
+                let mut pairs = tmp.query_pairs_mut();
+                for (k, v) in kept_pairs {
+                    pairs.append_pair(&k, &v);
+                }
+            }
+            let query = tmp.query().unwrap_or("");
+            Some(format!("{path}?{query}"))
+        }
+    } else {
+        Some(trimmed.to_string())
+    }
+}
+
+fn build_watch_history_identity_key(
+    source_fingerprint: &str,
+    is_episode: bool,
+    stream_id: Option<i64>,
+    series_id: Option<i64>,
+    season_number: Option<i64>,
+    episode_num: Option<i64>,
+    stream_url_path: Option<&str>,
+    fallback_name: &str,
+) -> String {
+    if !is_episode {
+        if let Some(sid) = stream_id {
+            return format!("wh:v1:{source_fingerprint}:m:sid:{sid}");
+        }
+    } else {
+        if let Some(ser_id) = series_id {
+            if season_number.is_some() || episode_num.is_some() {
+                let sn = season_number.unwrap_or(-1);
+                let ep = episode_num.unwrap_or(-1);
+                return format!("wh:v1:{source_fingerprint}:ep:s{ser_id}:sn{sn}:e{ep}");
+            }
+        }
+        if let Some(sid) = stream_id {
+            return format!("wh:v1:{source_fingerprint}:ep:sid:{sid}");
+        }
+    }
+    let path_input = stream_url_path
+        .filter(|p| !p.is_empty())
+        .unwrap_or(fallback_name);
+    let kind = if is_episode { "ep" } else { "m" };
+    format!(
+        "wh:v1:{source_fingerprint}:{kind}:url:{:016x}",
+        fnv1a_64(path_input)
+    )
+}
+
+fn map_watch_history_source_channel_row(
+    row: &Row,
+) -> std::result::Result<WatchHistorySourceChannelRow, rusqlite::Error> {
+    Ok(WatchHistorySourceChannelRow {
+        channel_id: row.get("channel_id")?,
+        channel_name: row.get::<_, Option<String>>("channel_name")?.unwrap_or_default(),
+        url: row.get("channel_url")?,
+        media_type: row.get("media_type")?,
+        source_id: row.get("source_id")?,
+        series_id: row.get("series_id")?,
+        season_id: row.get("season_id")?,
+        stream_id: row.get("stream_id")?,
+        episode_num: row.get("episode_num")?,
+        last_watched: row.get("last_watched")?,
+        season_number: row.get("season_number")?,
+        show_title: row.get("show_title")?,
+        source_name: row.get::<_, Option<String>>("source_name")?.unwrap_or_default(),
+        source_type: row.get("source_type")?,
+        source_url: row.get("source_url")?,
+        source_username: row.get("source_username")?,
+    })
+}
+
+fn write_watch_history_row(
+    stmt: &mut rusqlite::Statement,
+    row: &WatchHistorySourceChannelRow,
+    fallback_timestamp: i64,
+) -> Result<()> {
+    if row.media_type == media_type::LIVESTREAM {
+        return Ok(());
+    }
+    let src = Source {
+        id: Some(row.source_id),
+        name: row.source_name.clone(),
+        url: row.source_url.clone(),
+        url_origin: None,
+        username: row.source_username.clone(),
+        password: None,
+        source_type: row.source_type,
+        use_tvg_id: None,
+        enabled: true,
+        user_agent: None,
+        max_streams: None,
+        stream_user_agent: None,
+        last_updated: None,
+    };
+    let identity = compute_source_identity(&src);
+    let is_episode =
+        row.series_id.is_some() || row.season_id.is_some() || row.episode_num.is_some();
+    let is_episode_flag: i64 = if is_episode { 1 } else { 0 };
+    let normalized_title = normalize_text_key(&row.channel_name);
+    let normalized_show_title = row.show_title.as_deref().map(normalize_text_key);
+    let release_year = row
+        .show_title
+        .as_deref()
+        .and_then(extract_release_year)
+        .or_else(|| extract_release_year(&row.channel_name));
+    let stream_url_path = normalize_stream_url_path(row.url.as_deref());
+    let identity_key = build_watch_history_identity_key(
+        &identity.source_fingerprint,
+        is_episode,
+        row.stream_id,
+        row.series_id,
+        row.season_number,
+        row.episode_num,
+        stream_url_path.as_deref(),
+        &normalized_title,
+    );
+    let last_watched = row.last_watched.unwrap_or(fallback_timestamp);
+    let updated_at = fallback_timestamp;
+
+    let args: Vec<&dyn rusqlite::ToSql> = vec![
+        &identity_key,
+        &row.channel_id,
+        &row.source_id,
+        &row.source_type,
+        &identity.source_fingerprint,
+        &identity.source_host,
+        &identity.source_username,
+        &identity.source_name,
+        &row.media_type,
+        &is_episode_flag,
+        &row.stream_id,
+        &row.series_id,
+        &row.season_number,
+        &row.episode_num,
+        &stream_url_path,
+        &row.url,
+        &row.channel_name,
+        &normalized_title,
+        &row.show_title,
+        &normalized_show_title,
+        &release_year,
+        &last_watched,
+        &updated_at,
+    ];
+    stmt.execute(params_from_iter(args))?;
+    Ok(())
+}
+
+const WATCH_HISTORY_SELECT_BASE: &str = r#"
+SELECT
+  c.id AS channel_id,
+  c.name AS channel_name,
+  c.url AS channel_url,
+  c.media_type AS media_type,
+  c.source_id AS source_id,
+  c.series_id AS series_id,
+  c.season_id AS season_id,
+  c.stream_id AS stream_id,
+  c.episode_num AS episode_num,
+  c.last_watched AS last_watched,
+  sn.season_number AS season_number,
+  CASE
+    WHEN c.series_id IS NOT NULL THEN (
+      SELECT p.name
+      FROM channels p
+      WHERE p.source_id = c.source_id
+        AND p.media_type = 2
+        AND p.series_id IS NULL
+        AND (p.stream_id = c.series_id OR p.url = CAST(c.series_id AS TEXT))
+      LIMIT 1
+    )
+    ELSE NULL
+  END AS show_title,
+  s.name AS source_name,
+  s.source_type AS source_type,
+  s.url AS source_url,
+  s.username AS source_username
+FROM channels c
+INNER JOIN sources s ON s.id = c.source_id
+LEFT JOIN seasons sn ON sn.id = c.season_id
+"#;
+
+fn backfill_watch_history_on_conn(conn: &mut rusqlite::Connection) -> Result<()> {
+    let already_done: Option<String> = conn
+        .query_row(
+            "SELECT value FROM settings WHERE key = ?1",
+            params![WATCH_HISTORY_BACKFILL_KEY],
+            |row| row.get(0),
+        )
+        .optional()?;
+    if already_done.is_some() {
+        return Ok(());
+    }
+
+    let tx = conn.transaction()?;
+    backfill_watch_history_tx(&tx)?;
+    tx.execute(
+        "INSERT OR REPLACE INTO settings (key, value) VALUES (?1, '1')",
+        params![WATCH_HISTORY_BACKFILL_KEY],
+    )?;
+    tx.commit()?;
+    Ok(())
+}
+
+fn backfill_watch_history_tx(tx: &Transaction) -> Result<()> {
+    let select_sql = format!(
+        "{WATCH_HISTORY_SELECT_BASE}\nWHERE c.last_watched IS NOT NULL AND c.media_type != 0"
+    );
+    let rows: Vec<WatchHistorySourceChannelRow> = {
+        let mut stmt = tx.prepare(&select_sql)?;
+        let mapped = stmt.query_map([], map_watch_history_source_channel_row)?;
+        mapped.filter_map(Result::ok).collect()
+    };
+
+    if rows.is_empty() {
+        return Ok(());
+    }
+
+    let now = chrono::Utc::now().timestamp();
+    let mut insert_stmt = tx.prepare(
+        r#"
+INSERT OR IGNORE INTO watch_history (
+  identity_key, channel_id, source_id, source_missing,
+  source_type, source_fingerprint, source_host, source_username, source_name,
+  media_type, is_episode, provider_stream_id, provider_series_id,
+  season_number, episode_number, stream_url_path, stream_url,
+  channel_name, normalized_title, show_title, normalized_show_title,
+  release_year, last_watched, updated_at
+)
+VALUES (?1, ?2, ?3, 0, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23)
+"#,
+    )?;
+    for row in &rows {
+        write_watch_history_row(&mut insert_stmt, row, now)?;
+    }
+    Ok(())
+}
+
+fn dual_write_watch_history(conn: &rusqlite::Connection, channel_id: i64) -> Result<()> {
+    let select_sql = format!("{WATCH_HISTORY_SELECT_BASE}\nWHERE c.id = ?1");
+    let row = conn
+        .query_row(
+            &select_sql,
+            params![channel_id],
+            map_watch_history_source_channel_row,
+        )
+        .optional()?;
+    let Some(row) = row else {
+        return Ok(());
+    };
+    if row.media_type == media_type::LIVESTREAM {
+        return Ok(());
+    }
+
+    let now = chrono::Utc::now().timestamp();
+    let mut upsert_stmt = conn.prepare_cached(
+        r#"
+INSERT INTO watch_history (
+  identity_key, channel_id, source_id, source_missing,
+  source_type, source_fingerprint, source_host, source_username, source_name,
+  media_type, is_episode, provider_stream_id, provider_series_id,
+  season_number, episode_number, stream_url_path, stream_url,
+  channel_name, normalized_title, show_title, normalized_show_title,
+  release_year, last_watched, updated_at
+)
+VALUES (?1, ?2, ?3, 0, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23)
+ON CONFLICT(identity_key) DO UPDATE SET
+  channel_id = excluded.channel_id,
+  source_id = excluded.source_id,
+  source_missing = 0,
+  source_type = excluded.source_type,
+  source_fingerprint = excluded.source_fingerprint,
+  source_host = excluded.source_host,
+  source_username = excluded.source_username,
+  source_name = excluded.source_name,
+  media_type = excluded.media_type,
+  is_episode = excluded.is_episode,
+  provider_stream_id = COALESCE(excluded.provider_stream_id, watch_history.provider_stream_id),
+  provider_series_id = COALESCE(excluded.provider_series_id, watch_history.provider_series_id),
+  season_number = COALESCE(excluded.season_number, watch_history.season_number),
+  episode_number = COALESCE(excluded.episode_number, watch_history.episode_number),
+  stream_url_path = COALESCE(excluded.stream_url_path, watch_history.stream_url_path),
+  stream_url = COALESCE(excluded.stream_url, watch_history.stream_url),
+  channel_name = excluded.channel_name,
+  normalized_title = excluded.normalized_title,
+  show_title = COALESCE(excluded.show_title, watch_history.show_title),
+  normalized_show_title = COALESCE(excluded.normalized_show_title, watch_history.normalized_show_title),
+  release_year = COALESCE(excluded.release_year, watch_history.release_year),
+  last_watched = excluded.last_watched,
+  updated_at = excluded.updated_at
+"#,
+    )?;
+    write_watch_history_row(&mut upsert_stmt, &row, now)
+}
+
 pub fn add_last_watched(id: i64) -> Result<()> {
     let sql = get_conn()?;
+    add_last_watched_on_conn(&sql, id)
+}
+
+fn add_last_watched_on_conn(sql: &rusqlite::Connection, id: i64) -> Result<()> {
     sql.execute(
         r#"
           UPDATE channels
@@ -2258,6 +2844,12 @@ pub fn add_last_watched(id: i64) -> Result<()> {
         "#,
         params![],
     )?;
+    if let Err(e) = dual_write_watch_history(sql, id) {
+        log(format!(
+            "Failed to dual-write watch_history for channel {id}: {:?}",
+            e
+        ));
+    }
     Ok(())
 }
 
@@ -2471,5 +3063,248 @@ pub fn get_adjacent_live_channel(
         .query_row(&wrap_sql, params_from_iter(wrap_params), row_to_channel)
         .optional()?;
     Ok(wrapped)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use rusqlite::Connection;
+
+    fn make_source(
+        source_type: u8,
+        name: &str,
+        url: Option<&str>,
+        username: Option<&str>,
+        password: Option<&str>,
+    ) -> Source {
+        Source {
+            id: Some(1),
+            name: name.to_string(),
+            url: url.map(ToString::to_string),
+            url_origin: None,
+            username: username.map(ToString::to_string),
+            password: password.map(ToString::to_string),
+            source_type,
+            use_tvg_id: Some(true),
+            enabled: true,
+            user_agent: None,
+            max_streams: None,
+            stream_user_agent: None,
+            last_updated: None,
+        }
+    }
+
+    fn setup_test_db() -> Connection {
+        let mut conn = Connection::open_in_memory().unwrap();
+        create_structure_on_conn(&conn).unwrap();
+        apply_migrations_on_conn(&mut conn).unwrap();
+        conn
+    }
+
+    #[test]
+    fn test_xtream_fingerprint_ignores_password_and_distinguishes_username() {
+        let s1 = make_source(
+            source_type::XTREAM,
+            "Provider A",
+            Some("HTTP://Stream.Example.com:8080/player_api.php"),
+            Some("Alice"),
+            Some("secret1"),
+        );
+        let s2 = make_source(
+            source_type::XTREAM,
+            "Provider A Readded",
+            Some("http://stream.example.com:8080"),
+            Some("alice"),
+            Some("rotated_password"),
+        );
+        let s3 = make_source(
+            source_type::XTREAM,
+            "Provider A Other User",
+            Some("http://stream.example.com:8080"),
+            Some("bob"),
+            Some("secret1"),
+        );
+
+        let id1 = compute_source_identity(&s1);
+        let id2 = compute_source_identity(&s2);
+        let id3 = compute_source_identity(&s3);
+
+        assert_eq!(id1.source_fingerprint, "xtream:http://stream.example.com:8080|alice");
+        assert_eq!(id1.source_fingerprint, id2.source_fingerprint);
+        assert_ne!(id1.source_fingerprint, id3.source_fingerprint);
+        assert_eq!(id1.source_host.as_deref(), Some("stream.example.com:8080"));
+        assert_eq!(id1.source_username.as_deref(), Some("alice"));
+    }
+
+    #[test]
+    fn test_m3u_and_custom_fingerprints_strip_secrets() {
+        let m3u_link_1 = make_source(
+            source_type::M3U_LINK,
+            "My M3U",
+            Some("https://CDN.Test.com/get.php?username=u1&password=p1&type=m3u_plus&token=abc"),
+            None,
+            None,
+        );
+        let m3u_link_2 = make_source(
+            source_type::M3U_LINK,
+            "My M3U",
+            Some("https://cdn.test.com/get.php?username=u1&password=p2&type=m3u_plus&token=xyz"),
+            None,
+            None,
+        );
+        assert_eq!(
+            compute_source_identity(&m3u_link_1).source_fingerprint,
+            compute_source_identity(&m3u_link_2).source_fingerprint
+        );
+
+        let m3u_file = make_source(
+            source_type::M3U,
+            "Local",
+            Some(r"C:\Users\Memory\Downloads\MyPlaylist.M3U"),
+            None,
+            None,
+        );
+        assert_eq!(
+            compute_source_identity(&m3u_file).source_fingerprint,
+            "m3u_file:myplaylist.m3u"
+        );
+
+        let custom = make_source(source_type::CUSTOM, "  Custom   List ", None, None, None);
+        assert_eq!(
+            compute_source_identity(&custom).source_fingerprint,
+            "custom:custom list"
+        );
+    }
+
+    #[test]
+    fn test_backfill_is_idempotent_and_skips_live_tv() {
+        let mut conn = setup_test_db();
+
+        conn.execute(
+            "INSERT INTO sources (id, name, source_type, url, username, password, enabled) VALUES (1, 'XtreamOne', 2, 'http://tv.example.com:8080', 'user1', 'pass1', 1)",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO sources (id, name, source_type, url, enabled) VALUES (2, 'M3UOne', 1, 'https://list.example.com/list.m3u?token=t1', 1)",
+            [],
+        )
+        .unwrap();
+
+        // Live channel with last_watched -> must be skipped by backfill
+        conn.execute(
+            "INSERT INTO channels (id, name, url, media_type, source_id, stream_id, last_watched) VALUES (10, 'CNN Live', 'http://tv.example.com:8080/live/10.ts', 0, 1, 10, 1000)",
+            [],
+        )
+        .unwrap();
+        // Movie with stream_id -> priority 1 identity_key
+        conn.execute(
+            "INSERT INTO channels (id, name, url, media_type, source_id, stream_id, last_watched) VALUES (11, 'Inception (2010)', 'http://tv.example.com:8080/movie/u/p/501.mp4', 1, 1, 501, 2000)",
+            [],
+        )
+        .unwrap();
+        // Series parent + season + episode -> priority 2 identity_key
+        conn.execute(
+            "INSERT INTO channels (id, name, url, media_type, source_id, stream_id) VALUES (12, 'Dark (2017)', '700', 2, 1, 700)",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO seasons (id, name, season_number, series_id, source_id) VALUES (100, 'Season 2', 2, 700, 1)",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO channels (id, name, url, media_type, source_id, series_id, season_id, episode_num, stream_id, last_watched) VALUES (13, 'Beginnings and Endings', 'http://tv.example.com:8080/series/u/p/9001.mp4', 1, 1, 700, 100, 4, 9001, 3000)",
+            [],
+        )
+        .unwrap();
+        // M3U movie without stream_id -> priority 3 URL-path hash
+        conn.execute(
+            "INSERT INTO channels (id, name, url, media_type, source_id, last_watched) VALUES (14, 'Arrival 2016', 'https://cdn.example.com/vod/arrival.mkv?token=abc', 1, 2, 4000)",
+            [],
+        )
+        .unwrap();
+
+        {
+            let tx = conn.transaction().unwrap();
+            backfill_watch_history_tx(&tx).unwrap();
+            backfill_watch_history_tx(&tx).unwrap();
+            tx.commit().unwrap();
+        }
+        backfill_watch_history_on_conn(&mut conn).unwrap();
+        backfill_watch_history_on_conn(&mut conn).unwrap();
+
+        let count: i64 = conn
+            .query_row("SELECT COUNT(*) FROM watch_history", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(count, 3);
+
+        let movie_key: String = conn
+            .query_row(
+                "SELECT identity_key FROM watch_history WHERE channel_id = 11",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(movie_key, "wh:v1:xtream:http://tv.example.com:8080|user1:m:sid:501");
+
+        let (ep_key, season_num, show_title): (String, i64, String) = conn
+            .query_row(
+                "SELECT identity_key, season_number, show_title FROM watch_history WHERE channel_id = 13",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+            )
+            .unwrap();
+        assert_eq!(
+            ep_key,
+            "wh:v1:xtream:http://tv.example.com:8080|user1:ep:s700:sn2:e4"
+        );
+        assert_eq!(season_num, 2);
+        assert_eq!(show_title, "Dark (2017)");
+    }
+
+    #[test]
+    fn test_add_last_watched_dual_write_and_upsert() {
+        let conn = setup_test_db();
+        conn.execute(
+            "INSERT INTO sources (id, name, source_type, url, username, enabled) VALUES (1, 'XtreamOne', 2, 'http://tv.example.com:8080', 'user1', 1)",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO channels (id, name, url, media_type, source_id, stream_id) VALUES (1, 'Live 1', 'http://tv.example.com:8080/live/1.ts', 0, 1, 1)",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO channels (id, name, url, media_type, source_id, stream_id) VALUES (2, 'Dune (2021)', 'http://tv.example.com:8080/movie/u/p/222.mp4', 1, 1, 222)",
+            [],
+        )
+        .unwrap();
+
+        add_last_watched_on_conn(&conn, 1).unwrap();
+        add_last_watched_on_conn(&conn, 2).unwrap();
+        add_last_watched_on_conn(&conn, 2).unwrap();
+
+        let wh_count: i64 = conn
+            .query_row("SELECT COUNT(*) FROM watch_history", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(wh_count, 1);
+
+        let live_last_watched: Option<i64> = conn
+            .query_row("SELECT last_watched FROM channels WHERE id = 1", [], |r| r.get(0))
+            .unwrap();
+        assert!(live_last_watched.is_some());
+
+        let movie_year: Option<i64> = conn
+            .query_row(
+                "SELECT release_year FROM watch_history WHERE channel_id = 2",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(movie_year, Some(2021));
+    }
 }
 
