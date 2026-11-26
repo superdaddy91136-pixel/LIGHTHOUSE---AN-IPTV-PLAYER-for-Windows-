@@ -1311,37 +1311,62 @@ pub fn delete_groups_by_source(tx: &Transaction, source_id: i64) -> Result<()> {
     Ok(())
 }
 
+fn detach_watch_history_for_source(tx: &Transaction, source_id: i64) -> Result<()> {
+    tx.execute(
+        r#"
+        UPDATE watch_history
+        SET channel_id = NULL,
+            source_id = NULL,
+            source_missing = 1
+        WHERE source_id = ?1
+    "#,
+        params![source_id],
+    )?;
+    Ok(())
+}
+
 pub fn delete_source(id: i64) -> Result<()> {
-    let sql = get_conn()?;
-    sql.execute(
+    let mut sql = get_conn()?;
+    delete_source_on_conn(&mut sql, id)
+}
+
+fn delete_source_on_conn(sql: &mut rusqlite::Connection, id: i64) -> Result<()> {
+    let tx = sql.transaction()?;
+    if let Err(e) = detach_watch_history_for_source(&tx, id) {
+        log(format!(
+            "Failed to detach watch_history for source {id}: {:?}",
+            e
+        ));
+    }
+    tx.execute(
         r#"
         DELETE FROM channels
         WHERE source_id = ?;
     "#,
         params![id],
     )?;
-    sql.execute(
+    tx.execute(
         r#"
         DELETE FROM groups
         WHERE source_id = ?;
     "#,
         params![id],
     )?;
-    sql.execute(
+    tx.execute(
         r#"
         DELETE FROM seasons
         WHERE source_id = ?;
     "#,
         params![id],
     )?;
-    let _ = sql.execute(
+    let _ = tx.execute(
         r#"
         DELETE FROM source_refresh_state
         WHERE source_id = ?;
     "#,
         params![id],
     );
-    let count = sql.execute(
+    let count = tx.execute(
         r#"
         DELETE FROM sources
         WHERE id = ?;
@@ -1351,7 +1376,8 @@ pub fn delete_source(id: i64) -> Result<()> {
     if count != 1 {
         return Err(anyhow!("No sources were deleted"));
     }
-    sql.execute("ANALYZE;", params![])?;
+    tx.execute("ANALYZE;", params![])?;
+    tx.commit()?;
     Ok(())
 }
 
@@ -3305,6 +3331,50 @@ mod tests {
             )
             .unwrap();
         assert_eq!(movie_year, Some(2021));
+    }
+
+    #[test]
+    fn test_delete_source_detaches_watch_history() {
+        let mut conn = setup_test_db();
+        conn.execute(
+            "INSERT INTO sources (id, name, source_type, url, username, password, enabled) VALUES (1, 'XtreamOne', 2, 'http://tv.example.com:8080', 'user1', 'pass1', 1)",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO channels (id, name, url, media_type, source_id, stream_id) VALUES (11, 'Inception (2010)', 'http://tv.example.com:8080/movie/u/p/501.mp4', 1, 1, 501)",
+            [],
+        )
+        .unwrap();
+
+        add_last_watched_on_conn(&conn, 11).unwrap();
+        delete_source_on_conn(&mut conn, 1).unwrap();
+
+        let source_count: i64 = conn
+            .query_row("SELECT COUNT(*) FROM sources WHERE id = 1", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(source_count, 0);
+
+        let (ch_id, src_id, missing, fp, host, user): (
+            Option<i64>,
+            Option<i64>,
+            i64,
+            String,
+            Option<String>,
+            Option<String>,
+        ) = conn
+            .query_row(
+                "SELECT channel_id, source_id, source_missing, source_fingerprint, source_host, source_username FROM watch_history",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?, r.get(5)?)),
+            )
+            .unwrap();
+        assert_eq!(ch_id, None);
+        assert_eq!(src_id, None);
+        assert_eq!(missing, 1);
+        assert_eq!(fp, "xtream:http://tv.example.com:8080|user1");
+        assert_eq!(host.as_deref(), Some("tv.example.com:8080"));
+        assert_eq!(user.as_deref(), Some("user1"));
     }
 }
 
