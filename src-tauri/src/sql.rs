@@ -4543,5 +4543,164 @@ mod tests {
         assert!((orphan_pos - 650.0).abs() < 0.01);
         assert_eq!(orphan_year, Some(2019));
     }
+
+    #[test]
+    fn test_lazy_episode_relink_preserves_progress_completion_and_next_ep() {
+        let mut conn = setup_test_db();
+        conn.execute(
+            "INSERT INTO sources (id, name, source_type, url, username, password, enabled) VALUES (1, 'XtreamOne', 2, 'http://tv.example.com:8080', 'user1', 'old_pass', 1)",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO channels (id, name, url, media_type, source_id, stream_id) VALUES (12, 'Dark (2017)', '700', 2, 1, 700)",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO seasons (id, name, season_number, series_id, source_id) VALUES (100, 'Season 1', 1, 700, 1)",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO channels (id, name, url, media_type, source_id, series_id, season_id, episode_num, stream_id) VALUES (13, 'Secrets', 'http://tv.example.com:8080/series/u/old_pass/901.mp4', 1, 1, 700, 100, 1, 901)",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO channels (id, name, url, media_type, source_id, series_id, season_id, episode_num, stream_id) VALUES (15, 'Unmatched Show Ep', 'http://tv.example.com:8080/series/u/old_pass/999.mp4', 1, 1, 800, 100, 3, 999)",
+            [],
+        )
+        .unwrap();
+
+        upsert_watch_progress_on_conn(
+            &conn,
+            &WatchProgressUpsert {
+                channel_id: 13,
+                position_sec: 1420.0,
+                duration_sec: 2700.0,
+                completed: Some(true),
+                tmdb_id: Some(70523),
+                updated_at: Some(5000),
+                next_ep_channel_id: Some(14),
+                next_ep_stream_id: Some(902),
+                next_ep_season_number: Some(1),
+                next_ep_episode_number: Some(2),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        upsert_watch_progress_on_conn(
+            &conn,
+            &WatchProgressUpsert {
+                channel_id: 15,
+                position_sec: 300.0,
+                duration_sec: 2400.0,
+                updated_at: Some(4000),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+
+        delete_source_on_conn(&mut conn, 1).unwrap();
+
+        // Re-add Xtream source: initial import inserts series parent only (no episodes yet)
+        conn.execute(
+            "INSERT INTO sources (id, name, source_type, url, username, password, enabled) VALUES (2, 'XtreamOne', 2, 'http://tv.example.com:8080', 'user1', 'new_pass', 1)",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO channels (id, name, url, media_type, source_id, stream_id) VALUES (212, 'Dark (2017)', '700', 2, 2, 700)",
+            [],
+        )
+        .unwrap();
+        assert_eq!(relink_watch_history_on_conn(&mut conn, 2).unwrap(), 0);
+
+        // Simulate lazy get_episodes -> insert_episodes inserting season + episodes for series 700
+        conn.execute(
+            "INSERT INTO seasons (id, name, season_number, series_id, source_id) VALUES (200, 'Season 1', 1, 700, 2)",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO channels (id, name, url, media_type, source_id, series_id, season_id, episode_num, stream_id) VALUES (213, 'Secrets', 'http://tv.example.com:8080/series/u/new_pass/901.mp4', 1, 2, 700, 200, 1, 901)",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO channels (id, name, url, media_type, source_id, series_id, season_id, episode_num, stream_id) VALUES (214, 'Lies', 'http://tv.example.com:8080/series/u/new_pass/902.mp4', 1, 2, 700, 200, 2, 902)",
+            [],
+        )
+        .unwrap();
+
+        // Relink runs after lazy episode insertion (and is idempotent on repeat)
+        assert_eq!(relink_watch_history_on_conn(&mut conn, 2).unwrap(), 1);
+        assert_eq!(relink_watch_history_on_conn(&mut conn, 2).unwrap(), 0);
+
+        let total: i64 = conn
+            .query_row("SELECT COUNT(*) FROM watch_history", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(total, 2);
+
+        let (ch_id, src_id, missing, pos, dur, pct, comp, tmdb, next_ch, next_sid, next_sn, next_ep): (
+            Option<i64>,
+            Option<i64>,
+            i64,
+            f64,
+            f64,
+            f64,
+            i64,
+            Option<i64>,
+            Option<i64>,
+            Option<i64>,
+            Option<i64>,
+            Option<i64>,
+        ) = conn
+            .query_row(
+                "SELECT channel_id, source_id, source_missing, position_sec, duration_sec, progress_percent, completed, tmdb_id, next_ep_channel_id, next_ep_stream_id, next_ep_season_number, next_ep_episode_number FROM watch_history WHERE provider_series_id = 700",
+                [],
+                |r| {
+                    Ok((
+                        r.get(0)?,
+                        r.get(1)?,
+                        r.get(2)?,
+                        r.get(3)?,
+                        r.get(4)?,
+                        r.get(5)?,
+                        r.get(6)?,
+                        r.get(7)?,
+                        r.get(8)?,
+                        r.get(9)?,
+                        r.get(10)?,
+                        r.get(11)?,
+                    ))
+                },
+            )
+            .unwrap();
+        assert_eq!(ch_id, Some(213));
+        assert_eq!(src_id, Some(2));
+        assert_eq!(missing, 0);
+        assert!((pos - 1420.0).abs() < 0.01);
+        assert!((dur - 2700.0).abs() < 0.01);
+        assert!((pct - 100.0).abs() < 0.01);
+        assert_eq!(comp, 1);
+        assert_eq!(tmdb, Some(70523));
+        assert_eq!(next_ch, Some(14));
+        assert_eq!(next_sid, Some(902));
+        assert_eq!(next_sn, Some(1));
+        assert_eq!(next_ep, Some(2));
+
+        // Unmatched series 800 episode must remain detached
+        let (unmatched_ch, unmatched_missing): (Option<i64>, i64) = conn
+            .query_row(
+                "SELECT channel_id, source_missing FROM watch_history WHERE provider_series_id = 800",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!(unmatched_ch, None);
+        assert_eq!(unmatched_missing, 1);
+    }
 }
 

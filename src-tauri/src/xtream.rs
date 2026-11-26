@@ -1027,7 +1027,8 @@ fn get_media_type_string(stream_type: u8) -> Result<String> {
 
 pub async fn get_episodes(channel: Channel) -> Result<()> {
     let series_id = channel.url.context("no url")?.parse()?;
-    if sql::series_has_episodes(series_id, channel.source_id.context("no source id")?)
+    let source_id = channel.source_id.context("no source id")?;
+    if sql::series_has_episodes(series_id, source_id)
         .unwrap_or_else(|e| {
             log::log(format!("{:?}", e));
             return false;
@@ -1035,7 +1036,7 @@ pub async fn get_episodes(channel: Channel) -> Result<()> {
     {
         return Ok(());
     }
-    let mut source = sql::get_source_from_id(channel.source_id.context("no source id")?)?;
+    let mut source = sql::get_source_from_id(source_id)?;
     let mut url = build_xtream_url(&mut source)?;
     let user_agent = get_user_agent_from_source(&source)?;
     url.query_pairs_mut()
@@ -1063,6 +1064,12 @@ pub async fn get_episodes(channel: Channel) -> Result<()> {
             })
     });
     insert_episodes(&source, seasons, episodes, series_id, channel.image)?;
+    if let Err(e) = sql::relink_watch_history_for_source(source_id) {
+        log::log(format!(
+            "Failed to relink watch_history for Xtream source {source_id} after episode load: {:?}",
+            e
+        ));
+    }
     Ok(())
 }
 
