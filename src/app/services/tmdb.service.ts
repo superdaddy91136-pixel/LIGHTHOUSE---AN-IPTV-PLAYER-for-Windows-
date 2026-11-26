@@ -1,4 +1,4 @@
-import { Injectable } from '@angular/core';
+import { Injectable, OnDestroy } from '@angular/core';
 import {
   TmdbCastMember,
   TmdbEpisodeDetail,
@@ -10,12 +10,32 @@ import { TmdbConfigService } from './tmdb-config.service';
 
 const TMDB_API_BASE = 'https://api.themoviedb.org/3';
 const REQUEST_TIMEOUT_MS = 10000;
+const MAX_429_RETRIES = 3;
+const BASE_RETRY_DELAY_MS = 1000;
+const RETRY_JITTER_MS = 500;
+const MAX_RETRY_AFTER_MS = 60000;
 
 @Injectable({
   providedIn: 'root',
 })
-export class TmdbService {
+export class TmdbService implements OnDestroy {
+  private destroyed = false;
+  private activeControllers = new Set<AbortController>();
+  private pendingRetryCancelers = new Set<() => void>();
+
   constructor(private configService: TmdbConfigService) {}
+
+  ngOnDestroy(): void {
+    this.destroyed = true;
+    for (const controller of this.activeControllers) {
+      controller.abort();
+    }
+    this.activeControllers.clear();
+    for (const cancel of Array.from(this.pendingRetryCancelers)) {
+      cancel();
+    }
+    this.pendingRetryCancelers.clear();
+  }
 
   private getAuthHeader(): { Authorization: string; Accept: string } | null {
     const token = this.configService.getToken()?.trim();
@@ -26,10 +46,63 @@ export class TmdbService {
     };
   }
 
+  private getRetryDelayMs(retryAfterHeader: string | null, attempt: number): number {
+    if (retryAfterHeader) {
+      const trimmed = retryAfterHeader.trim();
+      const seconds = Number(trimmed);
+      if (trimmed.length > 0 && !Number.isNaN(seconds) && Number.isFinite(seconds)) {
+        return Math.min(Math.max(0, Math.round(seconds * 1000)), MAX_RETRY_AFTER_MS);
+      }
+      const targetMs = Date.parse(trimmed);
+      if (!Number.isNaN(targetMs)) {
+        return Math.min(Math.max(0, targetMs - Date.now()), MAX_RETRY_AFTER_MS);
+      }
+    }
+    return Math.round(BASE_RETRY_DELAY_MS * Math.pow(2, attempt) + Math.random() * RETRY_JITTER_MS);
+  }
+
+  private waitForRetry(delayMs: number, signal?: AbortSignal): Promise<boolean> {
+    if (this.destroyed || signal?.aborted) {
+      return Promise.resolve(false);
+    }
+    if (delayMs <= 0) {
+      return Promise.resolve(true);
+    }
+    return new Promise<boolean>((resolve) => {
+      let settled = false;
+      let timerId: ReturnType<typeof setTimeout> | undefined;
+
+      const finish = (shouldContinue: boolean) => {
+        if (settled) return;
+        settled = true;
+        if (timerId !== undefined) {
+          clearTimeout(timerId);
+          timerId = undefined;
+        }
+        this.pendingRetryCancelers.delete(cancel);
+        signal?.removeEventListener('abort', onAbort);
+        resolve(shouldContinue);
+      };
+
+      const cancel = () => finish(false);
+      const onAbort = () => finish(false);
+
+      this.pendingRetryCancelers.add(cancel);
+      signal?.addEventListener('abort', onAbort, { once: true });
+      timerId = setTimeout(() => finish(!this.destroyed && !signal?.aborted), delayMs);
+    });
+  }
+
   /**
-   * Safe fetch wrapper with timeout, bearer token auth, and error handling.
+   * Safe fetch wrapper with timeout, bearer token auth, HTTP 429 retry/backoff, and error handling.
    */
-  private async safeGet<T>(endpoint: string, params?: Record<string, string | number | undefined>): Promise<T | null> {
+  private async safeGet<T>(
+    endpoint: string,
+    params?: Record<string, string | number | undefined>,
+    signal?: AbortSignal
+  ): Promise<T | null> {
+    if (this.destroyed || signal?.aborted) return null;
+
     const headers = this.getAuthHeader();
     if (!headers) return null;
 
@@ -45,44 +118,63 @@ export class TmdbService {
       if (qs) url += `?${qs}`;
     }
 
-    try {
+    for (let attempt = 0; attempt <= MAX_429_RETRIES; attempt++) {
+      if (this.destroyed || signal?.aborted) return null;
+
       const controller = new AbortController();
+      this.activeControllers.add(controller);
+      const onExternalAbort = () => controller.abort();
+      signal?.addEventListener('abort', onExternalAbort, { once: true });
       const timeoutId = setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS);
 
-      const res = await fetch(url, {
-        method: 'GET',
-        headers,
-        signal: controller.signal,
-      });
+      try {
+        const res = await fetch(url, {
+          method: 'GET',
+          headers,
+          signal: controller.signal,
+        });
 
-      clearTimeout(timeoutId);
+        clearTimeout(timeoutId);
 
-      if (res.status === 401) {
-        console.warn('TMDB API Token is invalid or expired (401)');
+        if (res.status === 401) {
+          console.warn('TMDB API Token is invalid or expired (401)');
+          return null;
+        }
+
+        if (res.status === 404) {
+          return null;
+        }
+
+        if (res.status === 429) {
+          if (attempt < MAX_429_RETRIES) {
+            const delayMs = this.getRetryDelayMs(res.headers.get('Retry-After'), attempt);
+            const shouldContinue = await this.waitForRetry(delayMs, signal);
+            if (!shouldContinue) return null;
+            continue;
+          }
+          console.warn('TMDB API rate limit reached (429)');
+          return null;
+        }
+
+        if (!res.ok) {
+          console.warn(`TMDB request failed with HTTP ${res.status} for ${endpoint}`);
+          return null;
+        }
+
+        return (await res.json()) as T;
+      } catch (err: any) {
+        if (err.name !== 'AbortError') {
+          console.warn(`TMDB fetch error for ${endpoint}:`, err?.message || err);
+        }
         return null;
+      } finally {
+        clearTimeout(timeoutId);
+        signal?.removeEventListener('abort', onExternalAbort);
+        this.activeControllers.delete(controller);
       }
-
-      if (res.status === 404) {
-        return null;
-      }
-
-      if (res.status === 429) {
-        console.warn('TMDB API rate limit reached (429)');
-        return null;
-      }
-
-      if (!res.ok) {
-        console.warn(`TMDB request failed with HTTP ${res.status} for ${endpoint}`);
-        return null;
-      }
-
-      return (await res.json()) as T;
-    } catch (err: any) {
-      if (err.name !== 'AbortError') {
-        console.warn(`TMDB fetch error for ${endpoint}:`, err?.message || err);
-      }
-      return null;
     }
+
+    return null;
   }
 
   /**
