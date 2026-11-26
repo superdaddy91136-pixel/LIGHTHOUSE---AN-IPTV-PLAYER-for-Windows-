@@ -206,6 +206,7 @@ export class HomeDiscoveryComponent implements OnInit, AfterViewInit, OnDestroy 
   private isDestroyed: boolean = false;
   private discoveryLoadRequestId = 0;
   private continueWatchingRefreshId = 0;
+  private cwResolutionEpoch = 0;
   private inFlightCatalogMatches = new Map<string, Promise<Channel | null>>();
   private negativeCatalogMatchKeys = new Set<string>();
   private heroDiscoveryPromise?: Promise<{ item: any; isTv: boolean; category?: HeroCategory }[]>;
@@ -3865,9 +3866,14 @@ export class HomeDiscoveryComponent implements OnInit, AfterViewInit, OnDestroy 
   }
 
   async deduplicateContinueWatching(history: Channel[]): Promise<Channel[]> {
+    const resolutionEpoch = ++this.cwResolutionEpoch;
     this.groupedHistoryIds.clear();
     this.nextEpisodeCardIds.clear();
     if (!history || history.length === 0) return [];
+
+    let didFinishDedup = false;
+    const pendingNextEpRepIds = new Set<number>();
+    const droppedRepIds = new Set<number>();
 
     interface GroupCandidate {
       representative: Channel;
@@ -3966,20 +3972,42 @@ export class HomeDiscoveryComponent implements OnInit, AfterViewInit, OnDestroy 
           let nextEp = this.embeddedPlayer.getPersistedNextEpisode(seriesKey, rep.id);
 
           if (nextEp === undefined) {
+            pendingNextEpRepIds.add(rep.id);
             // Asynchronously resolve next episode in the background without blocking initial Home render
             void this.embeddedPlayer.findNextEpisode(rep).then((resolvedEp) => {
+              if (this.isDestroyed || resolutionEpoch !== this.cwResolutionEpoch) return;
               if (seriesKey) {
                 this.embeddedPlayer.setPersistedNextEpisode(seriesKey, rep.id!, resolvedEp);
               }
-              if (resolvedEp && resolvedEp.id != null && !this.embeddedPlayer.isEpisodeCompleted(resolvedEp)) {
-                g.representative = resolvedEp;
-                const progress = this.getWatchProgress(resolvedEp);
-                if (progress === 0) {
-                  this.nextEpisodeCardIds.add(resolvedEp.id);
+              const validNext =
+                resolvedEp && resolvedEp.id != null && !this.embeddedPlayer.isEpisodeCompleted(resolvedEp)
+                  ? resolvedEp
+                  : null;
+
+              if (!didFinishDedup) {
+                pendingNextEpRepIds.delete(rep.id!);
+                if (validNext) {
+                  g.representative = validNext;
+                  const progress = this.getWatchProgress(validNext);
+                  if (progress === 0) {
+                    this.nextEpisodeCardIds.add(validNext.id!);
+                  }
+                } else {
+                  droppedRepIds.add(rep.id!);
                 }
-                this.cdr.markForCheck();
+                return;
               }
-            }).catch(() => {});
+
+              this.updateContinueWatchingNextEpisode(rep.id!, g.allHistoryIds, validNext);
+            }).catch(() => {
+              if (this.isDestroyed || resolutionEpoch !== this.cwResolutionEpoch) return;
+              if (!didFinishDedup) {
+                pendingNextEpRepIds.delete(rep.id!);
+                droppedRepIds.add(rep.id!);
+                return;
+              }
+              this.updateContinueWatchingNextEpisode(rep.id!, g.allHistoryIds, null);
+            });
           } else if (nextEp && nextEp.id != null) {
             const isNextCompleted = this.embeddedPlayer.isEpisodeCompleted(nextEp);
             if (!isNextCompleted) {
@@ -4047,8 +4075,13 @@ export class HomeDiscoveryComponent implements OnInit, AfterViewInit, OnDestroy 
     for (const g of groups) {
       if (g.isTv) {
         const isNextEpisode = g.representative.id != null && this.nextEpisodeCardIds.has(g.representative.id);
+        const isPendingNextEpisode =
+          g.representative.id != null &&
+          pendingNextEpRepIds.has(g.representative.id) &&
+          !droppedRepIds.has(g.representative.id);
         if (
           isNextEpisode ||
+          isPendingNextEpisode ||
           (this.hasMeaningfulWatchProgress(g.representative) && !this.embeddedPlayer.isEpisodeCompleted(g.representative))
         ) {
           activeGroups.push(g);
@@ -4072,7 +4105,61 @@ export class HomeDiscoveryComponent implements OnInit, AfterViewInit, OnDestroy 
       }
     }
 
+    didFinishDedup = true;
     return activeGroups.map((g) => g.representative);
+  }
+
+  private updateContinueWatchingNextEpisode(
+    repId: number,
+    allHistoryIds: number[],
+    validNext: Channel | null
+  ): void {
+    const cwRowIndex = this.masterDiscoveryRows.findIndex(
+      (r) => r.id === "row-continue-watching"
+    );
+    if (cwRowIndex === -1) return;
+
+    const cwRow = this.masterDiscoveryRows[cwRowIndex];
+    const itemIdx = cwRow.items.findIndex((item) => item.id === repId);
+    if (itemIdx === -1) return;
+
+    if (validNext && validNext.id != null) {
+      const progress = this.getWatchProgress(validNext);
+      if (progress === 0) {
+        this.nextEpisodeCardIds.add(validNext.id);
+      }
+      const histIds = this.groupedHistoryIds.get(repId) || allHistoryIds;
+      this.groupedHistoryIds.delete(repId);
+      this.groupedHistoryIds.set(validNext.id, histIds);
+      this.cwTitleCache.delete(validNext.id);
+      this.cwArtworkCache.delete(validNext.id);
+
+      const updatedItems = [...cwRow.items];
+      updatedItems[itemIdx] = validNext;
+      this.masterDiscoveryRows[cwRowIndex] = {
+        ...cwRow,
+        badge: `${updatedItems.length}`,
+        items: updatedItems,
+      };
+      this.resolveEpisodeStill(validNext);
+    } else {
+      this.groupedHistoryIds.delete(repId);
+      const updatedItems = cwRow.items.filter((item) => item.id !== repId);
+      if (updatedItems.length > 0) {
+        this.masterDiscoveryRows[cwRowIndex] = {
+          ...cwRow,
+          badge: `${updatedItems.length}`,
+          items: updatedItems,
+        };
+      } else {
+        this.masterDiscoveryRows.splice(cwRowIndex, 1);
+      }
+    }
+
+    this.applyContentPreferences();
+    this.hasAnyContent = this.heroItems.length > 0 || this.discoveryRows.length > 0;
+    this.cacheLocalRows();
+    this.cdr.markForCheck();
   }
 
   isNextEpisodeCard(channel: Channel): boolean {
