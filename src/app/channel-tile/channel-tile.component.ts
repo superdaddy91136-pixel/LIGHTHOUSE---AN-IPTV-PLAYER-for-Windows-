@@ -435,6 +435,9 @@ export class ChannelTileComponent implements OnInit, OnDestroy, OnChanges {
   async removeFromHistory() {
     try {
       await invoke("remove_from_history", { id: this.channel!.id });
+      if (this.channel?.id != null) {
+        this.embeddedPlayer.clearWatchHistoryCaches([this.channel.id]);
+      }
       this.memory.Refresh.next(false);
       this.toastr.success(`Removed "${this.channel?.name}" from history`);
       this.cdr.markForCheck();

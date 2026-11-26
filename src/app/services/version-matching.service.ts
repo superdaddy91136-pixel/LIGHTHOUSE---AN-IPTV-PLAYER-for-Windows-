@@ -698,10 +698,40 @@ export class VersionMatchingService {
   }
 
   /**
-   * Checks if any version in the list has previous playback history.
+   * Checks if any version in the list has previous playback history (preferring watch_history DB records).
    */
-  getVersionWithPlaybackHistory(versions: MediaVersion[]): MediaVersion | undefined {
+  getVersionWithPlaybackHistory(
+    versions: MediaVersion[],
+    dbProgressRecords?: Array<{
+      channel_id?: number | null;
+      position_sec: number;
+      progress_percent: number;
+      completed: boolean;
+    }>,
+  ): MediaVersion | undefined {
     if (!versions || versions.length === 0) return undefined;
+
+    if (Array.isArray(dbProgressRecords) && dbProgressRecords.length > 0) {
+      const dbById = new Map(
+        dbProgressRecords
+          .filter((r) => r?.channel_id != null)
+          .map((r) => [r.channel_id!, r]),
+      );
+      for (const ver of versions) {
+        if (ver.channel?.id == null) continue;
+        const rec = dbById.get(ver.channel.id);
+        if (
+          rec &&
+          (rec.position_sec > 10 || rec.progress_percent > 1 || rec.completed)
+        ) {
+          return ver;
+        }
+      }
+      // If DB records exist for any versions without active incomplete choice, avoid stale localStorage overrides
+      if (versions.some((v) => v.channel?.id != null && dbById.has(v.channel.id))) {
+        return undefined;
+      }
+    }
 
     try {
       const storeRaw = localStorage.getItem('fred_tv_watch_progress');
@@ -812,6 +842,12 @@ export class VersionMatchingService {
     channel: Channel,
     versions: MediaVersion[],
     knownYear?: string,
+    dbProgressRecords?: Array<{
+      channel_id?: number | null;
+      position_sec: number;
+      progress_percent: number;
+      completed: boolean;
+    }>,
   ): MediaVersion | undefined {
     if (!channel || !versions || versions.length === 0) return undefined;
     try {
@@ -853,7 +889,7 @@ export class VersionMatchingService {
     }
 
     // 4. Check if any version has previous playback history
-    const historyVersion = this.getVersionWithPlaybackHistory(versions);
+    const historyVersion = this.getVersionWithPlaybackHistory(versions, dbProgressRecords);
     if (historyVersion) {
       return historyVersion;
     }

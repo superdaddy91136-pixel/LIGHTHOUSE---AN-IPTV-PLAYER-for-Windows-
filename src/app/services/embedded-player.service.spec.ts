@@ -287,4 +287,24 @@ describe('EmbeddedPlayerService (Phase 4A Authoritative Progress Reads)', () => 
     expect(resolved.positionSec).toBe(0);
     expect(resolved.completed).toBeFalse();
   });
+
+  it('clears targeted and full watch progress caches safely without deleting migration marker', () => {
+    localStorage.setItem('lh_watch_history_migrated_v1', '1');
+    localStorage.setItem('fred_tv_watch_progress', JSON.stringify({ 101: { time: 200 }, 202: { time: 400 } }));
+    localStorage.setItem('playback_pos_101', '200');
+    localStorage.setItem('playback_pos_202', '400');
+    localStorage.setItem('fred_tv_series_next_ep_sid_1_10', JSON.stringify({ fromEpisodeId: 101 }));
+
+    service.clearWatchHistoryCaches([101]);
+    expect(localStorage.getItem('playback_pos_101')).toBeNull();
+    expect(localStorage.getItem('playback_pos_202')).toBe('400');
+    expect(JSON.parse(localStorage.getItem('fred_tv_watch_progress') || '{}')[101]).toBeUndefined();
+    expect(JSON.parse(localStorage.getItem('fred_tv_watch_progress') || '{}')[202].time).toBe(400);
+
+    service.clearWatchHistoryCaches();
+    expect(localStorage.getItem('fred_tv_watch_progress')).toBeNull();
+    expect(localStorage.getItem('playback_pos_202')).toBeNull();
+    expect(localStorage.getItem('fred_tv_series_next_ep_sid_1_10')).toBeNull();
+    expect(localStorage.getItem('lh_watch_history_migrated_v1')).toBe('1');
+  });
 });

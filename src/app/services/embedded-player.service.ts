@@ -77,6 +77,57 @@ export interface ResolvedPlaybackState {
   source: 'watch_history' | 'legacy' | 'none';
 }
 
+export function clearLegacyWatchProgressStorage(channelIds?: number[]): void {
+  if (typeof localStorage === 'undefined') return;
+  try {
+    if (channelIds && channelIds.length > 0) {
+      const idSet = new Set(channelIds.map((id) => String(id)));
+      const storeRaw = localStorage.getItem('fred_tv_watch_progress');
+      if (storeRaw) {
+        try {
+          const store = JSON.parse(storeRaw);
+          if (store && typeof store === 'object') {
+            let changed = false;
+            for (const key of idSet) {
+              if (key in store) {
+                delete store[key];
+                changed = true;
+              }
+            }
+            if (changed) {
+              localStorage.setItem('fred_tv_watch_progress', JSON.stringify(store));
+            }
+          }
+        } catch {}
+      }
+      for (const id of idSet) {
+        localStorage.removeItem(`playback_pos_${id}`);
+        localStorage.removeItem(`playback_dur_${id}`);
+        localStorage.removeItem(`watch_progress_${id}`);
+      }
+      return;
+    }
+
+    localStorage.removeItem('fred_tv_watch_progress');
+    const keysToRemove: string[] = [];
+    for (let i = 0; i < localStorage.length; i++) {
+      const k = localStorage.key(i);
+      if (
+        k &&
+        (k.startsWith('playback_pos_') ||
+          k.startsWith('playback_dur_') ||
+          k.startsWith('watch_progress_') ||
+          k.startsWith('fred_tv_series_next_ep_'))
+      ) {
+        keysToRemove.push(k);
+      }
+    }
+    for (const k of keysToRemove) {
+      localStorage.removeItem(k);
+    }
+  } catch {}
+}
+
 export interface EmbeddedPlayerOptions {
   title?: string;
   mode?: ContentMode;
@@ -1469,9 +1520,21 @@ export class EmbeddedPlayerService implements OnDestroy {
           }
         }
 
-        // 2. If not found in current season list (e.g. season finale or cross-season), resolve via database/cache
+        // 2. If not found in current season list (e.g. season finale or cross-season), resolve via watch_history / database / cache
         if (!nextEp) {
-          let found = this.getPersistedNextEpisode(seriesKey, channelId);
+          let found: Channel | null | undefined;
+          try {
+            const dbNext = await this.invokeIpc<Channel | null>(
+              'get_next_episode_from_history',
+              { channelId },
+            );
+            if (dbNext?.id != null) {
+              found = dbNext;
+            }
+          } catch {}
+          if (found === undefined) {
+            found = this.getPersistedNextEpisode(seriesKey, channelId);
+          }
           if (found === undefined || (found === null && this.seasons.length > 1)) {
             found = await this.findNextEpisode(this.currentChannel);
             if (seriesKey) {
@@ -1791,9 +1854,36 @@ export class EmbeddedPlayerService implements OnDestroy {
 
       const episodeChannels = (await invoke('search', { filters })) as Channel[];
       if (episodeChannels && episodeChannels.length > 0) {
+        const epIds = episodeChannels.map((c) => c.id).filter((id): id is number => id != null);
+        const dbByChId = new Map<number, WatchProgressRecord>();
+        if (epIds.length > 0) {
+          try {
+            const batch = await this.invokeIpc<WatchProgressRecord[]>(
+              'get_watch_progress_batch',
+              { channelIds: epIds },
+            );
+            if (Array.isArray(batch) && batch.length > 0) {
+              this.seedCachedProgressRecords(batch);
+              for (const rec of batch) {
+                if (rec.channel_id != null) {
+                  dbByChId.set(rec.channel_id, rec);
+                }
+              }
+            }
+          } catch {}
+        }
+
         this.currentSeasonNum = seasonNum;
         this.episodes = episodeChannels.map((ch, idx) => {
           const epNum = ch.episode_num ?? (idx + 1);
+          const dbRec = ch.id != null ? dbByChId.get(ch.id) : undefined;
+          const isWatchedFromDb = Boolean(
+            dbRec &&
+              (dbRec.completed ||
+                dbRec.position_sec > 0 ||
+                dbRec.progress_percent > 0 ||
+                dbRec.last_watched > 0),
+          );
           return {
             id: ch.id!,
             channel: ch,
@@ -1801,7 +1891,7 @@ export class EmbeddedPlayerService implements OnDestroy {
             seasonNum: seasonNum,
             title: sanitizeEpisodeTitle(ch.name, this.seriesTitle, epNum, seasonNum) || `Episode ${epNum}`,
             stillUrl: ch.image,
-            isWatched: (ch as any).last_watched != null,
+            isWatched: isWatchedFromDb || (ch as any).last_watched != null,
             isCurrent: ch.id === this.currentChannel?.id,
           };
         });
@@ -2343,6 +2433,35 @@ export class EmbeddedPlayerService implements OnDestroy {
     return 0;
   }
 
+  public getCachedProgressRecord(channelId?: number): WatchProgressRecord | undefined {
+    if (!channelId) return undefined;
+    return this.authoritativeProgressCache.get(channelId);
+  }
+
+  public seedCachedProgressRecords(records: WatchProgressRecord[]): void {
+    if (!Array.isArray(records)) return;
+    for (const rec of records) {
+      if (!rec?.channel_id) continue;
+      const existing = this.authoritativeProgressCache.get(rec.channel_id);
+      if (!existing || rec.updated_at >= existing.updated_at) {
+        this.authoritativeProgressCache.set(rec.channel_id, rec);
+      }
+    }
+  }
+
+  public clearWatchHistoryCaches(channelIds?: number[]): void {
+    if (channelIds && channelIds.length > 0) {
+      for (const id of channelIds) {
+        this.authoritativeProgressCache.delete(id);
+        this.lastDbProgressSync.delete(id);
+      }
+    } else {
+      this.authoritativeProgressCache.clear();
+      this.lastDbProgressSync.clear();
+    }
+    clearLegacyWatchProgressStorage(channelIds);
+  }
+
   public isEpisodeCompleted(channelOrId?: Channel | number, channel?: Channel): boolean {
     if (!channelOrId && !channel) return false;
     const id = typeof channelOrId === 'number' ? channelOrId : (channelOrId?.id || channel?.id);
@@ -2778,10 +2897,11 @@ export class EmbeddedPlayerService implements OnDestroy {
           (nextEp as any).seasonNum ?? this.extractSeasonNumber(nextEp);
         const nextEpisodeNum =
           nextEp.episode_num ?? this.extractEpisodeNumber(nextEp.name, 0);
-        const savedPos = this.getSavedPosition(channelId, targetChannel);
-        const savedDur = this.getSavedDuration(channelId, targetChannel);
+        const cached = this.authoritativeProgressCache.get(channelId);
+        const savedPos = cached?.position_sec || 0;
+        const savedDur = cached?.duration_sec || this.getSavedDuration(channelId, targetChannel);
         const tmdbId = this.tmdbEnrichment.getEnrichmentSync(targetChannel)?.tmdbId;
-        void invoke('upsert_watch_progress', {
+        void this.invokeIpc('upsert_watch_progress', {
           payload: {
             channel_id: channelId,
             position_sec: savedPos,
@@ -3371,42 +3491,31 @@ export class EmbeddedPlayerService implements OnDestroy {
 
     // Check watch history for this series
     let lastWatchedEp: Channel | undefined;
+    const seriesDbById = new Map<number, any>();
     try {
-      const historyFilters: Filters = {
-        source_ids: sourceIds,
-        series_id: seriesId,
-        media_types: [MediaType.movie],
-        view_type: ViewMode.History,
-        use_keywords: false,
-        page: 1,
-        sort: 0,
-      };
-      const watchedEpisodes = (await invoke('search', { filters: historyFilters })) as Channel[];
-      if (watchedEpisodes && watchedEpisodes.length > 0) {
-        lastWatchedEp = watchedEpisodes[0];
-      } else {
-        const globalHistory = (await invoke('search', {
-          filters: {
-            source_ids: sourceIds,
-            media_types: [MediaType.movie],
-            view_type: ViewMode.History,
-            use_keywords: false,
-            page: 1,
-            sort: 0,
-          },
-        })) as Channel[];
-        if (globalHistory && globalHistory.length > 0) {
-          const seriesTitleLower = cleanMediaTitle(seriesChannel.name).toLowerCase();
-          const found = globalHistory.find((h) => {
-            if (h.series_id != null && h.series_id === seriesId) return true;
-            const hClean = cleanMediaTitle(h.name).toLowerCase();
-            return hClean.startsWith(seriesTitleLower) || seriesTitleLower.startsWith(hClean);
-          });
-          if (found) lastWatchedEp = found;
+      const seriesProgress = (await this.invokeIpc<any[]>(
+        'get_series_watch_progress',
+        {
+          sourceIds,
+          seriesId,
+          seriesName: sanitizeShowTitle(seriesChannel.name || ''),
+        },
+      )) || [];
+      for (const entry of seriesProgress) {
+        if (entry?.channel?.id != null) {
+          seriesDbById.set(entry.channel.id, entry);
+        }
+      }
+      if (seriesProgress.length > 0) {
+        const latest = seriesProgress[0];
+        if (latest.completed && latest.next_episode) {
+          lastWatchedEp = latest.next_episode;
+        } else {
+          lastWatchedEp = latest.channel;
         }
       }
     } catch (e) {
-      console.warn('Failed to query history for series in playMediaDirectly:', e);
+      console.warn('Failed to query watch_history for series in playSeriesDirectly:', e);
     }
 
     let targetSeason: Channel | undefined;
@@ -3478,6 +3587,14 @@ export class EmbeddedPlayerService implements OnDestroy {
 
     const switcherEpisodes: SwitcherEpisodeData[] = episodeChannels.map((ch, idx) => {
       const eNumber = ch.episode_num ?? (idx + 1);
+      const db = ch.id != null ? seriesDbById.get(ch.id) : undefined;
+      const isWatchedDb = Boolean(
+        db &&
+          (db.completed ||
+            db.position_sec > 0 ||
+            db.progress_percent > 0 ||
+            db.last_watched > 0),
+      );
       return {
         id: ch.id!,
         channel: ch,
@@ -3485,7 +3602,7 @@ export class EmbeddedPlayerService implements OnDestroy {
         seasonNum: targetSeasonNum,
         title: sanitizeEpisodeTitle(ch.name, seriesTitle, eNumber, targetSeasonNum) || `Episode ${eNumber}`,
         stillUrl: ch.image,
-        isWatched: (ch as any).last_watched != null,
+        isWatched: isWatchedDb || (ch as any).last_watched != null,
         isCurrent: ch.id === targetEpisode!.id,
       };
     });

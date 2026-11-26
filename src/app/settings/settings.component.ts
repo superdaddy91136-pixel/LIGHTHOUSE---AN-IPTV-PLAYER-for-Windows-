@@ -12,6 +12,7 @@ import { SORT_TYPES, SortType, getSortTypeText } from "../models/sortType";
 import { SourceType } from "../models/sourceType";
 import { NavTab } from "../models/navTab";
 import { ToastrService } from "ngx-toastr";
+import { clearLegacyWatchProgressStorage } from "../services/embedded-player.service";
 import { TmdbConfigService } from "../services/tmdb-config.service";
 import { TmdbCacheService } from "../services/tmdb-cache.service";
 import { getCurrentWebview } from "@tauri-apps/api/webview";
@@ -1273,6 +1274,7 @@ export class SettingsComponent {
       "Failed to clear history",
       async () => {
         await invoke("clear_history");
+        clearLegacyWatchProgressStorage();
         await this.loadStorageStats();
       },
     );

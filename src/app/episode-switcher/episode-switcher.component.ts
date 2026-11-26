@@ -15,6 +15,7 @@ import { SortType } from '../models/sortType';
 import { ViewMode } from '../models/viewMode';
 import { TmdbEnrichmentService } from '../services/tmdb-enrichment.service';
 import { TmdbMediaEnrichment, TmdbSeasonDetail } from '../models/tmdb';
+import { WatchProgressRecord } from '../services/embedded-player.service';
 import { getTmdbStillUrl } from '../utils/tmdb-image';
 import { cleanMediaTitle, sanitizeShowTitle, sanitizeEpisodeTitle } from '../utils/media-presentation';
 
@@ -169,6 +170,25 @@ export class EpisodeSwitcherComponent implements OnInit, OnDestroy {
 
       const episodeChannels = (await invoke('search', { filters })) as Channel[];
 
+      const epIds = (episodeChannels || [])
+        .map((c) => c.id)
+        .filter((id): id is number => id != null);
+      const dbByChId = new Map<number, WatchProgressRecord>();
+      if (epIds.length > 0) {
+        try {
+          const batch = (await invoke('get_watch_progress_batch', {
+            channelIds: epIds,
+          })) as WatchProgressRecord[];
+          if (Array.isArray(batch)) {
+            for (const rec of batch) {
+              if (rec?.channel_id != null) {
+                dbByChId.set(rec.channel_id, rec);
+              }
+            }
+          }
+        } catch {}
+      }
+
       // Get TMDB season details for thumbnails
       let tmdbSeason: TmdbSeasonDetail | undefined;
       if (this.enrichment?.tmdbId) {
@@ -205,6 +225,14 @@ export class EpisodeSwitcherComponent implements OnInit, OnDestroy {
             epChannel.series_id || this.getSeriesIdNumber(),
           favorite: !!epChannel.favorite,
         };
+        const dbRec = epChannel.id != null ? dbByChId.get(epChannel.id) : undefined;
+        const isWatchedFromDb = Boolean(
+          dbRec &&
+            (dbRec.completed ||
+              dbRec.position_sec > 0 ||
+              dbRec.progress_percent > 0 ||
+              dbRec.last_watched > 0),
+        );
 
         return {
           channel: cleanEp,
@@ -212,7 +240,7 @@ export class EpisodeSwitcherComponent implements OnInit, OnDestroy {
           seasonNum: this.selectedSeasonNumber,
           title,
           stillUrl,
-          isWatched: (epChannel as any).last_watched != null,
+          isWatched: isWatchedFromDb || (epChannel as any).last_watched != null,
         };
       });
     } catch (e) {

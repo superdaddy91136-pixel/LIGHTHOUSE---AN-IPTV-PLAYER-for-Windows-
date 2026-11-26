@@ -3783,25 +3783,7 @@ fn resolve_next_episode_channel_on_conn(
     next_ep_season_number: Option<i64>,
     next_ep_episode_number: Option<i64>,
 ) -> Result<Option<Channel>> {
-    if let Some(nid) = next_ep_channel_id.filter(|&id| id > 0) {
-        let mut stmt = conn.prepare_cached(
-            r#"
-SELECT c.*
-FROM channels c
-INNER JOIN sources s ON s.id = c.source_id
-WHERE c.id = ?1
-  AND c.source_id = ?2
-  AND c.media_type != 0
-  AND s.enabled = 1
-  AND COALESCE(c.hidden, 0) = 0
-LIMIT 1
-"#,
-        )?;
-        if let Some(ch) = stmt.query_row(params![nid, source_id], row_to_channel).optional()? {
-            return Ok(Some(ch));
-        }
-    }
-
+    // Prefer stable provider stream_id within the same source + series so rotated channel IDs resolve accurately
     if let (Some(ser_id), Some(stream_id)) = (series_id, next_ep_stream_id.filter(|&v| v > 0)) {
         let mut stmt = conn.prepare_cached(
             r#"
@@ -3825,6 +3807,7 @@ LIMIT 1
         }
     }
 
+    // Second: stable (series_id, season_number, episode_num) coordinate
     if let (Some(ser_id), Some(ep_num)) = (series_id, next_ep_episode_number.filter(|&v| v > 0)) {
         let mut stmt = conn.prepare_cached(
             r#"
@@ -3853,27 +3836,240 @@ LIMIT 1
         }
     }
 
+    // Third: stored channel_id ONLY if its stable metadata does not conflict (guards against stale recycled IDs)
+    if let Some(nid) = next_ep_channel_id.filter(|&id| id > 0) {
+        let mut stmt = conn.prepare_cached(
+            r#"
+SELECT c.*
+FROM channels c
+INNER JOIN sources s ON s.id = c.source_id
+WHERE c.id = ?1
+  AND c.source_id = ?2
+  AND c.media_type != 0
+  AND s.enabled = 1
+  AND COALESCE(c.hidden, 0) = 0
+  AND (?3 IS NULL OR c.series_id = ?3)
+  AND (?4 IS NULL OR c.stream_id IS NULL OR c.stream_id = ?4)
+  AND (?5 IS NULL OR c.episode_num IS NULL OR c.episode_num = ?5)
+LIMIT 1
+"#,
+        )?;
+        if let Some(ch) = stmt
+            .query_row(
+                params![
+                    nid,
+                    source_id,
+                    series_id,
+                    next_ep_stream_id.filter(|&v| v > 0),
+                    next_ep_episode_number.filter(|&v| v > 0),
+                ],
+                row_to_channel,
+            )
+            .optional()?
+        {
+            return Ok(Some(ch));
+        }
+    }
+
     Ok(None)
 }
 
-pub fn get_continue_watching(
-    source_ids: Vec<i64>,
-    limit: Option<u32>,
-) -> Result<Vec<ContinueWatchingEntry>> {
+pub fn get_watch_progress_batch(channel_ids: Vec<i64>) -> Result<Vec<WatchProgressRecord>> {
     let sql = get_conn()?;
-    let eff_limit = limit.unwrap_or(100).clamp(1, 200) as usize;
-    get_continue_watching_on_conn(&sql, &source_ids, eff_limit)
+    get_watch_progress_batch_on_conn(&sql, &channel_ids)
 }
 
-fn get_continue_watching_on_conn(
+fn get_watch_progress_batch_on_conn(
     conn: &rusqlite::Connection,
-    source_ids: &[i64],
-    limit: usize,
-) -> Result<Vec<ContinueWatchingEntry>> {
-    if source_ids.is_empty() || limit == 0 {
+    channel_ids: &[i64],
+) -> Result<Vec<WatchProgressRecord>> {
+    let mut unique_ids: Vec<i64> = Vec::with_capacity(channel_ids.len().min(200));
+    let mut seen_req = std::collections::HashSet::with_capacity(channel_ids.len().min(200));
+    for &id in channel_ids {
+        if id > 0 && seen_req.insert(id) {
+            unique_ids.push(id);
+            if unique_ids.len() >= 200 {
+                break;
+            }
+        }
+    }
+    if unique_ids.is_empty() {
         return Ok(Vec::new());
     }
-    let src_placeholders = generate_placeholders(source_ids.len());
+
+    let placeholders = generate_placeholders(unique_ids.len());
+    let ch_select_sql = format!("{WATCH_HISTORY_SELECT_BASE}\nWHERE c.id IN ({placeholders})");
+    let ch_rows: Vec<WatchHistorySourceChannelRow> = {
+        let mut stmt = conn.prepare(&ch_select_sql)?;
+        let mapped = stmt.query_map(
+            params_from_iter(to_to_sql(&unique_ids)),
+            map_watch_history_source_channel_row,
+        )?;
+        mapped.filter_map(Result::ok).collect()
+    };
+
+    let mut ch_id_to_identity: HashMap<i64, String> = HashMap::with_capacity(ch_rows.len());
+    let mut identity_keys: Vec<String> = Vec::with_capacity(ch_rows.len());
+    let mut live_ids: std::collections::HashSet<i64> = std::collections::HashSet::new();
+    for row in &ch_rows {
+        if row.media_type == media_type::LIVESTREAM {
+            live_ids.insert(row.channel_id);
+            continue;
+        }
+        let meta = compute_row_watch_metadata(row);
+        ch_id_to_identity.insert(row.channel_id, meta.identity_key.clone());
+        identity_keys.push(meta.identity_key);
+    }
+
+    let non_live_ids: Vec<i64> = unique_ids
+        .into_iter()
+        .filter(|id| !live_ids.contains(id))
+        .collect();
+    if non_live_ids.is_empty() {
+        return Ok(Vec::new());
+    }
+
+    let id_placeholders = generate_placeholders(non_live_ids.len());
+    let mut params: Vec<&dyn rusqlite::ToSql> = Vec::new();
+    let wh_sql = if identity_keys.is_empty() {
+        params.extend(to_to_sql(&non_live_ids));
+        format!(
+            r#"
+SELECT identity_key, channel_id, position_sec, duration_sec, progress_percent,
+       completed, updated_at, last_watched, tmdb_id
+FROM watch_history
+WHERE media_type != 0
+  AND channel_id IN ({id_placeholders})
+  AND source_missing = 0
+ORDER BY updated_at DESC, id DESC
+"#
+        )
+    } else {
+        let key_placeholders = generate_placeholders(identity_keys.len());
+        params.extend(identity_keys.iter().map(|k| k as &dyn rusqlite::ToSql));
+        params.extend(to_to_sql(&non_live_ids));
+        format!(
+            r#"
+SELECT identity_key, channel_id, position_sec, duration_sec, progress_percent,
+       completed, updated_at, last_watched, tmdb_id
+FROM watch_history
+WHERE media_type != 0
+  AND (
+    identity_key IN ({key_placeholders})
+    OR (channel_id IN ({id_placeholders}) AND source_missing = 0)
+  )
+ORDER BY updated_at DESC, id DESC
+"#
+        )
+    };
+
+    let records: Vec<WatchProgressRecord> = {
+        let mut stmt = conn.prepare(&wh_sql)?;
+        let mapped = stmt.query_map(params_from_iter(params), map_watch_progress_record)?;
+        mapped.filter_map(Result::ok).collect()
+    };
+
+    let mut by_identity: HashMap<String, WatchProgressRecord> = HashMap::with_capacity(records.len());
+    let mut by_channel: HashMap<i64, WatchProgressRecord> = HashMap::with_capacity(records.len());
+    for rec in records {
+        by_identity.entry(rec.identity_key.clone()).or_insert_with(|| rec.clone());
+        if let Some(cid) = rec.channel_id {
+            by_channel.entry(cid).or_insert(rec);
+        }
+    }
+
+    let mut results = Vec::with_capacity(non_live_ids.len());
+    for cid in non_live_ids {
+        if let Some(ikey) = ch_id_to_identity.get(&cid) {
+            if let Some(mut rec) = by_identity.get(ikey).cloned() {
+                rec.channel_id = Some(cid);
+                results.push(rec);
+                continue;
+            }
+        }
+        if let Some(rec) = by_channel.get(&cid) {
+            results.push(rec.clone());
+        }
+    }
+    Ok(results)
+}
+
+pub fn get_next_episode_from_history(channel_id: i64) -> Result<Option<Channel>> {
+    let sql = get_conn()?;
+    get_next_episode_from_history_on_conn(&sql, channel_id)
+}
+
+fn get_next_episode_from_history_on_conn(
+    conn: &rusqlite::Connection,
+    channel_id: i64,
+) -> Result<Option<Channel>> {
+    if channel_id <= 0 {
+        return Ok(None);
+    }
+    let select_sql = format!("{WATCH_HISTORY_SELECT_BASE}\nWHERE c.id = ?1");
+    let ch_row = conn
+        .query_row(
+            &select_sql,
+            params![channel_id],
+            map_watch_history_source_channel_row,
+        )
+        .optional()?;
+    let Some(ch_row) = ch_row else {
+        return Ok(None);
+    };
+    if ch_row.media_type == media_type::LIVESTREAM {
+        return Ok(None);
+    }
+    let meta = compute_row_watch_metadata(&ch_row);
+
+    type NextEpMeta = (Option<i64>, Option<i64>, Option<i64>, Option<i64>, Option<i64>);
+    const NEXT_BY_KEY: &str = r#"
+SELECT provider_series_id, next_ep_channel_id, next_ep_stream_id, next_ep_season_number, next_ep_episode_number
+FROM watch_history
+WHERE identity_key = ?1 AND media_type != 0 AND is_episode = 1
+LIMIT 1
+"#;
+    const NEXT_BY_CH: &str = r#"
+SELECT provider_series_id, next_ep_channel_id, next_ep_stream_id, next_ep_season_number, next_ep_episode_number
+FROM watch_history
+WHERE channel_id = ?1 AND media_type != 0 AND source_missing = 0 AND is_episode = 1
+ORDER BY updated_at DESC, id DESC
+LIMIT 1
+"#;
+    let next_meta: Option<NextEpMeta> = conn
+        .query_row(NEXT_BY_KEY, params![meta.identity_key], |r| {
+            Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?))
+        })
+        .optional()?
+        .or_else(|| {
+            conn.query_row(NEXT_BY_CH, params![channel_id], |r| {
+                Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?))
+            })
+            .optional()
+            .ok()
+            .flatten()
+        });
+
+    let Some((prov_series_id, next_ch_id, next_stream_id, next_s, next_e)) = next_meta else {
+        return Ok(None);
+    };
+    let ser_id = ch_row.series_id.or(prov_series_id);
+    resolve_next_episode_channel_on_conn(
+        conn,
+        ch_row.source_id,
+        ser_id,
+        next_ch_id,
+        next_stream_id,
+        next_s,
+        next_e,
+    )
+}
+
+fn query_cw_entries_with_where_on_conn(
+    conn: &rusqlite::Connection,
+    extra_where: &str,
+    params: Vec<&dyn rusqlite::ToSql>,
+) -> Result<Vec<ContinueWatchingEntry>> {
     let query_sql = format!(
         r#"
 SELECT
@@ -3918,16 +4114,11 @@ WHERE wh.source_missing = 0
   AND c.media_type != 0
   AND s.enabled = 1
   AND COALESCE(c.hidden, 0) = 0
-  AND s.id IN ({src_placeholders})
+  {extra_where}
 ORDER BY wh.last_watched DESC, wh.updated_at DESC, wh.id DESC
 LIMIT ?
 "#
     );
-
-    let limit_i64 = limit as i64;
-    let mut params: Vec<&dyn rusqlite::ToSql> = Vec::with_capacity(source_ids.len() + 1);
-    params.extend(to_to_sql(source_ids));
-    params.push(&limit_i64);
 
     struct RawCwRow {
         entry: ContinueWatchingEntry,
@@ -4040,6 +4231,79 @@ LIMIT ?
     Ok(results)
 }
 
+pub fn get_continue_watching(
+    source_ids: Vec<i64>,
+    limit: Option<u32>,
+) -> Result<Vec<ContinueWatchingEntry>> {
+    let sql = get_conn()?;
+    let eff_limit = limit.unwrap_or(100).clamp(1, 200) as usize;
+    get_continue_watching_on_conn(&sql, &source_ids, eff_limit)
+}
+
+fn get_continue_watching_on_conn(
+    conn: &rusqlite::Connection,
+    source_ids: &[i64],
+    limit: usize,
+) -> Result<Vec<ContinueWatchingEntry>> {
+    if source_ids.is_empty() || limit == 0 {
+        return Ok(Vec::new());
+    }
+    let src_placeholders = generate_placeholders(source_ids.len());
+    let extra_where = format!("AND s.id IN ({src_placeholders})");
+    let limit_i64 = limit as i64;
+    let mut params: Vec<&dyn rusqlite::ToSql> = Vec::with_capacity(source_ids.len() + 1);
+    params.extend(to_to_sql(source_ids));
+    params.push(&limit_i64);
+    query_cw_entries_with_where_on_conn(conn, &extra_where, params)
+}
+
+pub fn get_series_watch_progress(
+    source_ids: Vec<i64>,
+    series_id: Option<i64>,
+    series_name: Option<String>,
+) -> Result<Vec<ContinueWatchingEntry>> {
+    let sql = get_conn()?;
+    get_series_watch_progress_on_conn(&sql, &source_ids, series_id, series_name.as_deref())
+}
+
+fn get_series_watch_progress_on_conn(
+    conn: &rusqlite::Connection,
+    source_ids: &[i64],
+    series_id: Option<i64>,
+    series_name: Option<&str>,
+) -> Result<Vec<ContinueWatchingEntry>> {
+    if source_ids.is_empty() {
+        return Ok(Vec::new());
+    }
+    let norm_name = series_name
+        .map(normalize_text_key)
+        .filter(|s| !s.is_empty());
+    if series_id.is_none() && norm_name.is_none() {
+        return Ok(Vec::new());
+    }
+
+    let src_placeholders = generate_placeholders(source_ids.len());
+    let extra_where = format!(
+        r#"AND s.id IN ({src_placeholders})
+  AND (
+    (? IS NOT NULL AND (c.series_id = ? OR wh.provider_series_id = ?) AND (? IS NULL OR wh.normalized_show_title IS NULL OR wh.normalized_show_title = ?))
+    OR (? IS NOT NULL AND wh.is_episode = 1 AND wh.normalized_show_title = ?)
+  )"#
+    );
+    let limit_i64: i64 = 500;
+    let mut params: Vec<&dyn rusqlite::ToSql> = Vec::with_capacity(source_ids.len() + 8);
+    params.extend(to_to_sql(source_ids));
+    params.push(&series_id);
+    params.push(&series_id);
+    params.push(&series_id);
+    params.push(&norm_name);
+    params.push(&norm_name);
+    params.push(&norm_name);
+    params.push(&norm_name);
+    params.push(&limit_i64);
+    query_cw_entries_with_where_on_conn(conn, &extra_where, params)
+}
+
 pub fn migrate_legacy_watch_progress(entries: Vec<LegacyWatchProgressEntry>) -> Result<usize> {
     let mut sql = get_conn()?;
     migrate_legacy_watch_progress_on_conn(&mut sql, &entries)
@@ -4131,19 +4395,22 @@ ON CONFLICT(identity_key) DO UPDATE SET
   tmdb_id = COALESCE(excluded.tmdb_id, watch_history.tmdb_id),
   last_watched = MAX(watch_history.last_watched, excluded.last_watched),
   position_sec = CASE
+    WHEN watch_history.updated_at > 0 AND excluded.updated_at < watch_history.updated_at THEN watch_history.position_sec
     WHEN excluded.position_sec > 0 THEN excluded.position_sec
     ELSE watch_history.position_sec
   END,
   duration_sec = CASE
-    WHEN excluded.duration_sec > 0 THEN excluded.duration_sec
+    WHEN excluded.duration_sec > 0 AND (watch_history.duration_sec <= 0 OR excluded.updated_at >= watch_history.updated_at OR watch_history.updated_at <= 0) THEN excluded.duration_sec
     ELSE watch_history.duration_sec
   END,
   progress_percent = CASE
+    WHEN watch_history.updated_at > 0 AND excluded.updated_at < watch_history.updated_at THEN watch_history.progress_percent
     WHEN watch_history.completed = 1 THEN MAX(watch_history.progress_percent, excluded.progress_percent)
     ELSE excluded.progress_percent
   END,
   completed = CASE
     WHEN watch_history.completed = 1 THEN 1
+    WHEN watch_history.updated_at > 0 AND excluded.updated_at < watch_history.updated_at THEN watch_history.completed
     ELSE excluded.completed
   END,
   updated_at = MAX(watch_history.updated_at, excluded.updated_at),
@@ -5704,6 +5971,113 @@ mod tests {
         assert_eq!(recovered[0].next_episode.as_ref().and_then(|c| c.id), Some(1032));
         assert!((recovered[1].position_sec - 1800.0).abs() < 0.01);
         assert_eq!(recovered[1].tmdb_id, Some(157336));
+    }
+
+    #[test]
+    fn test_phase4c_batch_series_progress_and_stale_next_episode_safety() {
+        let mut conn = setup_test_db();
+        conn.execute(
+            "INSERT INTO sources (id, name, source_type, url, username, enabled) VALUES (1, 'XtreamOne', 2, 'http://tv.example.com:8080', 'user1', 1)",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO seasons (id, season_number, name, source_id) VALUES (10, 1, 'Season 1', 1)",
+            [],
+        )
+        .unwrap();
+        conn.execute("INSERT INTO channels (id, name, url, media_type, source_id, stream_id) VALUES (1, 'Live News', 'http://tv.example.com:8080/live/1.ts', 0, 1, 1)", []).unwrap();
+        conn.execute("INSERT INTO channels (id, name, url, media_type, source_id, stream_id) VALUES (20, 'Breaking Bad', '300', 2, 1, 300)", []).unwrap();
+        conn.execute("INSERT INTO channels (id, name, url, media_type, source_id, stream_id, series_id, season_id, episode_num) VALUES (31, 'Breaking Bad S01E01', 'http://tv.example.com:8080/series/u1/p1/901.mkv', 2, 1, 901, 300, 10, 1)", []).unwrap();
+        conn.execute("INSERT INTO channels (id, name, url, media_type, source_id, stream_id, series_id, season_id, episode_num) VALUES (32, 'Breaking Bad S01E02', 'http://tv.example.com:8080/series/u1/p1/902.mkv', 2, 1, 902, 300, 10, 2)", []).unwrap();
+        conn.execute("INSERT INTO channels (id, name, url, media_type, source_id, stream_id, series_id, season_id, episode_num) VALUES (41, 'Other Show S01E01', 'http://tv.example.com:8080/series/u1/p1/999.mkv', 2, 1, 999, 400, 10, 1)", []).unwrap();
+
+        upsert_watch_progress_on_conn(
+            &conn,
+            &WatchProgressUpsert {
+                channel_id: 31,
+                position_sec: 2800.0,
+                duration_sec: 3000.0,
+                completed: Some(true),
+                updated_at: Some(2000),
+                next_ep_channel_id: Some(32),
+                next_ep_stream_id: Some(902),
+                next_ep_season_number: Some(1),
+                next_ep_episode_number: Some(2),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        upsert_watch_progress_on_conn(
+            &conn,
+            &WatchProgressUpsert {
+                channel_id: 32,
+                position_sec: 600.0,
+                duration_sec: 3000.0,
+                updated_at: Some(2500),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        upsert_watch_progress_on_conn(
+            &conn,
+            &WatchProgressUpsert {
+                channel_id: 41,
+                position_sec: 500.0,
+                duration_sec: 3000.0,
+                updated_at: Some(3000),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+
+        // Batch progress lookup returns non-live matching IDs in one shot
+        let batch = get_watch_progress_batch_on_conn(&conn, &[1, 31, 32]).unwrap();
+        assert_eq!(batch.len(), 2);
+        assert!(batch.iter().any(|r| r.channel_id == Some(31) && r.completed));
+        assert!(batch.iter().any(|r| r.channel_id == Some(32) && (r.position_sec - 600.0).abs() < 0.01));
+
+        // Series progress query isolates show 300 and returns next_episode for completed ep 31
+        let ser_entries = get_series_watch_progress_on_conn(&conn, &[1], Some(300), Some("Breaking Bad")).unwrap();
+        assert_eq!(ser_entries.len(), 2);
+        assert_eq!(ser_entries[0].channel.id, Some(32));
+        assert_eq!(ser_entries[1].channel.id, Some(31));
+        assert_eq!(ser_entries[1].next_episode.as_ref().and_then(|c| c.id), Some(32));
+        assert_eq!(get_next_episode_from_history_on_conn(&conn, 31).unwrap().and_then(|c| c.id), Some(32));
+
+        // Recycled/stale next_ep_channel_id pointing to wrong series/stream MUST NOT resolve
+        conn.execute(
+            "INSERT INTO watch_history (identity_key, channel_id, source_id, source_missing, source_type, source_fingerprint, media_type, is_episode, provider_series_id, channel_name, normalized_title, completed, last_watched, updated_at, next_ep_channel_id, next_ep_stream_id, next_ep_season_number, next_ep_episode_number) VALUES ('stale_ep_key', 32, 1, 0, 2, 'fp1', 2, 1, 300, 'Breaking Bad S01E02', 'breaking bad s01e02', 1, 4000, 4000, 41, 999999, 1, 3)",
+            [],
+        )
+        .unwrap();
+        assert!(
+            resolve_next_episode_channel_on_conn(&conn, 1, Some(300), Some(41), Some(999999), Some(1), Some(3))
+                .unwrap()
+                .is_none()
+        );
+
+        // Source delete -> re-add with rotated channel IDs -> relink preserves series & next_episode via stable metadata
+        {
+            let tx = conn.transaction().unwrap();
+            detach_watch_history_for_source(&tx, 1).unwrap();
+            tx.execute("DELETE FROM channels WHERE source_id = 1", []).unwrap();
+            tx.execute("DELETE FROM seasons WHERE source_id = 1", []).unwrap();
+            tx.execute("DELETE FROM sources WHERE id = 1", []).unwrap();
+            tx.commit().unwrap();
+        }
+        conn.execute("INSERT INTO sources (id, name, source_type, url, username, enabled) VALUES (2, 'XtreamOne', 2, 'http://tv.example.com:8080', 'user1', 1)", []).unwrap();
+        conn.execute("INSERT INTO seasons (id, season_number, name, source_id) VALUES (20, 1, 'Season 1', 2)", []).unwrap();
+        conn.execute("INSERT INTO channels (id, name, url, media_type, source_id, stream_id) VALUES (2020, 'Breaking Bad', '300', 2, 2, 300)", []).unwrap();
+        conn.execute("INSERT INTO channels (id, name, url, media_type, source_id, stream_id, series_id, season_id, episode_num) VALUES (2031, 'Breaking Bad S01E01', 'http://tv.example.com:8080/series/u1/NEW/901.mkv', 2, 2, 901, 300, 20, 1)", []).unwrap();
+        conn.execute("INSERT INTO channels (id, name, url, media_type, source_id, stream_id, series_id, season_id, episode_num) VALUES (2032, 'Breaking Bad S01E02', 'http://tv.example.com:8080/series/u1/NEW/902.mkv', 2, 2, 902, 300, 20, 2)", []).unwrap();
+
+        relink_watch_history_on_conn(&mut conn, 2).unwrap();
+        let relinked_next = get_next_episode_from_history_on_conn(&conn, 2031).unwrap();
+        assert_eq!(relinked_next.as_ref().and_then(|c| c.id), Some(2032));
+        let relinked_series = get_series_watch_progress_on_conn(&conn, &[2], Some(300), Some("Breaking Bad")).unwrap();
+        assert_eq!(relinked_series.len(), 2);
+        assert!(relinked_series.iter().any(|e| e.channel.id == Some(2032) && (e.position_sec - 600.0).abs() < 0.01));
     }
 }
 

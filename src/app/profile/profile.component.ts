@@ -291,6 +291,7 @@ export class ProfileComponent implements OnInit, OnDestroy {
       "Failed to clear history",
       async () => {
         await invoke("clear_history");
+        this.embeddedPlayer.clearWatchHistoryCaches();
         this.historyChannels = [];
         this.filteredHistory = [];
       }

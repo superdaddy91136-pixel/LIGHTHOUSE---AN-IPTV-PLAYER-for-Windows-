@@ -27,7 +27,10 @@ import { SortType } from '../models/sortType';
 import { ViewMode } from '../models/viewMode';
 import { TmdbCastMember, TmdbMediaEnrichment, TmdbVideo } from '../models/tmdb';
 import { MediaVersion } from '../models/version';
-import { EmbeddedPlayerService } from '../services/embedded-player.service';
+import {
+  EmbeddedPlayerService,
+  WatchProgressRecord,
+} from '../services/embedded-player.service';
 import { AmbientBackgroundService } from '../services/ambient-background.service';
 import { MovieDetailService } from '../services/movie-detail.service';
 import { TmdbCacheService } from '../services/tmdb-cache.service';
@@ -123,7 +126,14 @@ export class MovieDetailComponent implements OnInit, AfterViewInit, OnDestroy {
   private enrichmentLoadRequestId = 0;
   private versionLoadRequestId = 0;
   private similarLoadRequestId = 0;
+  private watchProgressRefreshSeq = 0;
+  private dbProgressByChannelId = new Map<number, WatchProgressRecord>();
+  private dbFetchedChannelIds = new Set<number>();
   @ViewChild('similarTrack') similarTrack?: ElementRef<HTMLDivElement>;
+
+  protected invokeIpc<T>(cmd: string, args?: Record<string, unknown>): Promise<T> {
+    return invoke<T>(cmd, args);
+  }
 
   constructor(
     private movieDetailService: MovieDetailService,
@@ -256,7 +266,7 @@ export class MovieDetailComponent implements OnInit, AfterViewInit, OnDestroy {
         this.isFullscreen = false;
       }
       this.restoreScrollPosition();
-      this.updateWatchProgress();
+      void this.refreshAuthoritativeWatchProgress(true);
       this.cdr.detectChanges();
     }).then((un) => (this.unlistenStopped = un));
 
@@ -473,6 +483,9 @@ export class MovieDetailComponent implements OnInit, AfterViewInit, OnDestroy {
     this.backdropRotationApplied = false;
     this.castImageErrors.clear();
     this.hasWatchProgress = false;
+    this.dbProgressByChannelId.clear();
+    this.dbFetchedChannelIds.clear();
+    this.watchProgressRefreshSeq++;
 
     // 1. Synchronous cache read: check movie ID, or cached versions for THIS movie
     let cached = this.tmdbEnrichment.getEnrichmentSync(movie);
@@ -535,6 +548,7 @@ export class MovieDetailComponent implements OnInit, AfterViewInit, OnDestroy {
     // Check synopsis length
     this.checkSynopsisLength();
     this.updateWatchProgress();
+    void this.refreshAuthoritativeWatchProgress();
   }
 
   async loadVersions(movie: Channel): Promise<void> {
@@ -548,11 +562,41 @@ export class MovieDetailComponent implements OnInit, AfterViewInit, OnDestroy {
       if (requestId !== this.versionLoadRequestId) return;
       this.versions = vers;
 
+      const versionIds = vers
+        .map((v) => v.channel?.id)
+        .filter((id): id is number => id != null && id > 0);
+      if (versionIds.length > 0) {
+        const missingIds = versionIds.filter((id) => !this.dbFetchedChannelIds.has(id));
+        if (missingIds.length > 0) {
+          try {
+            const batchRecords = await this.invokeIpc<WatchProgressRecord[]>(
+              'get_watch_progress_batch',
+              { channelIds: missingIds },
+            );
+            missingIds.forEach((id) => this.dbFetchedChannelIds.add(id));
+            if (Array.isArray(batchRecords)) {
+              this.embeddedPlayer.seedCachedProgressRecords(batchRecords);
+              for (const rec of batchRecords) {
+                if (rec?.channel_id != null) {
+                  this.dbProgressByChannelId.set(rec.channel_id, rec);
+                }
+              }
+            }
+          } catch {}
+        }
+      }
+      if (requestId !== this.versionLoadRequestId) return;
+
+      const versionDbRecords = versionIds
+        .map((id) => this.dbProgressByChannelId.get(id))
+        .filter((r): r is WatchProgressRecord => r != null);
+
       // Check for previously saved version preference or playback history
       const preferred = this.versionMatching.getPreferredVersion(
         movie,
         this.versions,
         this.enrichment?.releaseYear,
+        versionDbRecords,
       );
 
       const isManual = this.versionMatching.isUserSelectedVersion(movie, this.enrichment?.releaseYear);
@@ -855,6 +899,87 @@ export class MovieDetailComponent implements OnInit, AfterViewInit, OnDestroy {
     return this.castImageErrors.has(actorId);
   }
 
+  public async refreshAuthoritativeWatchProgress(forceRefresh: boolean = false): Promise<void> {
+    if (!this.movie) return;
+    const reqSeq = ++this.watchProgressRefreshSeq;
+    const movieAtStart = this.movie;
+    const idsToFetch: number[] = [];
+    const pushId = (id?: number) => {
+      if (id != null && id > 0 && !idsToFetch.includes(id)) {
+        if (forceRefresh || !this.dbFetchedChannelIds.has(id)) {
+          idsToFetch.push(id);
+        }
+      }
+    };
+    pushId(this.movie.id);
+    pushId(this.selectedVersion?.channel?.id);
+    for (const v of this.versions) {
+      pushId(v.channel?.id);
+    }
+
+    if (idsToFetch.length > 0) {
+      try {
+        const records = await this.invokeIpc<WatchProgressRecord[]>(
+          'get_watch_progress_batch',
+          { channelIds: idsToFetch },
+        );
+        if (reqSeq !== this.watchProgressRefreshSeq || this.movie !== movieAtStart) {
+          return;
+        }
+        for (const id of idsToFetch) {
+          this.dbFetchedChannelIds.add(id);
+          if (forceRefresh) {
+            this.dbProgressByChannelId.delete(id);
+          }
+        }
+        if (Array.isArray(records)) {
+          this.embeddedPlayer.seedCachedProgressRecords(records);
+          for (const rec of records) {
+            if (rec?.channel_id != null) {
+              this.dbProgressByChannelId.set(rec.channel_id, rec);
+            }
+          }
+        }
+      } catch {
+        // Fallback to cache / localStorage cleanly if DB lookup fails
+      }
+    }
+
+    this.updateWatchProgress();
+  }
+
+  private computeMovieDbRecordState(rec: WatchProgressRecord): {
+    hasMetrics: boolean;
+    isCompleted: boolean;
+    isResumable: boolean;
+  } {
+    const pos = Number.isFinite(rec.position_sec) && rec.position_sec > 0 ? rec.position_sec : 0;
+    const dur = Number.isFinite(rec.duration_sec) && rec.duration_sec > 0 ? rec.duration_sec : 0;
+    const pct =
+      Number.isFinite(rec.progress_percent) && rec.progress_percent >= 0
+        ? rec.progress_percent
+        : dur > 0
+          ? (pos / dur) * 100
+          : 0;
+    const hasMetrics = rec.completed || pos > 0 || dur > 0 || pct > 0;
+    const isCompleted =
+      rec.completed === true ||
+      pct >= 95 ||
+      (dur > 30 && pos >= dur - 30) ||
+      (dur > 0 && pos / dur >= 0.95);
+    const isResumable = !isCompleted && (pos > 10 || pct > 1);
+    return { hasMetrics, isCompleted, isResumable };
+  }
+
+  private getMovieDbRecord(id: number): WatchProgressRecord | undefined {
+    const local = this.dbProgressByChannelId.get(id);
+    const shared = this.embeddedPlayer.getCachedProgressRecord?.(id);
+    if (local && shared) {
+      return shared.updated_at > local.updated_at ? shared : local;
+    }
+    return shared || local;
+  }
+
   updateWatchProgress(): void {
     this.hasWatchProgress = this.checkWatchProgress();
     this.cdr.markForCheck();
@@ -863,29 +988,64 @@ export class MovieDetailComponent implements OnInit, AfterViewInit, OnDestroy {
   checkWatchProgress(): boolean {
     if (!this.movie) return false;
 
+    const primaryId = this.selectedVersion?.channel?.id ?? this.movie.id;
     const idsToCheck: number[] = [];
-    if (this.movie.id) idsToCheck.push(this.movie.id);
-    if (this.selectedVersion?.channel?.id && !idsToCheck.includes(this.selectedVersion.channel.id)) {
-      idsToCheck.push(this.selectedVersion.channel.id);
+    if (primaryId != null) idsToCheck.push(primaryId);
+    if (this.movie.id != null && !idsToCheck.includes(this.movie.id)) {
+      idsToCheck.push(this.movie.id);
     }
     for (const v of this.versions) {
-      if (v.channel?.id && !idsToCheck.includes(v.channel.id)) {
+      if (v.channel?.id != null && !idsToCheck.includes(v.channel.id)) {
         idsToCheck.push(v.channel.id);
       }
     }
 
-    // 1. Check Channel object properties
+    // 1. Check authoritative watch_history DB records first (primary version, then alternates)
+    if (primaryId != null) {
+      const primaryDb = this.getMovieDbRecord(primaryId);
+      if (primaryDb) {
+        const primaryState = this.computeMovieDbRecordState(primaryDb);
+        if (primaryState.hasMetrics) {
+          if (primaryState.isCompleted) {
+            return false;
+          }
+          for (const id of idsToCheck) {
+            if (id === primaryId) continue;
+            const altDb = this.getMovieDbRecord(id);
+            if (altDb && altDb.updated_at > primaryDb.updated_at) {
+              const altState = this.computeMovieDbRecordState(altDb);
+              if (altState.hasMetrics && altState.isCompleted) {
+                return false;
+              }
+            }
+          }
+          return primaryState.isResumable;
+        }
+      }
+    }
+
+    let anyDbState = false;
+    for (const id of idsToCheck) {
+      const dbRec = this.getMovieDbRecord(id);
+      if (!dbRec) continue;
+      anyDbState = true;
+      const state = this.computeMovieDbRecordState(dbRec);
+      if (state.hasMetrics) {
+        return state.isResumable;
+      }
+    }
+
+    // 2. Check Channel object properties
     const chAny = this.movie as any;
     if (chAny.progress_percent != null && !isNaN(chAny.progress_percent)) {
-      if (chAny.progress_percent > 1 && chAny.progress_percent < 95) {
-        return true;
-      }
+      if (chAny.progress_percent >= 95) return false;
+      if (chAny.progress_percent > 1) return true;
     }
     if (chAny.progress != null && !isNaN(chAny.progress) && chAny.progress > 10) {
       return true;
     }
 
-    // 2. Check localStorage fred_tv_watch_progress
+    // 3. Fallback to legacy localStorage ONLY when DB progress is absent
     try {
       const storeRaw = localStorage.getItem('fred_tv_watch_progress');
       if (storeRaw) {
@@ -894,10 +1054,10 @@ export class MovieDetailComponent implements OnInit, AfterViewInit, OnDestroy {
           for (const id of idsToCheck) {
             const entry = store[id];
             if (entry) {
+              if (entry.completed === true) continue;
               const time = typeof entry === 'number' ? entry : (entry.time || 0);
               const dur = entry.duration || 0;
               const pct = entry.percent || (dur > 0 ? (time / dur) * 100 : 0);
-              // If finished (within 30s of end or >=95%), it's completed, not resume
               if (dur > 0 && (time >= dur - 30 || pct >= 95)) {
                 continue;
               }
@@ -910,7 +1070,6 @@ export class MovieDetailComponent implements OnInit, AfterViewInit, OnDestroy {
       }
     } catch {}
 
-    // 3. Check individual localStorage keys: playback_pos_${id}, watch_progress_${id}
     try {
       for (const id of idsToCheck) {
         const pctRaw = localStorage.getItem(`watch_progress_${id}`);
@@ -935,8 +1094,8 @@ export class MovieDetailComponent implements OnInit, AfterViewInit, OnDestroy {
       }
     } catch {}
 
-    // 4. Check if channel has last_watched timestamp
-    if (chAny.last_watched != null && chAny.last_watched > 0) {
+    // 4. Legacy last_watched fallback only when DB has no record for primary channel
+    if (!anyDbState && chAny.last_watched != null && chAny.last_watched > 0) {
       return true;
     }
 
@@ -992,6 +1151,24 @@ export class MovieDetailComponent implements OnInit, AfterViewInit, OnDestroy {
         }
       }
 
+      // Resolve authoritative playback progress via Phase 4A helper BEFORE add_last_watched
+      let startTime = 0;
+      let savedDuration = 0;
+      if (playChannel.id != null) {
+        const resolved = await this.embeddedPlayer.resolveAuthoritativeProgress(
+          playChannel.id,
+          playChannel,
+          'movie',
+        );
+        startTime = resolved.positionSec;
+        savedDuration = resolved.durationSec;
+        const freshCached = this.embeddedPlayer.getCachedProgressRecord(playChannel.id);
+        if (freshCached) {
+          this.dbFetchedChannelIds.add(playChannel.id);
+          this.dbProgressByChannelId.set(playChannel.id, freshCached);
+        }
+      }
+
       invoke('add_last_watched', { id: playChannel.id }).catch(console.error);
 
       // Persist this played version preference
@@ -1040,6 +1217,21 @@ export class MovieDetailComponent implements OnInit, AfterViewInit, OnDestroy {
         zOrder: 'top',
       });
 
+      emit('embedded-player-started', {
+        name: displayTitle,
+        channel_id: playChannel.id,
+        channelId: playChannel.id,
+        url: playChannel.url,
+        source_id: playChannel.source_id,
+        startTime,
+        duration: savedDuration,
+        mode: 'movie',
+        stableMediaKey: this.embeddedPlayer.computeStableMediaKey(playerChannel, {
+          title: displayTitle,
+          mode: 'movie',
+        }),
+      }).catch(console.warn);
+
       this.embeddedPlayer.emitPlaybackSegments(playerChannel, {
         mode: 'movie',
         seriesTitle: displayTitle,
@@ -1082,7 +1274,7 @@ export class MovieDetailComponent implements OnInit, AfterViewInit, OnDestroy {
     }
     this.isPlayingEmbedded = false;
     this.restoreScrollPosition();
-    this.updateWatchProgress();
+    void this.refreshAuthoritativeWatchProgress(true);
     this.cdr.detectChanges();
   }
 

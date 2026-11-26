@@ -6067,6 +6067,9 @@ export class HomeDiscoveryComponent implements OnInit, AfterViewInit, OnDestroy 
       await Promise.all(
         idsToRemove.map((id) => invoke("remove_from_history", { id }))
       );
+      if (idsToRemove.length > 0) {
+        this.embeddedPlayer.clearWatchHistoryCaches(idsToRemove);
+      }
 
       // Remove from Continue Watching row & in-memory DB caches
       this.cwProgressPctCache.delete(channel.id!);

@@ -38,6 +38,7 @@ import { VersionMatchingService } from '../services/version-matching.service';
 import { FavoritesService } from '../services/favorites.service';
 import { EpisodeSwitcherComponent } from '../episode-switcher/episode-switcher.component';
 import { EmbeddedPlayerService } from '../services/embedded-player.service';
+import { ContinueWatchingEntry } from '../services/home-discovery-state.service';
 import { AmbientBackgroundService } from '../services/ambient-background.service';
 import { isInputFocused } from '../utils';
 import {
@@ -163,6 +164,16 @@ export class TvDetailComponent implements OnInit, AfterViewInit, OnDestroy {
   @ViewChild(EpisodeSwitcherComponent) episodeSwitcher?: EpisodeSwitcherComponent;
   activePlayingEpisode?: Channel;
   private livePlaybackProgress: Record<number, number> = {};
+  private seriesProgressByChannelId = new Map<number, ContinueWatchingEntry>();
+  private seriesProgressByCoord = new Map<string, ContinueWatchingEntry>();
+  private seriesNextEpByChannelId = new Map<number, Channel>();
+  private seriesProgressLoaded: boolean = false;
+  private cachedLegacyProgressStore: Record<string, any> | null = null;
+  private lastLegacyProgressReadAt: number = 0;
+
+  protected invokeIpc<T>(cmd: string, args?: Record<string, unknown>): Promise<T> {
+    return invoke<T>(cmd, args);
+  }
 
   constructor(
     private tvDetailService: TvDetailService,
@@ -263,8 +274,13 @@ export class TvDetailComponent implements OnInit, AfterViewInit, OnDestroy {
       }),
     );
 
+    let wasPlayingEmbedded = false;
     this.subs.push(
-      this.embeddedPlayer.isPlayingEmbedded$.subscribe(() => {
+      this.embeddedPlayer.isPlayingEmbedded$.subscribe((isPlaying) => {
+        if (wasPlayingEmbedded && !isPlaying && this.show) {
+          void this.refreshSeriesWatchProgress();
+        }
+        wasPlayingEmbedded = isPlaying;
         this.cdr.detectChanges();
       }),
       this.embeddedPlayer.playbackProgress$.subscribe((state) => {
@@ -902,78 +918,71 @@ export class TvDetailComponent implements OnInit, AfterViewInit, OnDestroy {
         page: 1,
         sort: SortType.alphabeticalAscending,
       };
-      const historyFilters: Filters = {
-        source_ids: sourceIds,
-        series_id: seriesId,
-        media_types: [MediaType.movie],
-        view_type: ViewMode.History,
-        use_keywords: false,
-        page: 1,
-        sort: 0,
-      };
+      const cleanSeriesTitle = this.cleanTitle || sanitizeShowTitle(show.name || '');
 
-      const [cachedSeasons, watchedEpisodes] = await Promise.all([
-        invoke('search', { filters: seasonFilters }) as Promise<Channel[]>,
-        (invoke('search', { filters: historyFilters }) as Promise<Channel[]>).catch((err) => {
-          console.warn('Failed to query watch history for series:', err);
-          return [];
+      const [cachedSeasons, seriesProgress] = await Promise.all([
+        this.invokeIpc<Channel[]>('search', { filters: seasonFilters }),
+        this.invokeIpc<ContinueWatchingEntry[]>('get_series_watch_progress', {
+          sourceIds,
+          seriesId,
+          seriesName: cleanSeriesTitle,
+        }).catch((err) => {
+          console.warn('Failed to query watch_history progress for series:', err);
+          return [] as ContinueWatchingEntry[];
         }),
       ]);
       if (this.show !== show || requestId !== this.seasonLoadRequestId) return;
 
+      let effectiveSeriesProgress = seriesProgress || [];
       let seasonChannels = cachedSeasons || [];
       if (seasonChannels.length === 0 && !this.memory.SeriesRefreshed.has(show.id!)) {
         this.memory.SeriesRefreshed.set(show.id!, true);
         try {
-          await invoke('get_episodes', { channel: show });
+          await this.invokeIpc('get_episodes', { channel: show });
           if (this.show !== show || requestId !== this.seasonLoadRequestId) return;
-          seasonChannels = (await invoke('search', { filters: seasonFilters })) as Channel[];
+          const [refetchedSeasons, refetchedProgress] = await Promise.all([
+            this.invokeIpc<Channel[]>('search', { filters: seasonFilters }),
+            this.invokeIpc<ContinueWatchingEntry[]>('get_series_watch_progress', {
+              sourceIds,
+              seriesId,
+              seriesName: cleanSeriesTitle,
+            }).catch(() => effectiveSeriesProgress),
+          ]);
+          seasonChannels = refetchedSeasons || [];
+          if (Array.isArray(refetchedProgress)) {
+            effectiveSeriesProgress = refetchedProgress;
+          }
         } catch (e) {
           console.warn('Failed to get_episodes from Xtream:', e);
         }
       }
 
-      this.seasons = seasonChannels || [];
-
-      let lastWatchedEp: Channel | undefined = watchedEpisodes?.[0];
-      if (!lastWatchedEp) {
-        try {
-          const globalHistory = (await invoke('search', {
-            filters: {
-              source_ids: sourceIds,
-              media_types: [MediaType.movie],
-              view_type: ViewMode.History,
-              use_keywords: false,
-              page: 1,
-              sort: 0,
-            },
-          })) as Channel[];
-          if (this.show !== show || requestId !== this.seasonLoadRequestId) return;
-          const cleanTitleLower = this.cleanTitle.toLowerCase();
-          lastWatchedEp = globalHistory?.find((h) => {
-            if (h.series_id != null && h.series_id === seriesId) return true;
-            const hClean = cleanMediaTitle(h.name).toLowerCase();
-            return hClean.startsWith(cleanTitleLower) || cleanTitleLower.startsWith(hClean);
-          });
-        } catch (e) {
-          console.warn('Failed to query watch history for series:', e);
-        }
-      }
-
       if (this.show !== show || requestId !== this.seasonLoadRequestId) return;
+      this.seasons = seasonChannels || [];
+      this.applySeriesProgressEntries(effectiveSeriesProgress);
+
+      const latestEntry = effectiveSeriesProgress?.[0];
+      const nextEpForLatest =
+        latestEntry?.completed && latestEntry.next_episode ? latestEntry.next_episode : undefined;
+      const lastWatchedEp: Channel | undefined = latestEntry?.channel;
+      const initialTargetEp: Channel | undefined =
+        nextEpForLatest && !this.isTvEpisodeCompleted(nextEpForLatest)
+          ? nextEpForLatest
+          : lastWatchedEp;
+
       this.lastWatchedEpisode = lastWatchedEp;
 
       let initialSeason: Channel | undefined;
-      if (lastWatchedEp && this.seasons.length > 0) {
-        if (lastWatchedEp.season_id != null) {
-          initialSeason = this.seasons.find((s) => s.id === lastWatchedEp!.season_id);
+      if (initialTargetEp && this.seasons.length > 0) {
+        if (initialTargetEp.season_id != null) {
+          initialSeason = this.seasons.find((s) => s.id === initialTargetEp.season_id);
         }
 
         if (!initialSeason) {
           const sMatch =
-            lastWatchedEp.name?.match(/\bS(\d{1,2})\s*E\d{1,2}\b/i) ||
-            lastWatchedEp.name?.match(/(\d+)x(\d+)/i) ||
-            lastWatchedEp.name?.match(/\bSeason\s*(\d{1,2})\b/i);
+            initialTargetEp.name?.match(/\bS(\d{1,2})\s*E\d{1,2}\b/i) ||
+            initialTargetEp.name?.match(/(\d+)x(\d+)/i) ||
+            initialTargetEp.name?.match(/\bSeason\s*(\d{1,2})\b/i);
           if (sMatch) {
             const sNum = parseInt(sMatch[1], 10);
             initialSeason = this.seasons.find((s, idx) => {
@@ -990,7 +999,7 @@ export class TvDetailComponent implements OnInit, AfterViewInit, OnDestroy {
       }
 
       if (initialSeason) {
-        await this.selectSeason(initialSeason, lastWatchedEp);
+        await this.selectSeason(initialSeason, initialTargetEp);
       }
     } catch (err) {
       if (this.show !== show || requestId !== this.seasonLoadRequestId) return;
@@ -1096,7 +1105,7 @@ export class TvDetailComponent implements OnInit, AfterViewInit, OnDestroy {
     const inFlight = this.episodeRequests.get(cacheKey);
     if (inFlight) return inFlight;
 
-    const request = (invoke('search', { filters }) as Promise<Channel[]>)
+    const request = this.invokeIpc<Channel[]>('search', { filters })
       .then((episodes) => {
         const result = episodes || [];
         this.episodeCache.set(cacheKey, result);
@@ -1132,6 +1141,19 @@ export class TvDetailComponent implements OnInit, AfterViewInit, OnDestroy {
         series_id: epChannel.series_id || seriesId,
         favorite: !!epChannel.favorite,
       };
+      const dbEntry = this.findDbProgressForEpisode(
+        cleanEpChannel,
+        this.selectedSeasonNumber,
+        epNum,
+      );
+      const isWatched = dbEntry
+        ? Boolean(
+            dbEntry.completed ||
+              dbEntry.position_sec > 0 ||
+              dbEntry.progress_percent > 0 ||
+              dbEntry.last_watched > 0,
+          )
+        : Boolean((epChannel as any).last_watched != null || this.readLegacyEpisodeProgress(cleanEpChannel.id) > 0);
 
       return {
         channel: cleanEpChannel,
@@ -1143,7 +1165,7 @@ export class TvDetailComponent implements OnInit, AfterViewInit, OnDestroy {
         airDate: tmdbEp?.airDate,
         runtimeText: this.formatRuntime(tmdbEp?.runtime),
         rating: tmdbEp?.voteAverage,
-        isWatched: (epChannel as any).last_watched != null,
+        isWatched,
       };
     });
   }
@@ -1196,6 +1218,198 @@ export class TvDetailComponent implements OnInit, AfterViewInit, OnDestroy {
     return result;
   }
 
+  public applySeriesProgressEntries(entries: ContinueWatchingEntry[]): void {
+    this.seriesProgressByChannelId.clear();
+    this.seriesProgressByCoord.clear();
+    this.seriesNextEpByChannelId.clear();
+    this.seriesProgressLoaded = true;
+
+    const toSeed: Array<{
+      identity_key: string;
+      channel_id?: number | null;
+      position_sec: number;
+      duration_sec: number;
+      progress_percent: number;
+      completed: boolean;
+      updated_at: number;
+      last_watched: number;
+      tmdb_id?: number | null;
+    }> = [];
+
+    for (const entry of entries || []) {
+      const chId = entry?.channel?.id;
+      if (chId != null) {
+        this.seriesProgressByChannelId.set(chId, entry);
+        toSeed.push({
+          identity_key: entry.identity_key,
+          channel_id: chId,
+          position_sec: entry.position_sec,
+          duration_sec: entry.duration_sec,
+          progress_percent: entry.progress_percent,
+          completed: entry.completed,
+          updated_at: entry.updated_at,
+          last_watched: entry.last_watched,
+          tmdb_id: entry.tmdb_id ?? null,
+        });
+      }
+      const sNum = entry.season_number;
+      const eNum = entry.episode_number ?? entry.channel?.episode_num;
+      if (sNum != null && eNum != null && sNum > 0 && eNum > 0) {
+        const key = `${sNum}:${eNum}`;
+        if (!this.seriesProgressByCoord.has(key)) {
+          this.seriesProgressByCoord.set(key, entry);
+        }
+      }
+      if (chId != null && entry.completed && entry.next_episode?.id != null) {
+        this.seriesNextEpByChannelId.set(chId, entry.next_episode);
+      }
+    }
+
+    if (toSeed.length > 0 && typeof this.embeddedPlayer?.seedCachedProgressRecords === 'function') {
+      this.embeddedPlayer.seedCachedProgressRecords(toSeed);
+    }
+  }
+
+  public async refreshSeriesWatchProgress(): Promise<void> {
+    if (!this.show) return;
+    const show = this.show;
+    const seriesId = this.getSeriesIdNumber() || parseInt(show.url || `${show.id}`, 10);
+    const sourceIds = show.source_id
+      ? [show.source_id]
+      : Array.from(this.memory.Sources.keys());
+    if (sourceIds.length === 0) return;
+    const cleanSeriesTitle = this.cleanTitle || sanitizeShowTitle(show.name || '');
+
+    try {
+      const seriesProgress = await this.invokeIpc<ContinueWatchingEntry[]>(
+        'get_series_watch_progress',
+        { sourceIds, seriesId, seriesName: cleanSeriesTitle },
+      );
+      if (this.show !== show || !Array.isArray(seriesProgress)) return;
+      this.applySeriesProgressEntries(seriesProgress);
+      const latestEntry = seriesProgress[0];
+      if (latestEntry?.channel) {
+        this.lastWatchedEpisode = latestEntry.channel;
+      }
+      for (const ep of this.enrichedEpisodes) {
+        const db = this.findDbProgressForEpisode(ep.channel, ep.seasonNum, ep.episodeNum);
+        if (db) {
+          ep.isWatched = Boolean(
+            db.completed ||
+              db.position_sec > 0 ||
+              db.progress_percent > 0 ||
+              db.last_watched > 0,
+          );
+        }
+      }
+      const targetEp =
+        latestEntry?.completed && latestEntry.next_episode
+          ? latestEntry.next_episode
+          : undefined;
+      this.updateContinueEpisode(targetEp);
+      this.cdr.markForCheck();
+    } catch {}
+  }
+
+  private findDbProgressForEpisode(
+    channel?: Channel,
+    seasonNum?: number,
+    epNum?: number,
+  ): ContinueWatchingEntry | undefined {
+    if (channel?.id != null) {
+      const byId = this.seriesProgressByChannelId.get(channel.id);
+      if (byId) return byId;
+    }
+    const sNum =
+      seasonNum && seasonNum > 0
+        ? seasonNum
+        : (channel as any)?.seasonNum ?? (channel as any)?.season_number;
+    const eNum = epNum && epNum > 0 ? epNum : channel?.episode_num;
+    if (sNum && eNum) {
+      return this.seriesProgressByCoord.get(`${sNum}:${eNum}`);
+    }
+    return undefined;
+  }
+
+  private hasDbEpisodeMetrics(entry?: ContinueWatchingEntry): boolean {
+    return Boolean(
+      entry &&
+        (entry.completed ||
+          entry.position_sec > 0 ||
+          entry.duration_sec > 0 ||
+          entry.progress_percent > 0),
+    );
+  }
+
+  private isTvEpisodeCompleted(
+    channel?: Channel,
+    seasonNum?: number,
+    epNum?: number,
+  ): boolean {
+    if (!channel) return false;
+    const chId = channel.id;
+    const cached = chId != null ? this.embeddedPlayer.getCachedProgressRecord?.(chId) : undefined;
+    const db = this.findDbProgressForEpisode(channel, seasonNum, epNum);
+    const active =
+      cached && (!db || cached.updated_at >= db.updated_at)
+        ? cached
+        : db;
+
+    if (active) {
+      const pos = Number.isFinite(active.position_sec) && active.position_sec > 0 ? active.position_sec : 0;
+      const dur = Number.isFinite(active.duration_sec) && active.duration_sec > 0 ? active.duration_sec : 0;
+      const pct =
+        Number.isFinite(active.progress_percent) && active.progress_percent >= 0
+          ? active.progress_percent
+          : dur > 0
+            ? (pos / dur) * 100
+            : 0;
+      if (active.completed || pos > 0 || dur > 0 || pct > 0) {
+        return (
+          active.completed === true ||
+          pct >= 90 ||
+          (dur > 30 && pos >= dur - 30) ||
+          (dur > 0 && pos / dur >= 0.9)
+        );
+      }
+    }
+
+    return this.embeddedPlayer.isEpisodeCompleted(channel);
+  }
+
+  private readLegacyEpisodeProgress(chId?: number): number {
+    if (!chId) return 0;
+    try {
+      const now = Date.now();
+      if (!this.cachedLegacyProgressStore || now - this.lastLegacyProgressReadAt > 2000) {
+        const storeRaw = localStorage.getItem('fred_tv_watch_progress');
+        this.cachedLegacyProgressStore = storeRaw ? JSON.parse(storeRaw) : {};
+        this.lastLegacyProgressReadAt = now;
+      }
+      const entry = this.cachedLegacyProgressStore?.[chId];
+      if (entry) {
+        const pct =
+          typeof entry === 'number'
+            ? entry
+            : entry.percent ||
+              (entry.time && entry.duration > 0 ? (entry.time / entry.duration) * 100 : 0);
+        if (pct > 0) return Math.min(100, Math.max(0, Math.round(pct)));
+      }
+    } catch {}
+
+    try {
+      const pctRaw = localStorage.getItem(`watch_progress_${chId}`);
+      if (pctRaw) {
+        const parsed = parseFloat(pctRaw);
+        if (!isNaN(parsed) && parsed > 0) {
+          return Math.min(100, Math.max(0, Math.round(parsed)));
+        }
+      }
+    } catch {}
+
+    return 0;
+  }
+
   private updateContinueEpisode(targetEpisode?: Channel): void {
     if (this.enrichedEpisodes.length === 0) {
       if (!this.continueEpisode) {
@@ -1208,7 +1422,26 @@ export class TvDetailComponent implements OnInit, AfterViewInit, OnDestroy {
     const candidate = targetEpisode || this.lastWatchedEpisode;
 
     if (candidate) {
-      const isCandidateCompleted = this.embeddedPlayer.isEpisodeCompleted(candidate);
+      const isCandidateCompleted = this.isTvEpisodeCompleted(candidate);
+      if (isCandidateCompleted && candidate.id != null) {
+        const persistedNext = this.seriesNextEpByChannelId.get(candidate.id);
+        if (persistedNext) {
+          const nextIdx = this.enrichedEpisodes.findIndex(
+            (ep) =>
+              ep.channel.id === persistedNext.id ||
+              (persistedNext.episode_num != null &&
+                ep.episodeNum === persistedNext.episode_num &&
+                (persistedNext.season_id == null || persistedNext.season_id === this.selectedSeason?.id)),
+          );
+          if (nextIdx !== -1) {
+            const nextEp = this.enrichedEpisodes[nextIdx];
+            this.continueEpisode = nextEp;
+            this.highlightedEpisodeId = nextEp.channel.id;
+            return;
+          }
+        }
+      }
+
       const matchedIdx = this.enrichedEpisodes.findIndex(
         (ep) =>
           ep.channel.id === candidate.id ||
@@ -1217,8 +1450,8 @@ export class TvDetailComponent implements OnInit, AfterViewInit, OnDestroy {
             (candidate.season_id == null || candidate.season_id === this.selectedSeason?.id))
       );
       if (matchedIdx !== -1) {
+        const matched = this.enrichedEpisodes[matchedIdx];
         if (!isCandidateCompleted) {
-          const matched = this.enrichedEpisodes[matchedIdx];
           this.continueEpisode = matched;
           this.highlightedEpisodeId = matched.channel.id;
           return;
@@ -1237,12 +1470,16 @@ export class TvDetailComponent implements OnInit, AfterViewInit, OnDestroy {
       }
     }
 
-    // Check if any episode in current season was watched (has last_watched)
+    // Check if any episode in current season was watched (via watch_history or fallback)
     const watchedInSeason = this.enrichedEpisodes.filter((ep) => ep.isWatched);
     if (watchedInSeason.length > 0) {
       const lastWatchedInSeason = watchedInSeason[watchedInSeason.length - 1];
       const lastIdx = this.enrichedEpisodes.indexOf(lastWatchedInSeason);
-      const isCompleted = this.embeddedPlayer.isEpisodeCompleted(lastWatchedInSeason.channel);
+      const isCompleted = this.isTvEpisodeCompleted(
+        lastWatchedInSeason.channel,
+        lastWatchedInSeason.seasonNum,
+        lastWatchedInSeason.episodeNum,
+      );
       if (isCompleted && lastIdx !== -1 && lastIdx + 1 < this.enrichedEpisodes.length) {
         const nextEp = this.enrichedEpisodes[lastIdx + 1];
         this.continueEpisode = nextEp;
@@ -1284,37 +1521,35 @@ export class TvDetailComponent implements OnInit, AfterViewInit, OnDestroy {
       return Math.min(100, Math.max(0, Math.round(this.livePlaybackProgress[chId])));
     }
 
-    // 2. Check localStorage fred_tv_watch_progress
-    try {
-      const storeRaw = localStorage.getItem('fred_tv_watch_progress');
-      if (storeRaw) {
-        const store = JSON.parse(storeRaw);
-        const entry = store[chId];
-        if (entry) {
-          const pct =
-            typeof entry === 'number'
-              ? entry
-              : entry.percent ||
-                (entry.time && entry.duration > 0
-                  ? (entry.time / entry.duration) * 100
-                  : 0);
-          if (pct > 0) return Math.min(100, Math.max(0, Math.round(pct)));
-        }
-      }
-    } catch {}
+    // 2. Authoritative watch_history / synced cache lookup (O(1), zero per-frame IPC or JSON parse)
+    const cached = this.embeddedPlayer.getCachedProgressRecord?.(chId);
+    const dbEntry = this.findDbProgressForEpisode(ep.channel, ep.seasonNum, ep.episodeNum);
+    const activeDb =
+      cached && (!dbEntry || cached.updated_at >= dbEntry.updated_at)
+        ? cached
+        : dbEntry;
 
-    // 3. Fallback to individual watch_progress_${id}
-    try {
-      const pctRaw = localStorage.getItem(`watch_progress_${chId}`);
-      if (pctRaw) {
-        const parsed = parseFloat(pctRaw);
-        if (!isNaN(parsed) && parsed > 0) {
-          return Math.min(100, Math.max(0, Math.round(parsed)));
-        }
+    if (activeDb) {
+      const pos = Number.isFinite(activeDb.position_sec) && activeDb.position_sec > 0 ? activeDb.position_sec : 0;
+      const dur = Number.isFinite(activeDb.duration_sec) && activeDb.duration_sec > 0 ? activeDb.duration_sec : 0;
+      const pct =
+        Number.isFinite(activeDb.progress_percent) && activeDb.progress_percent > 0
+          ? activeDb.progress_percent
+          : dur > 0 && pos > 0
+            ? (pos / dur) * 100
+            : 0;
+      if (activeDb.completed) return 100;
+      if (pct > 0 || pos > 0 || dur > 0) {
+        return pct > 0 ? Math.min(100, Math.max(1, Math.round(pct))) : 0;
       }
-    } catch {}
+      // If DB record exists cleanly with newer timestamp, do not override with stale localStorage
+      if (activeDb.updated_at > 0 && this.seriesProgressLoaded) {
+        return 0;
+      }
+    }
 
-    return 0;
+    // 3. Fallback to legacy localStorage ONLY when DB progress is unavailable
+    return this.readLegacyEpisodeProgress(chId);
   }
 
   // Playback & Favorites

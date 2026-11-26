@@ -103,7 +103,10 @@ pub fn run() {
             add_last_watched,
             upsert_watch_progress,
             get_watch_progress,
+            get_watch_progress_batch,
             get_continue_watching,
+            get_series_watch_progress,
+            get_next_episode_from_history,
             migrate_legacy_watch_progress,
             backup_favs,
             restore_favs,
@@ -647,11 +650,30 @@ fn get_watch_progress(channel_id: i64) -> Result<Option<WatchProgressRecord>, St
 }
 
 #[tauri::command(async)]
+fn get_watch_progress_batch(channel_ids: Vec<i64>) -> Result<Vec<WatchProgressRecord>, String> {
+    sql::get_watch_progress_batch(channel_ids).map_err(map_err_frontend)
+}
+
+#[tauri::command(async)]
 fn get_continue_watching(
     source_ids: Vec<i64>,
     limit: Option<u32>,
 ) -> Result<Vec<ContinueWatchingEntry>, String> {
     sql::get_continue_watching(source_ids, limit).map_err(map_err_frontend)
+}
+
+#[tauri::command(async)]
+fn get_series_watch_progress(
+    source_ids: Vec<i64>,
+    series_id: Option<i64>,
+    series_name: Option<String>,
+) -> Result<Vec<ContinueWatchingEntry>, String> {
+    sql::get_series_watch_progress(source_ids, series_id, series_name).map_err(map_err_frontend)
+}
+
+#[tauri::command(async)]
+fn get_next_episode_from_history(channel_id: i64) -> Result<Option<Channel>, String> {
+    sql::get_next_episode_from_history(channel_id).map_err(map_err_frontend)
 }
 
 #[tauri::command(async)]
