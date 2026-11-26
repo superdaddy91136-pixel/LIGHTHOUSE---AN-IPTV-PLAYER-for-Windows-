@@ -15,6 +15,7 @@ const STORE_SEGMENTS = 'playback_segments';
 
 const DEFAULT_STALE_MS = 30 * 24 * 60 * 60 * 1000; // 30 days
 const DEFAULT_FAILED_TTL_MS = 14 * 24 * 60 * 60 * 1000; // 14 days
+const MAX_MEMORY_CACHE_ENTRIES = 2000;
 export const CURRENT_LOGO_ALGO_VERSION = 2;
 const LOGO_VERSION_STORAGE_KEY = 'lh_tmdb_logo_version';
 
@@ -153,6 +154,23 @@ export class TmdbCacheService {
     return item;
   }
 
+  private setBounded<K, V>(
+    cache: Map<K, V>,
+    key: K,
+    value: V,
+    maxEntries: number = MAX_MEMORY_CACHE_ENTRIES,
+  ): void {
+    if (cache.has(key)) {
+      cache.delete(key);
+    } else if (cache.size >= maxEntries) {
+      const oldest = cache.keys().next();
+      if (!oldest.done) {
+        cache.delete(oldest.value);
+      }
+    }
+    cache.set(key, value);
+  }
+
   /**
    * Synchronous check against hot in-memory cache.
    * Useful in high-frequency rendering pipelines without async overhead.
@@ -191,9 +209,9 @@ export class TmdbCacheService {
         req.onsuccess = () => {
           const result = this.sanitizeEnrichment(req.result as TmdbMediaEnrichment | undefined);
           if (result) {
-            this.memoryCache.set(providerItemId, result);
+            this.setBounded(this.memoryCache, providerItemId, result);
             if (result.tmdbId) {
-              this.tmdbIdMemoryCache.set(result.tmdbId, result);
+              this.setBounded(this.tmdbIdMemoryCache, result.tmdbId, result);
             }
           }
           resolve(result);
@@ -227,9 +245,9 @@ export class TmdbCacheService {
           req.onsuccess = () => {
             const result = this.sanitizeEnrichment(req.result as TmdbMediaEnrichment | undefined);
             if (result) {
-              this.memoryCache.set(id, result);
+              this.setBounded(this.memoryCache, id, result);
               if (result.tmdbId) {
-                this.tmdbIdMemoryCache.set(result.tmdbId, result);
+                this.setBounded(this.tmdbIdMemoryCache, result.tmdbId, result);
               }
               loaded++;
             }
@@ -260,11 +278,11 @@ export class TmdbCacheService {
           const results = rawResults.map((r) => this.sanitizeEnrichment(r)!);
           for (const res of results) {
             if (res.providerItemId) {
-              this.memoryCache.set(res.providerItemId, res);
+              this.setBounded(this.memoryCache, res.providerItemId, res);
             }
           }
           if (results.length > 0) {
-            this.tmdbIdMemoryCache.set(tmdbId, results[0]);
+            this.setBounded(this.tmdbIdMemoryCache, tmdbId, results[0]);
           }
           resolve(results);
         };
@@ -282,9 +300,9 @@ export class TmdbCacheService {
   async saveEnrichment(enrichment: TmdbMediaEnrichment): Promise<void> {
     if (!enrichment.providerItemId) return;
 
-    this.memoryCache.set(enrichment.providerItemId, enrichment);
+    this.setBounded(this.memoryCache, enrichment.providerItemId, enrichment);
     if (enrichment.tmdbId) {
-      this.tmdbIdMemoryCache.set(enrichment.tmdbId, enrichment);
+      this.setBounded(this.tmdbIdMemoryCache, enrichment.tmdbId, enrichment);
     }
 
     try {
@@ -335,7 +353,7 @@ export class TmdbCacheService {
           }
 
           if (Date.now() < item.retryAfter) {
-            this.failedMemoryCache.set(searchKey, item.retryAfter);
+            this.setBounded(this.failedMemoryCache, searchKey, item.retryAfter);
             resolve(true);
           } else {
             resolve(false);
@@ -362,7 +380,7 @@ export class TmdbCacheService {
     const now = Date.now();
     const retryAfter = now + ttlMs;
 
-    this.failedMemoryCache.set(searchKey, retryAfter);
+    this.setBounded(this.failedMemoryCache, searchKey, retryAfter);
 
     const record: TmdbFailedMatch = {
       searchKey,
@@ -413,7 +431,7 @@ export class TmdbCacheService {
         req.onsuccess = () => {
           const res = req.result as TmdbSeasonDetail | undefined;
           if (res) {
-            this.seasonMemoryCache.set(seasonKey, res);
+            this.setBounded(this.seasonMemoryCache, seasonKey, res);
           }
           resolve(res);
         };
@@ -429,7 +447,7 @@ export class TmdbCacheService {
    */
   async saveSeasonDetail(detail: TmdbSeasonDetail): Promise<void> {
     const seasonKey = `${detail.tmdbId}_s${detail.seasonNumber}`;
-    this.seasonMemoryCache.set(seasonKey, detail);
+    this.setBounded(this.seasonMemoryCache, seasonKey, detail);
     const payload = { ...detail, seasonKey };
 
     try {
@@ -469,7 +487,7 @@ export class TmdbCacheService {
         req.onsuccess = () => {
           const res = req.result as MediaSegmentsRecord | undefined;
           if (res) {
-            this.segmentMemoryCache.set(mediaKey, res);
+            this.setBounded(this.segmentMemoryCache, mediaKey, res);
           }
           resolve(res);
         };
@@ -484,10 +502,10 @@ export class TmdbCacheService {
    * Stores playback segments in both in-memory cache and IndexedDB.
    */
   public async setPlaybackSegments(record: MediaSegmentsRecord): Promise<void> {
-    this.segmentMemoryCache.set(record.mediaKey, record);
+    this.setBounded(this.segmentMemoryCache, record.mediaKey, record);
     if (record.channelId) {
-      this.segmentMemoryCache.set(`mv_ch_${record.channelId}`, record);
-      this.segmentMemoryCache.set(`tv_ch_${record.channelId}`, record);
+      this.setBounded(this.segmentMemoryCache, `mv_ch_${record.channelId}`, record);
+      this.setBounded(this.segmentMemoryCache, `tv_ch_${record.channelId}`, record);
     }
     try {
       const db = await this.initDb();
