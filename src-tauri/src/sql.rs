@@ -630,8 +630,36 @@ pub fn set_setting_value(key: &str, value: Option<String>) -> Result<()> {
 
 pub fn get_storage_counts() -> Result<(u64, u64, u64)> {
     let sql = get_conn()?;
-    let history_count: i64 = sql.query_row(
-        "SELECT COUNT(1) FROM channels WHERE last_watched IS NOT NULL",
+    get_storage_counts_on_conn(&sql)
+}
+
+fn get_storage_counts_on_conn(sql: &rusqlite::Connection) -> Result<(u64, u64, u64)> {
+    let vod_history_count: i64 = sql.query_row(
+        r#"
+        SELECT COUNT(DISTINCT c.id)
+        FROM watch_history wh
+        INNER JOIN channels c ON c.id = wh.channel_id
+        INNER JOIN sources s ON s.id = c.source_id
+        WHERE wh.source_missing = 0
+          AND c.media_type != 0
+          AND c.url IS NOT NULL
+          AND c.hidden = 0
+          AND s.enabled = 1
+        "#,
+        [],
+        |row| row.get(0),
+    )?;
+    let live_history_count: i64 = sql.query_row(
+        r#"
+        SELECT COUNT(1)
+        FROM channels c
+        INNER JOIN sources s ON s.id = c.source_id
+        WHERE c.media_type = 0
+          AND c.last_watched IS NOT NULL
+          AND c.url IS NOT NULL
+          AND c.hidden = 0
+          AND s.enabled = 1
+        "#,
         [],
         |row| row.get(0),
     )?;
@@ -651,10 +679,167 @@ pub fn get_storage_counts() -> Result<(u64, u64, u64)> {
         |row| row.get(0),
     )?;
     Ok((
-        history_count.max(0) as u64,
+        (vod_history_count + live_history_count).max(0) as u64,
         (hidden_channels + hidden_groups).max(0) as u64,
         favorites_count.max(0) as u64,
     ))
+}
+
+fn get_keywords_sql_aliased(size: usize, alias: &str) -> String {
+    std::iter::repeat(format!("{alias}.name LIKE ?"))
+        .take(size)
+        .collect::<Vec<_>>()
+        .join(" AND ")
+}
+
+fn push_history_branch_filters<'a>(
+    sql_query: &mut String,
+    params: &mut Vec<&'a dyn rusqlite::ToSql>,
+    alias: &str,
+    keywords: &'a [String],
+    source_ids: &'a [i64],
+    filters: &'a Filters,
+) {
+    let kw_sql = get_keywords_sql_aliased(keywords.len(), alias);
+    let src_placeholders = generate_placeholders(source_ids.len());
+    sql_query.push_str(&format!(
+        "\nAND ({kw_sql})\nAND {alias}.source_id IN ({src_placeholders})\nAND {alias}.url IS NOT NULL\nAND {alias}.hidden = 0"
+    ));
+    params.extend(to_to_sql(keywords));
+    params.extend(to_to_sql(source_ids));
+    if let Some(ref series_id) = filters.series_id {
+        sql_query.push_str(&format!("\nAND {alias}.series_id = ?"));
+        params.push(series_id);
+    } else if let Some(ref group) = filters.group_id {
+        sql_query.push_str(&format!("\nAND {alias}.group_id = ?"));
+        params.push(group);
+    }
+    if let Some(ref season) = filters.season {
+        sql_query.push_str(&format!("\nAND {alias}.season_id = ?"));
+        params.push(season);
+    }
+}
+
+fn search_history_on_conn(sql: &rusqlite::Connection, filters: &Filters) -> Result<Vec<Channel>> {
+    let _guard = register_search_handle_optional(sql, filters.query.as_deref());
+    let offset: u32 = (filters.page.max(1) as u32 - 1) * PAGE_SIZE as u32;
+    let media_types = match filters.series_id.is_some() {
+        true => vec![1],
+        false => filters.media_types.clone().unwrap_or_default(),
+    };
+    if media_types.is_empty() || filters.source_ids.is_empty() {
+        return Ok(Vec::new());
+    }
+
+    let query = filters.query.as_deref().unwrap_or("");
+    let keywords: Vec<String> = match filters.use_keywords {
+        true => {
+            let mut words: Vec<&str> = query.split(' ').filter(|w| !w.is_empty()).collect();
+            words.sort_by(|a, b| b.len().cmp(&a.len()));
+            words.into_iter().map(|f| format!("%{f}%")).collect()
+        }
+        false => vec![format!("%{query}%")],
+    };
+
+    let wants_live = media_types.contains(&media_type::LIVESTREAM);
+    let vod_media_types: Vec<u8> = media_types
+        .iter()
+        .copied()
+        .filter(|&m| m != media_type::LIVESTREAM)
+        .collect();
+
+    let mut branches: Vec<String> = Vec::with_capacity(2);
+    let mut params: Vec<&dyn rusqlite::ToSql> = Vec::new();
+
+    if wants_live {
+        let mut live_sql = String::from(
+            r#"
+            SELECT c.*, c.last_watched AS wh_sort_ts
+            FROM channels c
+            INNER JOIN sources s ON s.id = c.source_id
+            WHERE c.media_type = 0
+              AND c.last_watched IS NOT NULL
+              AND s.enabled = 1"#,
+        );
+        push_history_branch_filters(
+            &mut live_sql,
+            &mut params,
+            "c",
+            &keywords,
+            &filters.source_ids,
+            filters,
+        );
+        branches.push(live_sql);
+    }
+
+    if !vod_media_types.is_empty() {
+        let vod_placeholders = generate_placeholders(vod_media_types.len());
+        let mut vod_sql = format!(
+            r#"
+            SELECT c.*, MAX(wh.last_watched) AS wh_sort_ts
+            FROM watch_history wh
+            INNER JOIN channels c ON c.id = wh.channel_id
+            INNER JOIN sources s ON s.id = c.source_id
+            WHERE wh.source_missing = 0
+              AND c.media_type != 0
+              AND c.media_type IN ({vod_placeholders})
+              AND s.enabled = 1"#
+        );
+        params.extend(to_to_sql(&vod_media_types));
+        push_history_branch_filters(
+            &mut vod_sql,
+            &mut params,
+            "c",
+            &keywords,
+            &filters.source_ids,
+            filters,
+        );
+        vod_sql.push_str("\nGROUP BY c.id");
+        branches.push(vod_sql);
+    }
+
+    let full_sql = if branches.len() == 1 {
+        format!(
+            "{}\nORDER BY wh_sort_ts DESC, c.id DESC\nLIMIT ?, ?",
+            branches[0]
+        )
+    } else {
+        format!(
+            "SELECT * FROM ({}\nUNION ALL\n{})\nORDER BY wh_sort_ts DESC, id DESC\nLIMIT ?, ?",
+            branches[0], branches[1]
+        )
+    };
+
+    params.push(&offset);
+    params.push(&PAGE_SIZE);
+
+    let channels: Vec<Channel> = {
+        let mut stmt = sql.prepare(&full_sql)?;
+        match stmt.query_map(params_from_iter(params), row_to_channel) {
+            Ok(mapped) => mapped.filter_map(Result::ok).collect(),
+            Err(rusqlite::Error::SqliteFailure(ffi_err, _)) if ffi_err.extended_code == 9 => {
+                Vec::new()
+            }
+            Err(e) => return Err(e.into()),
+        }
+    };
+    Ok(channels)
+}
+
+fn register_search_handle_optional(
+    sql: &rusqlite::Connection,
+    query: Option<&str>,
+) -> Option<SearchHandleGuard> {
+    if let Some(q) = query {
+        if !q.trim().is_empty() {
+            let query_id = SEARCH_HANDLE_COUNTER.fetch_add(1, Ordering::Relaxed);
+            if let Ok(mut handles) = ACTIVE_SEARCH_HANDLES.lock() {
+                handles.push((query_id, sql.get_interrupt_handle()));
+            }
+            return Some(SearchHandleGuard(query_id));
+        }
+    }
+    None
 }
 
 pub fn search(filters: Filters) -> Result<Vec<Channel>> {
@@ -672,6 +857,10 @@ pub fn search(filters: Filters) -> Result<Vec<Channel>> {
         && filters.view_type != view_type::HISTORY
     {
         return search_series(filters);
+    }
+    if filters.view_type == view_type::HISTORY {
+        let sql = get_conn()?;
+        return search_history_on_conn(&sql, &filters);
     }
     let sql = get_conn()?;
     let _guard = register_search_handle(&sql, filters.query.as_deref());
@@ -1035,7 +1224,7 @@ fn apply_bulk_channels(
     }
 
     if filters.view_type == view_type::HISTORY {
-        sql_query += "\nAND last_watched IS NOT NULL";
+        sql_query += "\nAND ((media_type = 0 AND last_watched IS NOT NULL) OR (media_type != 0 AND EXISTS (SELECT 1 FROM watch_history wh WHERE wh.channel_id = channels.id AND wh.source_missing = 0)))";
     }
 
     let mut params: Vec<&dyn rusqlite::ToSql> =
@@ -1507,8 +1696,13 @@ pub fn hide_group(group_id: i64, hidden: bool) -> Result<()> {
 }
 
 pub fn remove_last_watched(channel_id: i64) -> Result<()> {
-    let sql = get_conn()?;
-    sql.execute(
+    let mut sql = get_conn()?;
+    remove_last_watched_on_conn(&mut sql, channel_id)
+}
+
+fn remove_last_watched_on_conn(conn: &mut rusqlite::Connection, channel_id: i64) -> Result<()> {
+    let tx = conn.transaction()?;
+    tx.execute(
         r#"
         UPDATE channels
         SET last_watched = NULL
@@ -1516,6 +1710,14 @@ pub fn remove_last_watched(channel_id: i64) -> Result<()> {
     "#,
         params![channel_id],
     )?;
+    tx.execute(
+        r#"
+        DELETE FROM watch_history
+        WHERE channel_id = ?1
+    "#,
+        params![channel_id],
+    )?;
+    tx.commit()?;
     Ok(())
 }
 
@@ -3621,8 +3823,14 @@ ON CONFLICT(identity_key) DO UPDATE SET
 }
 
 pub fn clear_history() -> Result<()> {
-    let sql = get_conn()?;
-    sql.execute(
+    let mut sql = get_conn()?;
+    clear_history_on_conn(&mut sql)
+}
+
+fn clear_history_on_conn(conn: &mut rusqlite::Connection) -> Result<()> {
+    let tx = conn.transaction()?;
+    tx.execute("DELETE FROM watch_history", params![])?;
+    tx.execute(
         r#"
           UPDATE channels
           SET last_watched = NULL
@@ -3630,6 +3838,7 @@ pub fn clear_history() -> Result<()> {
         "#,
         params![],
     )?;
+    tx.commit()?;
     Ok(())
 }
 
@@ -4701,6 +4910,184 @@ mod tests {
             .unwrap();
         assert_eq!(unmatched_ch, None);
         assert_eq!(unmatched_missing, 1);
+    }
+
+    #[test]
+    fn test_phase3_history_reads_counts_live_tv_and_clear_history() {
+        let mut conn = setup_test_db();
+
+        // Source 1: enabled; Source 2: disabled
+        conn.execute(
+            "INSERT INTO sources (id, name, source_type, url, username, enabled) VALUES (1, 'EnabledSrc', 2, 'http://a.example.com:8080', 'u1', 1)",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO sources (id, name, source_type, url, username, enabled) VALUES (2, 'DisabledSrc', 2, 'http://b.example.com:8080', 'u2', 0)",
+            [],
+        )
+        .unwrap();
+
+        // Source 1 Live channel (legacy last_watched), completed movie (NULL channels.last_watched!), hidden movie, series + completed episode
+        conn.execute(
+            "INSERT INTO channels (id, name, url, media_type, source_id, stream_id, favorite, hidden, last_watched) VALUES (10, 'CNN Live', 'http://a.example.com/live/10.ts', 0, 1, 10, 0, 0, 1000)",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO channels (id, name, url, media_type, source_id, stream_id, favorite, hidden, last_watched) VALUES (11, 'Completed Movie', 'http://a.example.com/movie/11.mp4', 1, 1, 11, 0, 0, NULL)",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO channels (id, name, url, media_type, source_id, stream_id, favorite, hidden, last_watched) VALUES (12, 'Hidden Movie', 'http://a.example.com/movie/12.mp4', 1, 1, 12, 0, 1, NULL)",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO channels (id, name, url, media_type, source_id, stream_id, favorite, hidden) VALUES (13, 'Show', '700', 2, 1, 700, 0, 0)",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO seasons (id, name, season_number, series_id, source_id) VALUES (100, 'Season 1', 1, 700, 1)",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO channels (id, name, url, media_type, source_id, series_id, season_id, episode_num, stream_id, favorite, hidden, last_watched) VALUES (14, 'Show S01E01', 'http://a.example.com/series/14.mp4', 1, 1, 700, 100, 1, 901, 0, 0, NULL)",
+            [],
+        )
+        .unwrap();
+
+        // Source 2 (disabled) movie
+        conn.execute(
+            "INSERT INTO channels (id, name, url, media_type, source_id, stream_id, favorite, hidden, last_watched) VALUES (20, 'Disabled Movie', 'http://b.example.com/movie/20.mp4', 1, 2, 20, 0, 0, 5000)",
+            [],
+        )
+        .unwrap();
+
+        // Populate watch_history via Phase 1b upsert (channels.last_watched stays NULL on 11, 12, 14!)
+        upsert_watch_progress_on_conn(
+            &conn,
+            &WatchProgressUpsert {
+                channel_id: 11,
+                position_sec: 3500.0,
+                duration_sec: 3600.0,
+                completed: Some(true),
+                updated_at: Some(2000),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        upsert_watch_progress_on_conn(
+            &conn,
+            &WatchProgressUpsert {
+                channel_id: 12,
+                position_sec: 500.0,
+                duration_sec: 3600.0,
+                updated_at: Some(2500),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        upsert_watch_progress_on_conn(
+            &conn,
+            &WatchProgressUpsert {
+                channel_id: 14,
+                position_sec: 2700.0,
+                duration_sec: 2800.0,
+                completed: Some(true),
+                updated_at: Some(3000),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        upsert_watch_progress_on_conn(
+            &conn,
+            &WatchProgressUpsert {
+                channel_id: 20,
+                position_sec: 600.0,
+                duration_sec: 3600.0,
+                updated_at: Some(4000),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+
+        // Also insert an orphaned/detached watch_history row (source_missing = 1)
+        migrate_legacy_watch_progress_on_conn(
+            &mut conn,
+            &[LegacyWatchProgressEntry {
+                channel_id: 9999,
+                position_sec: 400.0,
+                duration_sec: 3600.0,
+                fallback_name: Some("Deleted Source Movie".to_string()),
+                ..Default::default()
+            }],
+        )
+        .unwrap();
+
+        // Insert a second watch_history row pointing to the same channel_id (11) to test duplicate suppression
+        conn.execute(
+            "INSERT INTO watch_history (identity_key, channel_id, source_id, source_missing, source_type, source_fingerprint, media_type, is_episode, channel_name, normalized_title, last_watched, updated_at) VALUES ('dup_key_11', 11, 1, 0, 2, 'fp1', 1, 0, 'Completed Movie', 'completed movie', 2100, 2100)",
+            [],
+        )
+        .unwrap();
+
+        // 1. VOD + Episode History query: reads watch_history (not channels.last_watched), excludes hidden (12), disabled (20), detached (9999), and deduplicates channel 11
+        let vod_filters = Filters {
+            query: None,
+            source_ids: vec![1, 2],
+            media_types: Some(vec![1, 2]),
+            view_type: view_type::HISTORY,
+            page: 1,
+            series_id: None,
+            group_id: None,
+            use_keywords: false,
+            sort: 0,
+            season: None,
+        };
+        let vod_results = search_history_on_conn(&conn, &vod_filters).unwrap();
+        let vod_ids: Vec<i64> = vod_results.iter().filter_map(|c| c.id).collect();
+        assert_eq!(vod_ids, vec![14, 11]);
+
+        // 2. Live TV History query: still uses channels.last_watched
+        let live_filters = Filters {
+            media_types: Some(vec![0]),
+            ..vod_filters.clone()
+        };
+        let live_results = search_history_on_conn(&conn, &live_filters).unwrap();
+        let live_ids: Vec<i64> = live_results.iter().filter_map(|c| c.id).collect();
+        assert_eq!(live_ids, vec![10]);
+
+        // 3. Mixed Profile History query (Live + VOD + Series): chronological order across both
+        let mixed_filters = Filters {
+            media_types: Some(vec![0, 1, 2]),
+            ..vod_filters.clone()
+        };
+        let mixed_results = search_history_on_conn(&conn, &mixed_filters).unwrap();
+        let mixed_ids: Vec<i64> = mixed_results.iter().filter_map(|c| c.id).collect();
+        assert_eq!(mixed_ids, vec![14, 11, 10]);
+
+        // 4. Storage counts match visible history (2 VOD/episode + 1 Live = 3)
+        let (history_count, hidden_count, _) = get_storage_counts_on_conn(&conn).unwrap();
+        assert_eq!(history_count, 3);
+        assert_eq!(hidden_count, 1);
+
+        // 5. Clear history removes ALL watch_history (including detached/hidden/disabled) AND clears channels.last_watched
+        clear_history_on_conn(&mut conn).unwrap();
+        let wh_remaining: i64 = conn
+            .query_row("SELECT COUNT(*) FROM watch_history", [], |r| r.get(0))
+            .unwrap();
+        let legacy_remaining: i64 = conn
+            .query_row("SELECT COUNT(*) FROM channels WHERE last_watched IS NOT NULL", [], |r| r.get(0))
+            .unwrap();
+        let (post_clear_history_count, _, _) = get_storage_counts_on_conn(&conn).unwrap();
+        assert_eq!(wh_remaining, 0);
+        assert_eq!(legacy_remaining, 0);
+        assert_eq!(post_clear_history_count, 0);
+        assert!(search_history_on_conn(&conn, &mixed_filters).unwrap().is_empty());
     }
 }
 
