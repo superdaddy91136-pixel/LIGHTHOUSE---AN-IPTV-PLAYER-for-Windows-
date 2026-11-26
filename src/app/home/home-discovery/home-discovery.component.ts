@@ -159,6 +159,8 @@ export class HomeDiscoveryComponent implements OnInit, AfterViewInit, OnDestroy 
   private resizeObserver?: ResizeObserver;
   private rowScrollHandler?: (event: Event) => void;
   private rafScrollChecks = new Map<string, number>();
+  private initScrollCheckTimers: ReturnType<typeof setTimeout>[] = [];
+  private rowScrollTimers = new Map<string, ReturnType<typeof setTimeout>>();
 
   // Hero pool state & transition
   isTransitioning: boolean = false;
@@ -166,6 +168,7 @@ export class HomeDiscoveryComponent implements OnInit, AfterViewInit, OnDestroy 
   allLoadedSeries: Channel[] = [];
   allRecommended: Channel[] = [];
   private transitionTimeout?: any;
+  private transitionResetTimeout?: any;
   private preloadedImages = new Set<HTMLImageElement>();
   private preloadedImageUrls = new Set<string>();
   private cachedPaginationKey = '';
@@ -672,18 +675,28 @@ export class HomeDiscoveryComponent implements OnInit, AfterViewInit, OnDestroy 
       }
     });
 
-    setTimeout(() => this.checkAllRowsScrollState(), 100);
-    setTimeout(() => this.checkAllRowsScrollState(), 500);
+    this.initScrollCheckTimers.push(
+      setTimeout(() => {
+        if (this.isDestroyed) return;
+        this.checkAllRowsScrollState();
+      }, 100),
+      setTimeout(() => {
+        if (this.isDestroyed) return;
+        this.checkAllRowsScrollState();
+      }, 500),
+    );
   }
 
   private scheduleScrollStateCheck(rowId: string, el: HTMLElement): void {
     if (this.rafScrollChecks.has(rowId)) return;
     const rafId = requestAnimationFrame(() => {
       this.rafScrollChecks.delete(rowId);
+      if (this.isDestroyed) return;
       const maxScrollLeft = el.scrollWidth - el.clientWidth;
       const canScroll = maxScrollLeft - el.scrollLeft > 6;
       if (this.rowCanScrollRight[rowId] !== canScroll) {
         this.ngZone.run(() => {
+          if (this.isDestroyed) return;
           this.rowCanScrollRight[rowId] = canScroll;
           this.cdr.markForCheck();
         });
@@ -699,9 +712,21 @@ export class HomeDiscoveryComponent implements OnInit, AfterViewInit, OnDestroy 
       clearTimeout(this.scrollCheckTimer);
       this.scrollCheckTimer = null;
     }
+    for (const timer of this.initScrollCheckTimers) {
+      clearTimeout(timer);
+    }
+    this.initScrollCheckTimers = [];
+    for (const timer of this.rowScrollTimers.values()) {
+      clearTimeout(timer);
+    }
+    this.rowScrollTimers.clear();
     if (this.transitionTimeout) {
       clearTimeout(this.transitionTimeout);
       this.transitionTimeout = undefined;
+    }
+    if (this.transitionResetTimeout) {
+      clearTimeout(this.transitionResetTimeout);
+      this.transitionResetTimeout = undefined;
     }
     if (this.resizeObserver) {
       this.resizeObserver.disconnect();
@@ -734,8 +759,10 @@ export class HomeDiscoveryComponent implements OnInit, AfterViewInit, OnDestroy 
     this.ngZone.runOutsideAngular(() => {
       this.heroTimer = setTimeout(() => {
         this.heroTimer = undefined;
+        if (this.isDestroyed) return;
         this.heroRemainingMs = BANNER_ROTATE_MS;
         this.ngZone.run(() => {
+          if (this.isDestroyed) return;
           this.nextHero(true);
         });
       }, duration);
@@ -932,8 +959,14 @@ export class HomeDiscoveryComponent implements OnInit, AfterViewInit, OnDestroy 
       if (this.transitionTimeout) {
         clearTimeout(this.transitionTimeout);
       }
+      if (this.transitionResetTimeout) {
+        clearTimeout(this.transitionResetTimeout);
+        this.transitionResetTimeout = undefined;
+      }
 
       this.transitionTimeout = setTimeout(() => {
+        this.transitionTimeout = undefined;
+        if (this.isDestroyed) return;
         this.currentHeroIndex = index;
         this.recordHeroShown(this.currentHero?.channel?.id);
         this.updateAmbientBackground();
@@ -941,7 +974,9 @@ export class HomeDiscoveryComponent implements OnInit, AfterViewInit, OnDestroy 
         this.cdr.markForCheck();
         this.startHeroTimer();
 
-        setTimeout(() => {
+        this.transitionResetTimeout = setTimeout(() => {
+          this.transitionResetTimeout = undefined;
+          if (this.isDestroyed) return;
           this.isTransitioning = false;
           this.cdr.markForCheck();
         }, 50);
@@ -1008,8 +1043,14 @@ export class HomeDiscoveryComponent implements OnInit, AfterViewInit, OnDestroy 
     if (this.transitionTimeout) {
       clearTimeout(this.transitionTimeout);
     }
+    if (this.transitionResetTimeout) {
+      clearTimeout(this.transitionResetTimeout);
+      this.transitionResetTimeout = undefined;
+    }
 
     this.transitionTimeout = setTimeout(() => {
+      this.transitionTimeout = undefined;
+      if (this.isDestroyed) return;
       const nextIndex = this.currentHeroIndex + 1;
       if (nextIndex >= this.heroItems.length) {
         // Full pool cycle complete!
@@ -1033,7 +1074,9 @@ export class HomeDiscoveryComponent implements OnInit, AfterViewInit, OnDestroy 
       this.cdr.markForCheck();
       this.startHeroTimer();
 
-      setTimeout(() => {
+      this.transitionResetTimeout = setTimeout(() => {
+        this.transitionResetTimeout = undefined;
+        if (this.isDestroyed) return;
         this.isTransitioning = false;
         this.cdr.markForCheck();
       }, 50);
@@ -1049,8 +1092,14 @@ export class HomeDiscoveryComponent implements OnInit, AfterViewInit, OnDestroy 
     if (this.transitionTimeout) {
       clearTimeout(this.transitionTimeout);
     }
+    if (this.transitionResetTimeout) {
+      clearTimeout(this.transitionResetTimeout);
+      this.transitionResetTimeout = undefined;
+    }
 
     this.transitionTimeout = setTimeout(() => {
+      this.transitionTimeout = undefined;
+      if (this.isDestroyed) return;
       this.currentHeroIndex =
         (this.currentHeroIndex - 1 + this.heroItems.length) % this.heroItems.length;
       this.recordHeroShown(this.currentHero?.channel?.id);
@@ -1059,7 +1108,9 @@ export class HomeDiscoveryComponent implements OnInit, AfterViewInit, OnDestroy 
       this.cdr.markForCheck();
       this.startHeroTimer();
 
-      setTimeout(() => {
+      this.transitionResetTimeout = setTimeout(() => {
+        this.transitionResetTimeout = undefined;
+        if (this.isDestroyed) return;
         this.isTransitioning = false;
         this.cdr.markForCheck();
       }, 50);
@@ -1122,7 +1173,16 @@ export class HomeDiscoveryComponent implements OnInit, AfterViewInit, OnDestroy 
         left: direction === "left" ? -scrollAmount : scrollAmount,
         behavior: "smooth",
       });
-      setTimeout(() => this.updateRowScrollState(rowId), 450);
+      const prevTimer = this.rowScrollTimers.get(rowId);
+      if (prevTimer) {
+        clearTimeout(prevTimer);
+      }
+      const timer = setTimeout(() => {
+        this.rowScrollTimers.delete(rowId);
+        if (this.isDestroyed) return;
+        this.updateRowScrollState(rowId);
+      }, 450);
+      this.rowScrollTimers.set(rowId, timer);
     }
   }
 
