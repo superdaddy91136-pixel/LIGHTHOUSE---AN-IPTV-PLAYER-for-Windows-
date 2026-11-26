@@ -16,6 +16,7 @@ import { sanitizeFileName } from "../../utils";
 import { SourceContentCounts } from "../../models/sourceContentCounts";
 import { SourceRefreshProgress } from "../../models/sourceRefreshProgress";
 import { SourceDeviceRefreshStatus } from "../../models/sourceRefreshStatus";
+import { HomeDiscoveryStateService } from "../../services/home-discovery-state.service";
 import { Subscription } from "rxjs";
 
 @Component({
@@ -56,6 +57,7 @@ export class SourceTileComponent implements OnInit, OnChanges, OnDestroy {
     private toastr: ToastrService,
     private errorService: ErrorService,
     private cdr: ChangeDetectorRef,
+    private discoveryState: HomeDiscoveryStateService,
   ) { }
 
   async ngOnInit(): Promise<void> {
@@ -334,10 +336,17 @@ export class SourceTileComponent implements OnInit, OnChanges, OnDestroy {
 
   async toggleEnabled() {
     if (this.refreshing) return;
-    await this.memory.tryIPC("Successfully toggled source", "Failed to toggle source", () =>
+    const error = await this.memory.tryIPC("Successfully toggled source", "Failed to toggle source", () =>
       invoke("toggle_source", { value: !this.source?.enabled, sourceId: this.source?.id }),
     );
-    this.memory.RefreshSources.next(true);
+    if (!error) {
+      this.discoveryState.clearCache();
+      this.discoveryState.sourceDataInvalidated$.next({
+        type: "refreshed",
+        sourceId: this.source?.id,
+      });
+      this.memory.RefreshSources.next(true);
+    }
   }
 
   async addCustomChannel() {
