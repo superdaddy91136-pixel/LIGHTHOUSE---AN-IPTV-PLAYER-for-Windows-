@@ -394,3 +394,55 @@ pub struct SourceDeviceRefreshStatus {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub last_error: Option<String>,
 }
+
+#[derive(Clone, PartialEq, Debug, Deserialize, Serialize, Default)]
+pub struct WatchProgressUpsert {
+    pub channel_id: i64,
+    pub position_sec: f64,
+    pub duration_sec: f64,
+    #[serde(default)]
+    pub progress_percent: Option<f64>,
+    #[serde(default)]
+    pub completed: Option<bool>,
+    #[serde(default)]
+    pub tmdb_id: Option<i64>,
+    #[serde(default)]
+    pub updated_at: Option<i64>,
+    #[serde(default)]
+    pub next_ep_channel_id: Option<i64>,
+    #[serde(default)]
+    pub next_ep_stream_id: Option<i64>,
+    #[serde(default)]
+    pub next_ep_season_number: Option<i64>,
+    #[serde(default)]
+    pub next_ep_episode_number: Option<i64>,
+}
+
+#[derive(Clone, PartialEq, Debug, Deserialize, Serialize, Default)]
+pub struct LegacyWatchProgressEntry {
+    pub channel_id: i64,
+    pub position_sec: f64,
+    pub duration_sec: f64,
+    #[serde(default)]
+    pub progress_percent: Option<f64>,
+    #[serde(default)]
+    pub completed: Option<bool>,
+    #[serde(default)]
+    pub tmdb_id: Option<i64>,
+    #[serde(default)]
+    pub updated_at: Option<i64>,
+    #[serde(default)]
+    pub next_ep_channel_id: Option<i64>,
+    #[serde(default)]
+    pub next_ep_stream_id: Option<i64>,
+    #[serde(default)]
+    pub next_ep_season_number: Option<i64>,
+    #[serde(default)]
+    pub next_ep_episode_number: Option<i64>,
+    #[serde(default)]
+    pub fallback_name: Option<String>,
+    #[serde(default)]
+    pub fallback_series_id: Option<i64>,
+    #[serde(default)]
+    pub fallback_is_episode: Option<bool>,
+}

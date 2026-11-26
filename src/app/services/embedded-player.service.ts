@@ -110,6 +110,13 @@ export class EmbeddedPlayerService implements OnDestroy {
   }
 
   private currentMode: ContentMode = 'movie';
+  private lastDbProgressSync = new Map<
+    number,
+    { time: number; duration: number; completed: boolean; syncedAt: number }
+  >();
+  private dbProgressErrorLogged = new Set<number>();
+  private legacyMigrationPromise: Promise<void> | null = null;
+  private legacyMigrationTimer: ReturnType<typeof setTimeout> | null = null;
   public get mode(): ContentMode {
     return this.currentMode;
   }
@@ -2452,6 +2459,28 @@ export class EmbeddedPlayerService implements OnDestroy {
       if (seriesKey) {
         this.setPersistedNextEpisode(seriesKey, channelId, nextEp);
       }
+      if (nextEp?.id) {
+        const nextSeasonNum =
+          (nextEp as any).seasonNum ?? this.extractSeasonNumber(nextEp);
+        const nextEpisodeNum =
+          nextEp.episode_num ?? this.extractEpisodeNumber(nextEp.name, 0);
+        const savedPos = this.getSavedPosition(channelId, targetChannel);
+        const savedDur = this.getSavedDuration(channelId, targetChannel);
+        const tmdbId = this.tmdbEnrichment.getEnrichmentSync(targetChannel)?.tmdbId;
+        void invoke('upsert_watch_progress', {
+          payload: {
+            channel_id: channelId,
+            position_sec: savedPos,
+            duration_sec: savedDur,
+            completed: true,
+            tmdb_id: tmdbId ?? null,
+            next_ep_channel_id: nextEp.id,
+            next_ep_stream_id: nextEp.stream_id ?? null,
+            next_ep_season_number: nextSeasonNum > 0 ? nextSeasonNum : null,
+            next_ep_episode_number: nextEpisodeNum > 0 ? nextEpisodeNum : null,
+          },
+        }).catch(() => {});
+      }
       return nextEp;
     } catch (err) {
       console.warn('resolveAndPersistNextEpisode error:', err);
@@ -2496,20 +2525,32 @@ export class EmbeddedPlayerService implements OnDestroy {
           store = {};
         }
       }
+      const finalTime = isCompleted ? (duration || time) : time;
+      const finalDuration = duration > 0 ? duration : (store[channelId]?.duration || 0);
+      const finalPercent = isCompleted ? 100 : (pct > 0 ? pct : (store[channelId]?.percent || 0));
+
       store[channelId] = {
-        time: isCompleted ? (duration || time) : time,
-        duration: duration > 0 ? duration : (store[channelId]?.duration || 0),
-        percent: isCompleted ? 100 : (pct > 0 ? pct : (store[channelId]?.percent || 0)),
+        time: finalTime,
+        duration: finalDuration,
+        percent: finalPercent,
         completed: isCompleted,
         updatedAt: Date.now(),
       };
       localStorage.setItem('fred_tv_watch_progress', JSON.stringify(store));
       this.playbackProgress$.next({
         channelId,
-        time: isCompleted ? (duration || time) : time,
-        duration: duration > 0 ? duration : (store[channelId]?.duration || 0),
-        percent: isCompleted ? 100 : (pct > 0 ? pct : (store[channelId]?.percent || 0)),
+        time: finalTime,
+        duration: finalDuration,
+        percent: finalPercent,
       });
+
+      this.syncProgressToWatchHistory(
+        channelId,
+        finalTime,
+        finalDuration,
+        finalPercent,
+        isCompleted,
+      );
 
       if (isCompleted) {
         if (isEpisode) {
@@ -2526,6 +2567,267 @@ export class EmbeddedPlayerService implements OnDestroy {
     } catch (e) {
       console.warn('Failed to save watch progress:', e);
     }
+  }
+
+  private syncProgressToWatchHistory(
+    channelId: number,
+    time: number,
+    duration: number,
+    percent: number,
+    completed: boolean,
+  ): void {
+    if (this.currentMode === 'live') return;
+    if (this.currentChannel?.id === channelId && this.currentChannel.media_type === MediaType.livestream) {
+      return;
+    }
+
+    const now = Date.now();
+    const prev = this.lastDbProgressSync.get(channelId);
+    if (prev) {
+      const completionJustTriggered = completed && !prev.completed;
+      const deltaTime = Math.abs(time - prev.time);
+      const deltaDur = Math.abs(duration - prev.duration);
+      const elapsed = now - prev.syncedAt;
+      if (
+        !completionJustTriggered &&
+        deltaTime < 10 &&
+        deltaDur < 5 &&
+        !(elapsed >= 15000 && deltaTime >= 2)
+      ) {
+        return;
+      }
+    }
+
+    this.lastDbProgressSync.set(channelId, {
+      time,
+      duration,
+      completed,
+      syncedAt: now,
+    });
+
+    const targetCh = this.currentChannel?.id === channelId ? this.currentChannel : undefined;
+    const tmdbId = targetCh
+      ? this.tmdbEnrichment.getEnrichmentSync(targetCh)?.tmdbId
+      : undefined;
+
+    void invoke('upsert_watch_progress', {
+      payload: {
+        channel_id: channelId,
+        position_sec: Number.isFinite(time) && time >= 0 ? time : 0,
+        duration_sec: Number.isFinite(duration) && duration > 0 ? duration : 0,
+        progress_percent: Number.isFinite(percent) ? percent : 0,
+        completed,
+        tmdb_id: tmdbId ?? null,
+      },
+    }).catch((err) => {
+      if (!this.dbProgressErrorLogged.has(channelId)) {
+        this.dbProgressErrorLogged.add(channelId);
+        console.warn('watch_history dual-write failed:', err);
+      }
+    });
+  }
+
+  public scheduleLegacyWatchHistoryMigration(): void {
+    if (typeof localStorage === 'undefined') return;
+    if (localStorage.getItem('lh_watch_history_migrated_v1') === '1') return;
+    if (this.legacyMigrationTimer || this.legacyMigrationPromise) return;
+
+    this.legacyMigrationTimer = setTimeout(() => {
+      this.legacyMigrationTimer = null;
+      void this.runLegacyWatchHistoryMigrationIfNeeded();
+    }, 1500);
+  }
+
+  public async runLegacyWatchHistoryMigrationIfNeeded(): Promise<void> {
+    if (typeof localStorage === 'undefined') return;
+    if (localStorage.getItem('lh_watch_history_migrated_v1') === '1') return;
+    if (this.legacyMigrationPromise) return this.legacyMigrationPromise;
+
+    this.legacyMigrationPromise = (async () => {
+      try {
+        const entries = this.collectLegacyWatchProgressEntries();
+        if (entries.length > 0) {
+          await invoke<number>('migrate_legacy_watch_progress', { entries });
+        }
+        localStorage.setItem('lh_watch_history_migrated_v1', '1');
+      } catch (err) {
+        console.warn('Legacy watch_history migration deferred (will retry):', err);
+      } finally {
+        this.legacyMigrationPromise = null;
+      }
+    })();
+
+    return this.legacyMigrationPromise;
+  }
+
+  public collectLegacyWatchProgressEntries(): Array<{
+    channel_id: number;
+    position_sec: number;
+    duration_sec: number;
+    progress_percent?: number;
+    completed?: boolean;
+    tmdb_id?: number;
+    updated_at?: number;
+    next_ep_channel_id?: number;
+    next_ep_stream_id?: number;
+    next_ep_season_number?: number;
+    next_ep_episode_number?: number;
+    fallback_name?: string;
+    fallback_series_id?: number;
+    fallback_is_episode?: boolean;
+  }> {
+    const byId = new Map<
+      number,
+      {
+        channel_id: number;
+        position_sec: number;
+        duration_sec: number;
+        progress_percent?: number;
+        completed?: boolean;
+        tmdb_id?: number;
+        updated_at?: number;
+        next_ep_channel_id?: number;
+        next_ep_stream_id?: number;
+        next_ep_season_number?: number;
+        next_ep_episode_number?: number;
+        fallback_name?: string;
+        fallback_series_id?: number;
+        fallback_is_episode?: boolean;
+      }
+    >();
+
+    const toUnixSec = (raw: unknown): number | undefined => {
+      const n = Number(raw);
+      if (!Number.isFinite(n) || n <= 0) return undefined;
+      return n > 1e11 ? Math.floor(n / 1000) : Math.floor(n);
+    };
+
+    const getOrCreate = (id: number) => {
+      let existing = byId.get(id);
+      if (!existing) {
+        existing = { channel_id: id, position_sec: 0, duration_sec: 0 };
+        byId.set(id, existing);
+      }
+      return existing;
+    };
+
+    // 1. fred_tv_watch_progress
+    try {
+      const raw = localStorage.getItem('fred_tv_watch_progress');
+      if (raw) {
+        const parsed = JSON.parse(raw);
+        if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
+          for (const [k, val] of Object.entries(parsed)) {
+            const id = Number(k);
+            if (!Number.isInteger(id) || id <= 0) continue;
+            if (typeof val === 'number') {
+              if (Number.isFinite(val) && val > 0) {
+                const entry = getOrCreate(id);
+                entry.position_sec = Math.max(entry.position_sec, val);
+              }
+            } else if (val && typeof val === 'object') {
+              const obj = val as any;
+              const t = Number(obj.time);
+              const d = Number(obj.duration);
+              const p = Number(obj.percent);
+              const entry = getOrCreate(id);
+              if (Number.isFinite(t) && t > 0) entry.position_sec = Math.max(entry.position_sec, t);
+              if (Number.isFinite(d) && d > 0) entry.duration_sec = Math.max(entry.duration_sec, d);
+              if (Number.isFinite(p) && p > 0) {
+                entry.progress_percent = Math.max(entry.progress_percent || 0, Math.min(100, p));
+              }
+              if (obj.completed === true) entry.completed = true;
+              const ts = toUnixSec(obj.updatedAt);
+              if (ts) entry.updated_at = Math.max(entry.updated_at || 0, ts);
+            }
+          }
+        }
+      }
+    } catch {}
+
+    // 2. Individual playback_pos_*, playback_dur_*, watch_progress_*, and fred_tv_series_next_ep_*
+    try {
+      const keys: string[] = [];
+      for (let i = 0; i < localStorage.length; i++) {
+        const key = localStorage.key(i);
+        if (key) keys.push(key);
+      }
+
+      for (const key of keys) {
+        if (key.startsWith('playback_pos_')) {
+          const id = Number(key.slice('playback_pos_'.length));
+          const pos = Number(localStorage.getItem(key));
+          if (Number.isInteger(id) && id > 0 && Number.isFinite(pos) && pos > 0) {
+            const entry = getOrCreate(id);
+            entry.position_sec = Math.max(entry.position_sec, pos);
+          }
+        } else if (key.startsWith('playback_dur_')) {
+          const id = Number(key.slice('playback_dur_'.length));
+          const dur = Number(localStorage.getItem(key));
+          if (Number.isInteger(id) && id > 0 && Number.isFinite(dur) && dur > 0) {
+            const entry = getOrCreate(id);
+            entry.duration_sec = Math.max(entry.duration_sec, dur);
+          }
+        } else if (key.startsWith('watch_progress_')) {
+          const id = Number(key.slice('watch_progress_'.length));
+          const pct = Number(localStorage.getItem(key));
+          if (Number.isInteger(id) && id > 0 && Number.isFinite(pct) && pct > 0) {
+            const entry = getOrCreate(id);
+            entry.progress_percent = Math.max(entry.progress_percent || 0, Math.min(100, pct));
+            if (pct >= 95) entry.completed = true;
+          }
+        } else if (key.startsWith('fred_tv_series_next_ep_')) {
+          try {
+            const raw = localStorage.getItem(key);
+            if (!raw) continue;
+            const data = JSON.parse(raw);
+            const fromId = Number(data?.fromEpisodeId);
+            if (!Number.isInteger(fromId) || fromId <= 0) continue;
+
+            const entry = getOrCreate(fromId);
+            entry.fallback_is_episode = true;
+            if (data?.completed === true) entry.completed = true;
+            const ts = toUnixSec(data?.updatedAt);
+            if (ts) entry.updated_at = Math.max(entry.updated_at || 0, ts);
+
+            const nextEp = data?.nextEpisode as any;
+            if (nextEp && typeof nextEp === 'object') {
+              const nextId = Number(nextEp.id);
+              if (Number.isInteger(nextId) && nextId > 0) entry.next_ep_channel_id = nextId;
+              const nextStreamId = Number(nextEp.stream_id);
+              if (Number.isInteger(nextStreamId) && nextStreamId > 0) {
+                entry.next_ep_stream_id = nextStreamId;
+              }
+              const sNum = nextEp.seasonNum ?? this.extractSeasonNumber(nextEp);
+              if (Number.isInteger(sNum) && sNum > 0) entry.next_ep_season_number = sNum;
+              const eNum = nextEp.episode_num ?? this.extractEpisodeNumber(nextEp.name, 0);
+              if (Number.isInteger(eNum) && eNum > 0) entry.next_ep_episode_number = eNum;
+              if (nextEp.series_id != null) {
+                const serId = Number(nextEp.series_id);
+                if (Number.isInteger(serId) && serId > 0) entry.fallback_series_id = serId;
+              }
+            }
+          } catch {}
+        }
+      }
+    } catch {}
+
+    // Attach cached TMDB IDs where available and filter out empty entries
+    const result = [];
+    for (const entry of byId.values()) {
+      const hasProgress =
+        entry.position_sec > 0 ||
+        (entry.progress_percent || 0) > 0 ||
+        entry.completed === true ||
+        entry.next_ep_channel_id != null;
+      if (!hasProgress) continue;
+
+      const tmdbId = this.tmdbEnrichment.getEnrichmentSync({ id: entry.channel_id } as Channel)?.tmdbId;
+      if (tmdbId) entry.tmdb_id = tmdbId;
+      result.push(entry);
+    }
+
+    return result;
   }
 
   public resolveVideoCanvasId(preferredCanvasId?: string): string {

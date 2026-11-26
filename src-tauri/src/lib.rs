@@ -8,7 +8,8 @@ use tauri::{AppHandle, Emitter, Manager, State};
 use tokio::sync::Mutex;
 use types::{
     AppState, Channel, CustomChannel, CustomChannelExtraData, EPG, EPGNotify, Filters, Group,
-    IdName, NetworkInfo, Settings, Source, SourceContentCounts,
+    IdName, LegacyWatchProgressEntry, NetworkInfo, Settings, Source, SourceContentCounts,
+    WatchProgressUpsert,
 };
 
 pub mod auto_refresh;
@@ -100,6 +101,8 @@ pub fn run() {
             get_network_info,
             share_restream,
             add_last_watched,
+            upsert_watch_progress,
+            migrate_legacy_watch_progress,
             backup_favs,
             restore_favs,
             clear_history,
@@ -629,6 +632,16 @@ fn share_restream(address: String, channel: Channel, path: String) -> Result<(),
 #[tauri::command(async)]
 fn add_last_watched(id: i64) -> Result<(), String> {
     sql::add_last_watched(id).map_err(map_err_frontend)
+}
+
+#[tauri::command(async)]
+fn upsert_watch_progress(payload: WatchProgressUpsert) -> Result<(), String> {
+    sql::upsert_watch_progress(payload).map_err(map_err_frontend)
+}
+
+#[tauri::command(async)]
+fn migrate_legacy_watch_progress(entries: Vec<LegacyWatchProgressEntry>) -> Result<usize, String> {
+    sql::migrate_legacy_watch_progress(entries).map_err(map_err_frontend)
 }
 
 #[tauri::command(async)]

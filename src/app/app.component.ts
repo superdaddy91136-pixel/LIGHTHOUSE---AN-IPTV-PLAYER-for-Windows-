@@ -1,17 +1,18 @@
-import { Component, HostListener } from "@angular/core";
+import { Component, HostListener, OnInit } from "@angular/core";
 import { Router, NavigationEnd } from "@angular/router";
 import { filter } from "rxjs/operators";
 import { MemoryService } from "./memory.service";
 import { AmbientBackgroundService } from "./services/ambient-background.service";
 import { SplashScreenService } from "./services/splash-screen.service";
 import { AppPreferencesService } from "./services/app-preferences.service";
+import { EmbeddedPlayerService } from "./services/embedded-player.service";
 
 @Component({
   selector: "app-root",
   templateUrl: "./app.component.html",
   styleUrl: "./app.component.css",
 })
-export class AppComponent {
+export class AppComponent implements OnInit {
   title = "open-tv";
   unlockPinInput = "";
   unlockPinError = "";
@@ -23,6 +24,7 @@ export class AppComponent {
     private ambientBackground: AmbientBackgroundService,
     public splashScreen: SplashScreenService,
     public appPreferences: AppPreferencesService,
+    private embeddedPlayer: EmbeddedPlayerService,
   ) {
     this.router.events
       .pipe(filter((e): e is NavigationEnd => e instanceof NavigationEnd))
@@ -33,6 +35,10 @@ export class AppComponent {
           this.splashScreen.dismiss('route-' + url);
         }
       });
+  }
+
+  ngOnInit(): void {
+    this.embeddedPlayer.scheduleLegacyWatchHistoryMigration();
   }
 
   @HostListener("document:contextmenu", ["$event"])
