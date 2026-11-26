@@ -2866,6 +2866,7 @@ export class HomeComponent implements AfterViewInit, OnDestroy {
         preventDefault: true,
         allowIn: [AllowIn.Input],
         command: async (_) => {
+          if (this.isHomeDiscoveryMode) return;
           this.chkLiveStream = !this.chkLiveStream;
           this.updateMediaTypes(MediaType.livestream);
         },
@@ -2877,6 +2878,7 @@ export class HomeComponent implements AfterViewInit, OnDestroy {
         preventDefault: true,
         allowIn: [AllowIn.Input],
         command: async (_) => {
+          if (this.isHomeDiscoveryMode) return;
           this.chkMovie = !this.chkMovie;
           this.updateMediaTypes(MediaType.movie);
         },
@@ -2888,6 +2890,7 @@ export class HomeComponent implements AfterViewInit, OnDestroy {
         preventDefault: true,
         allowIn: [AllowIn.Input],
         command: async (_) => {
+          if (this.isHomeDiscoveryMode) return;
           this.chkSerie = !this.chkSerie;
           this.updateMediaTypes(MediaType.serie);
         },
@@ -3051,6 +3054,7 @@ export class HomeComponent implements AfterViewInit, OnDestroy {
   }
 
   updateMediaTypes(mediaType: MediaType) {
+    if (this.isHomeDiscoveryMode) return;
     let index = this.filters!.media_types.indexOf(mediaType);
     if (index == -1) this.filters!.media_types.push(mediaType);
     else this.filters!.media_types.splice(index, 1);
@@ -3063,6 +3067,7 @@ export class HomeComponent implements AfterViewInit, OnDestroy {
   }
 
   async switchMode(viewMode: ViewMode) {
+    if (this.isHomeDiscoveryMode) return;
     if (viewMode == this.filters?.view_type && !this.filters?.group_id && !this.filters?.series_id) return;
     const wasInFolder = !!this.filters?.group_id;
     const currentTab = this.memory.activeNavTab.value;
@@ -3306,7 +3311,7 @@ export class HomeComponent implements AfterViewInit, OnDestroy {
   }
 
   async nav(key: string) {
-    if (this.searchFocused()) return;
+    if (this.isHomeDiscoveryMode || this.searchFocused()) return;
     let lowSize = this.currentWindowSize < 768;
     if (this.memory.currentContextMenu?.menuOpen || this.memory.ModalRef) {
       return;
@@ -3395,11 +3400,11 @@ export class HomeComponent implements AfterViewInit, OnDestroy {
       this.goBackHotkey();
       event.preventDefault();
     }
-    if (event.key == "Tab" && !this.memory.ModalRef) {
+    if (event.key == "Tab" && !this.memory.ModalRef && !this.isHomeDiscoveryMode) {
       event.preventDefault();
       this.nav(event.shiftKey ? "ShiftTab" : "Tab");
     }
-    if (event.key == "Enter" && this.focusArea == FocusArea.Filters)
+    if (event.key == "Enter" && this.focusArea == FocusArea.Filters && !this.isHomeDiscoveryMode)
       (document.activeElement as any).click();
   }
 
