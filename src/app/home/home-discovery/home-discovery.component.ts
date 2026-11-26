@@ -171,6 +171,13 @@ export class HomeDiscoveryComponent implements OnInit, AfterViewInit, OnDestroy 
   private transitionResetTimeout?: any;
   private preloadedImages = new Set<HTMLImageElement>();
   private preloadedImageUrls = new Set<string>();
+  private isWindowFocused: boolean =
+    typeof document === 'undefined' || typeof document.hasFocus !== 'function' ? true : document.hasFocus();
+  private pendingAmbientUpdate: boolean = false;
+  private pendingHeroPreload: boolean = false;
+  private visibilityChangeHandler?: () => void;
+  private windowBlurHandler?: () => void;
+  private windowFocusHandler?: () => void;
   private cachedPaginationKey = '';
   private cachedPaginationIndicators: { targetIndex: number; isActive: boolean }[] = [];
 
@@ -684,6 +691,7 @@ export class HomeDiscoveryComponent implements OnInit, AfterViewInit, OnDestroy 
       }),
     );
 
+    this.attachActivityListeners();
     this.startHeroTimer();
   }
 
@@ -783,6 +791,7 @@ export class HomeDiscoveryComponent implements OnInit, AfterViewInit, OnDestroy 
     this.rafScrollChecks.clear();
     this.preloadedImageUrls.clear();
     this.preloadedImages.clear();
+    this.detachActivityListeners();
     this.discoveryState.persistSnapshot();
     this.subs.forEach((s) => s.unsubscribe());
     this.splashScreen.dismiss('destroyed');
@@ -814,9 +823,11 @@ export class HomeDiscoveryComponent implements OnInit, AfterViewInit, OnDestroy 
       this.heroTimer = undefined;
     }
     if (isPause) {
-      const elapsed = Date.now() - this.heroTimerStartTime;
-      this.heroRemainingMs = Math.max(0, this.heroRemainingMs - elapsed);
-      this.isHeroTimerPaused = true;
+      if (!this.isHeroTimerPaused && this.heroTimerStartTime > 0) {
+        const elapsed = Date.now() - this.heroTimerStartTime;
+        this.heroRemainingMs = Math.max(0, this.heroRemainingMs - elapsed);
+        this.isHeroTimerPaused = true;
+      }
     } else {
       this.heroRemainingMs = BANNER_ROTATE_MS;
       this.isHeroTimerPaused = false;
@@ -861,13 +872,69 @@ export class HomeDiscoveryComponent implements OnInit, AfterViewInit, OnDestroy 
     this.updateHeroTimer();
   }
 
-  @HostListener('document:visibilitychange')
-  onDocumentVisibilityChange(): void {
+  private attachActivityListeners(): void {
+    if (typeof document !== 'undefined' && !this.visibilityChangeHandler) {
+      this.visibilityChangeHandler = () => this.onActivityStateChange();
+      document.addEventListener('visibilitychange', this.visibilityChangeHandler);
+    }
+    if (typeof window !== 'undefined') {
+      if (!this.windowBlurHandler) {
+        this.windowBlurHandler = () => {
+          this.isWindowFocused = false;
+          this.onActivityStateChange();
+        };
+        window.addEventListener('blur', this.windowBlurHandler);
+      }
+      if (!this.windowFocusHandler) {
+        this.windowFocusHandler = () => {
+          this.isWindowFocused = true;
+          this.onActivityStateChange();
+        };
+        window.addEventListener('focus', this.windowFocusHandler);
+      }
+    }
+  }
+
+  private detachActivityListeners(): void {
+    if (typeof document !== 'undefined' && this.visibilityChangeHandler) {
+      document.removeEventListener('visibilitychange', this.visibilityChangeHandler);
+      this.visibilityChangeHandler = undefined;
+    }
+    if (typeof window !== 'undefined') {
+      if (this.windowBlurHandler) {
+        window.removeEventListener('blur', this.windowBlurHandler);
+        this.windowBlurHandler = undefined;
+      }
+      if (this.windowFocusHandler) {
+        window.removeEventListener('focus', this.windowFocusHandler);
+        this.windowFocusHandler = undefined;
+      }
+    }
+  }
+
+  private isPageInactive(): boolean {
+    return (
+      this.isDestroyed ||
+      (typeof document !== 'undefined' && (document.visibilityState === 'hidden' || document.hidden)) ||
+      !this.isWindowFocused
+    );
+  }
+
+  private onActivityStateChange(): void {
+    if (this.isDestroyed) return;
     this.updateHeroTimer();
+    if (!this.isPageInactive()) {
+      if (this.pendingAmbientUpdate) {
+        this.updateAmbientBackground();
+      }
+      if (this.pendingHeroPreload) {
+        this.preloadVisibleHeroImages();
+      }
+    }
   }
 
   private shouldPauseHeroTimer(): boolean {
-    return this.isDestroyed || document.hidden || this.isHeroHovered || this.isHeroFocused || this.isHeroDragging;
+    return this.isPageInactive() || this.isHeroHovered || this.isHeroFocused || this.isHeroDragging;
   }
 
   private updateHeroTimer(): void {
@@ -879,7 +946,7 @@ export class HomeDiscoveryComponent implements OnInit, AfterViewInit, OnDestroy 
   }
 
   private preloadImage(url?: string): void {
-    if (!url || typeof Image === "undefined") return;
+    if (!url || typeof Image === "undefined" || this.isPageInactive()) return;
     if (this.preloadedImageUrls.has(url)) return;
     this.preloadedImageUrls.add(url);
 
@@ -897,6 +964,11 @@ export class HomeDiscoveryComponent implements OnInit, AfterViewInit, OnDestroy 
 
   private preloadVisibleHeroImages(): void {
     if (this.heroItems.length === 0) return;
+    if (this.isPageInactive()) {
+      this.pendingHeroPreload = true;
+      return;
+    }
+    this.pendingHeroPreload = false;
     const len = this.heroItems.length;
 
     // Window: 1 currently displayed (k=0) + 5 upcoming candidates (k=1..5)
@@ -959,6 +1031,11 @@ export class HomeDiscoveryComponent implements OnInit, AfterViewInit, OnDestroy 
   }
 
   public updateAmbientBackground(): void {
+    if (this.isPageInactive()) {
+      this.pendingAmbientUpdate = true;
+      return;
+    }
+    this.pendingAmbientUpdate = false;
     const hero = this.currentHero;
     if (hero && hero.imageUrl && !this.isImageBroken(hero.channel?.id)) {
       this.ambientBackground.setArtwork(hero.imageUrl, 'home-hero');
