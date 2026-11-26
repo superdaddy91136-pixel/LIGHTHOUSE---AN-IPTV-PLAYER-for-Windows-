@@ -1,9 +1,15 @@
-import { Injectable } from '@angular/core';
+import { Injectable, NgZone, OnDestroy } from '@angular/core';
+import { listen, UnlistenFn } from '@tauri-apps/api/event';
 import { Subject } from 'rxjs';
 import { Channel } from '../models/channel';
 import { DiscoveryRow, HeroItem } from '../models/discovery';
 
 export type DiscoveryPipelineStatus = 'idle' | 'loading' | 'success' | 'refreshing' | 'error';
+
+export interface DiscoverySourceInvalidation {
+  type: 'refreshed' | 'deleted';
+  sourceId?: number;
+}
 
 export interface HomeDiscoverySnapshot {
   recommendationSource: 'tmdb';
@@ -24,6 +30,12 @@ export class HomeDiscoveryStateService {
   /** Emits whenever new discovery rows or hero items are successfully updated/refreshed */
   public discoveryUpdated$ = new Subject<HomeDiscoverySnapshot>();
 
+  /** Emits whenever underlying source catalogs are refreshed or deleted */
+  public sourceDataInvalidated$ = new Subject<DiscoverySourceInvalidation>();
+
+  private unlistenSourceRefreshComplete?: UnlistenFn;
+  private unlistenSourceDeleted?: UnlistenFn;
+
   /** Five-minute freshness TTL for the Home discovery snapshot. */
   public readonly CACHE_TTL_MS = 5 * 60 * 1000;
 
@@ -41,8 +53,44 @@ export class HomeDiscoveryStateService {
   private currentRunId: number = 0;
   private lastSourceKey: string = '';
 
-  constructor() {
+  constructor(private ngZone: NgZone) {
     this.hydrateFromStorage();
+    this.setupSourceEventListeners();
+  }
+
+  ngOnDestroy(): void {
+    this.unlistenSourceRefreshComplete?.();
+    this.unlistenSourceDeleted?.();
+  }
+
+  private setupSourceEventListeners(): void {
+    try {
+      listen<number>('source-refresh-complete', (event) => {
+        this.ngZone.run(() => {
+          this.clearCache();
+          this.sourceDataInvalidated$.next({
+            type: 'refreshed',
+            sourceId: event.payload ?? undefined,
+          });
+        });
+      }).then((unlisten) => {
+        this.unlistenSourceRefreshComplete = unlisten;
+      }).catch(() => {});
+
+      listen<number>('source-deleted', (event) => {
+        this.ngZone.run(() => {
+          this.clearCache();
+          this.sourceDataInvalidated$.next({
+            type: 'deleted',
+            sourceId: event.payload ?? undefined,
+          });
+        });
+      }).then((unlisten) => {
+        this.unlistenSourceDeleted = unlisten;
+      }).catch(() => {});
+    } catch {
+      // Ignore outside Tauri runtime (e.g. unit tests)
+    }
   }
 
   private hydrateFromStorage(): void {

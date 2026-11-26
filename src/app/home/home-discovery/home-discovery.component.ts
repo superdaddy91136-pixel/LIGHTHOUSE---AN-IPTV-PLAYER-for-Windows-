@@ -554,6 +554,37 @@ export class HomeDiscoveryComponent implements OnInit, AfterViewInit, OnDestroy 
       }),
     );
 
+    this.subs.push(
+      this.discoveryState.sourceDataInvalidated$.subscribe((event) => {
+        if (this.isDestroyed) return;
+        if (event.type === 'deleted' && event.sourceId != null) {
+          this.memory.Sources.delete(event.sourceId);
+        }
+        this.catalogPoolById.clear();
+        this.catalogPoolByNormTitle.clear();
+        this.catalogPoolByExactClean.clear();
+        this.negativeCatalogMatchKeys.clear();
+        this.inFlightCatalogMatches.clear();
+        if (event.type === 'deleted') {
+          this.stopHeroTimer(false);
+          this.heroItems = [];
+          this.masterHeroItems = [];
+          this.masterDiscoveryRows = [];
+          this.discoveryRows = [];
+          this.allRecommended = [];
+          this.allLoadedMovies = [];
+          this.allLoadedSeries = [];
+          this.loadedSeries = [];
+          this.seriesNameMap.clear();
+          this.seriesLookupMap.clear();
+          this.groupsMap.clear();
+          this.hasAnyContent = false;
+          this.cdr.markForCheck();
+        }
+        this.loadDiscovery(true);
+      }),
+    );
+
     // Subscribe to immediate cross-component favorites synchronization
     this.subs.push(
       this.favoritesService.favoriteChanged$.subscribe((event) => {
@@ -1207,6 +1238,7 @@ export class HomeDiscoveryComponent implements OnInit, AfterViewInit, OnDestroy 
       if (enabledSourceIds.length === 0) {
         this.loading = false;
         this.hasAnyContent = false;
+        this.cdr.markForCheck();
         this.splashScreen.dismiss('no-sources');
         return;
       }

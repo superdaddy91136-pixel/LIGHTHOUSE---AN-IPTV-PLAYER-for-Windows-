@@ -2254,7 +2254,9 @@ export class HomeComponent implements AfterViewInit, OnDestroy {
     this.subscriptions.push(
       this.memory.Refresh.subscribe((scroll) => {
         this.memory.clearCatalogPageCache();
-        this.load();
+        if (!this.isHomeDiscoveryMode) {
+          this.load();
+        }
         if(scroll)
           window.scrollTo({ top: 0, behavior: "instant" });
       }),
