@@ -2879,6 +2879,392 @@ fn add_last_watched_on_conn(sql: &rusqlite::Connection, id: i64) -> Result<()> {
     Ok(())
 }
 
+struct DetachedWatchHistoryRow {
+    id: i64,
+    source_fingerprint: String,
+    source_host: Option<String>,
+    source_username: Option<String>,
+    media_type: u8,
+    is_episode: bool,
+    provider_stream_id: Option<i64>,
+    provider_series_id: Option<i64>,
+    season_number: Option<i64>,
+    episode_number: Option<i64>,
+    stream_url_path: Option<String>,
+    stream_url: Option<String>,
+    channel_name: String,
+    normalized_title: String,
+    show_title: Option<String>,
+    normalized_show_title: Option<String>,
+    release_year: Option<i64>,
+    last_watched: i64,
+}
+
+#[derive(Clone)]
+struct RelinkCandidate {
+    id: i64,
+    name: String,
+    url: Option<String>,
+    stream_id: Option<i64>,
+}
+
+fn pick_unique_relink_candidate(
+    candidates: Vec<RelinkCandidate>,
+    exact_name: &str,
+) -> Option<i64> {
+    if candidates.is_empty() {
+        return None;
+    }
+    if candidates.len() == 1 {
+        return Some(candidates[0].id);
+    }
+    let exact: Vec<&RelinkCandidate> = candidates
+        .iter()
+        .filter(|c| c.name == exact_name)
+        .collect();
+    if exact.len() == 1 {
+        Some(exact[0].id)
+    } else {
+        None
+    }
+}
+
+fn filter_candidates_by_year(
+    candidates: Vec<RelinkCandidate>,
+    expected_year: Option<i64>,
+) -> Vec<RelinkCandidate> {
+    if candidates.is_empty() {
+        return candidates;
+    }
+    if candidates.len() > 1
+        && (expected_year.is_none()
+            || candidates
+                .iter()
+                .any(|c| extract_release_year(&c.name).is_none()))
+    {
+        return Vec::new();
+    }
+    candidates
+        .into_iter()
+        .filter(|c| match (expected_year, extract_release_year(&c.name)) {
+            (Some(y1), Some(y2)) => y1 == y2,
+            _ => true,
+        })
+        .collect()
+}
+
+fn query_relink_candidates(
+    conn: &rusqlite::Connection,
+    sql: &str,
+    params: Vec<&dyn rusqlite::ToSql>,
+) -> Result<Vec<RelinkCandidate>> {
+    let mut stmt = conn.prepare(sql)?;
+    let rows = stmt.query_map(params_from_iter(params), |row| {
+        Ok(RelinkCandidate {
+            id: row.get("id")?,
+            name: row.get::<_, Option<String>>("name")?.unwrap_or_default(),
+            url: row.get("url")?,
+            stream_id: row.get("stream_id")?,
+        })
+    })?;
+    Ok(rows.filter_map(Result::ok).collect())
+}
+
+fn find_relink_channel_id(
+    conn: &rusqlite::Connection,
+    source_id: i64,
+    wh: &DetachedWatchHistoryRow,
+    same_fingerprint: bool,
+) -> Result<Option<i64>> {
+    // Tier 1: provider stream_id (movies) or (series_id, season_number, episode_number) (episodes)
+    if !wh.is_episode {
+        if let Some(sid) = wh.provider_stream_id {
+            let mut cands = query_relink_candidates(
+                conn,
+                "SELECT id, name, url, stream_id FROM channels WHERE source_id = ?1 AND media_type = ?2 AND series_id IS NULL AND stream_id = ?3",
+                vec![&source_id, &wh.media_type, &sid],
+            )?;
+            if !same_fingerprint {
+                cands.retain(|c| normalize_text_key(&c.name) == wh.normalized_title);
+            }
+            if let Some(matched) = pick_unique_relink_candidate(cands, &wh.channel_name) {
+                return Ok(Some(matched));
+            }
+        }
+    } else {
+        if let Some(ser_id) = wh.provider_series_id {
+            if wh.season_number.is_some() || wh.episode_number.is_some() {
+                let mut cands = query_relink_candidates(
+                    conn,
+                    "SELECT c.id, c.name, c.url, c.stream_id FROM channels c LEFT JOIN seasons sn ON sn.id = c.season_id WHERE c.source_id = ?1 AND c.series_id = ?2 AND sn.season_number IS ?3 AND c.episode_num IS ?4",
+                    vec![&source_id, &ser_id, &wh.season_number, &wh.episode_number],
+                )?;
+                if !same_fingerprint {
+                    cands.retain(|c| normalize_text_key(&c.name) == wh.normalized_title);
+                }
+                if let Some(matched) = pick_unique_relink_candidate(cands, &wh.channel_name) {
+                    return Ok(Some(matched));
+                }
+            }
+        }
+        if let Some(sid) = wh.provider_stream_id {
+            let mut cands = query_relink_candidates(
+                conn,
+                "SELECT id, name, url, stream_id FROM channels WHERE source_id = ?1 AND stream_id = ?2 AND (series_id IS NOT NULL OR season_id IS NOT NULL OR episode_num IS NOT NULL)",
+                vec![&source_id, &sid],
+            )?;
+            if !same_fingerprint {
+                cands.retain(|c| normalize_text_key(&c.name) == wh.normalized_title);
+            }
+            if let Some(matched) = pick_unique_relink_candidate(cands, &wh.channel_name) {
+                return Ok(Some(matched));
+            }
+        }
+    }
+
+    // Tier 2: exact stream_url or normalized stream_url_path within source
+    if let Some(ref raw_url) = wh.stream_url {
+        let cands = query_relink_candidates(
+            conn,
+            "SELECT id, name, url, stream_id FROM channels WHERE source_id = ?1 AND media_type = ?2 AND url = ?3",
+            vec![&source_id, &wh.media_type, raw_url],
+        )?;
+        if let Some(matched) = pick_unique_relink_candidate(cands, &wh.channel_name) {
+            return Ok(Some(matched));
+        }
+    }
+    if let Some(ref norm_path) = wh.stream_url_path {
+        let base_path = norm_path.split('?').next().unwrap_or(norm_path);
+        if !base_path.is_empty() && base_path != "/" {
+            let mut cands = query_relink_candidates(
+                conn,
+                "SELECT id, name, url, stream_id FROM channels WHERE source_id = ?1 AND media_type = ?2 AND instr(url, ?3) > 0",
+                vec![&source_id, &wh.media_type, &base_path],
+            )?;
+            cands.retain(|c| {
+                normalize_stream_url_path(c.url.as_deref()).as_deref() == Some(norm_path.as_str())
+            });
+            if let Some(matched) = pick_unique_relink_candidate(cands, &wh.channel_name) {
+                return Ok(Some(matched));
+            }
+        }
+    }
+
+    // Tier 4: normalized_title + release_year (or show_title + season + episode for TV)
+    if !wh.is_episode {
+        let cands = query_relink_candidates(
+            conn,
+            "SELECT id, name, url, stream_id FROM channels WHERE source_id = ?1 AND media_type = ?2 AND series_id IS NULL AND LOWER(TRIM(name)) = ?3",
+            vec![&source_id, &wh.media_type, &wh.normalized_title],
+        )?;
+        let year_filtered = filter_candidates_by_year(cands, wh.release_year);
+        if let Some(matched) = pick_unique_relink_candidate(year_filtered, &wh.channel_name) {
+            return Ok(Some(matched));
+        }
+    } else if let Some(ref norm_show) = wh.normalized_show_title {
+        if wh.season_number.is_some() || wh.episode_number.is_some() {
+            let series_cands = query_relink_candidates(
+                conn,
+                "SELECT id, name, url, stream_id FROM channels WHERE source_id = ?1 AND media_type = 2 AND series_id IS NULL AND LOWER(TRIM(name)) = ?2",
+                vec![&source_id, norm_show],
+            )?;
+            let year_filtered_series = filter_candidates_by_year(series_cands, wh.release_year);
+            let show_exact_name = wh.show_title.as_deref().unwrap_or("");
+            let matched_series_id = if year_filtered_series.len() == 1 {
+                Some(&year_filtered_series[0])
+            } else if year_filtered_series.len() > 1 && !show_exact_name.is_empty() {
+                let exact: Vec<&RelinkCandidate> = year_filtered_series
+                    .iter()
+                    .filter(|s| s.name == show_exact_name)
+                    .collect();
+                (exact.len() == 1).then_some(exact[0])
+            } else {
+                None
+            };
+            if let Some(parent) = matched_series_id {
+                let series_id_val = parent.stream_id.or_else(|| {
+                    parent
+                        .url
+                        .as_deref()
+                        .and_then(|u| u.trim().parse::<i64>().ok())
+                });
+                if let Some(ser_id) = series_id_val {
+                    let ep_cands = query_relink_candidates(
+                        conn,
+                        "SELECT c.id, c.name, c.url, c.stream_id FROM channels c LEFT JOIN seasons sn ON sn.id = c.season_id WHERE c.source_id = ?1 AND c.series_id = ?2 AND sn.season_number IS ?3 AND c.episode_num IS ?4",
+                        vec![&source_id, &ser_id, &wh.season_number, &wh.episode_number],
+                    )?;
+                    if let Some(matched) = pick_unique_relink_candidate(ep_cands, &wh.channel_name) {
+                        return Ok(Some(matched));
+                    }
+                }
+            }
+        }
+    }
+
+    Ok(None)
+}
+
+pub fn relink_watch_history_for_source(source_id: i64) -> Result<usize> {
+    let mut sql = get_conn()?;
+    relink_watch_history_on_conn(&mut sql, source_id)
+}
+
+fn relink_watch_history_on_conn(
+    conn: &mut rusqlite::Connection,
+    source_id: i64,
+) -> Result<usize> {
+    // Detach any watch_history entries for this source whose channel_id was wiped (e.g. M3U wipe refresh)
+    conn.execute(
+        r#"
+        UPDATE watch_history
+        SET channel_id = NULL,
+            source_missing = 1
+        WHERE source_id = ?1
+          AND (
+            channel_id IS NULL
+            OR NOT EXISTS (SELECT 1 FROM channels c WHERE c.id = watch_history.channel_id)
+          )
+        "#,
+        params![source_id],
+    )?;
+
+    let source: Option<Source> = conn
+        .query_row(
+            "SELECT * FROM sources WHERE id = ?1",
+            params![source_id],
+            row_to_source,
+        )
+        .optional()?;
+    let Some(source) = source else {
+        return Ok(0);
+    };
+    let new_identity = compute_source_identity(&source);
+
+    let detached_rows: Vec<DetachedWatchHistoryRow> = {
+        let mut stmt = conn.prepare(
+            r#"
+            SELECT id, source_fingerprint, source_host, source_username,
+                   media_type, is_episode, provider_stream_id, provider_series_id,
+                   season_number, episode_number, stream_url_path, stream_url,
+                   channel_name, normalized_title, show_title, normalized_show_title,
+                   release_year, last_watched
+            FROM watch_history
+            WHERE (source_missing = 1 OR channel_id IS NULL)
+              AND media_type != 0
+            ORDER BY last_watched DESC
+            "#,
+        )?;
+        let mapped = stmt.query_map([], |row| {
+            Ok(DetachedWatchHistoryRow {
+                id: row.get("id")?,
+                source_fingerprint: row.get("source_fingerprint")?,
+                source_host: row.get("source_host")?,
+                source_username: row.get("source_username")?,
+                media_type: row.get("media_type")?,
+                is_episode: row.get::<_, i64>("is_episode")? != 0,
+                provider_stream_id: row.get("provider_stream_id")?,
+                provider_series_id: row.get("provider_series_id")?,
+                season_number: row.get("season_number")?,
+                episode_number: row.get("episode_number")?,
+                stream_url_path: row.get("stream_url_path")?,
+                stream_url: row.get("stream_url")?,
+                channel_name: row.get("channel_name")?,
+                normalized_title: row.get("normalized_title")?,
+                show_title: row.get("show_title")?,
+                normalized_show_title: row.get("normalized_show_title")?,
+                release_year: row.get("release_year")?,
+                last_watched: row.get("last_watched")?,
+            })
+        })?;
+        mapped.filter_map(Result::ok).collect()
+    };
+
+    if detached_rows.is_empty() {
+        return Ok(0);
+    }
+
+    let mut matches: Vec<(i64, i64, i64)> = Vec::new();
+    for wh in &detached_rows {
+        let same_fingerprint = wh.source_fingerprint == new_identity.source_fingerprint;
+        let same_host = new_identity.source_host.is_some()
+            && wh.source_host == new_identity.source_host;
+        let same_user = new_identity.source_username.is_some()
+            && wh.source_username == new_identity.source_username;
+        if !same_fingerprint && !same_host && !same_user {
+            continue;
+        }
+        if let Some(ch_id) = find_relink_channel_id(conn, source_id, wh, same_fingerprint)? {
+            matches.push((wh.id, ch_id, wh.last_watched));
+        }
+    }
+
+    if matches.is_empty() {
+        return Ok(0);
+    }
+
+    let now = chrono::Utc::now().timestamp();
+    let tx = conn.transaction()?;
+    {
+        let mut update_wh = tx.prepare(
+            r#"
+            UPDATE watch_history
+            SET channel_id = ?1,
+                source_id = ?2,
+                source_missing = 0,
+                source_fingerprint = ?3,
+                source_host = ?4,
+                source_username = ?5,
+                source_name = ?6,
+                updated_at = ?7
+            WHERE id = ?8
+            "#,
+        )?;
+        let mut restamp_ch = tx.prepare(
+            r#"
+            UPDATE channels
+            SET last_watched = CASE
+              WHEN last_watched IS NULL OR last_watched < ?1 THEN ?1
+              ELSE last_watched
+            END
+            WHERE id = ?2
+            "#,
+        )?;
+        for &(wh_id, ch_id, wh_last_watched) in &matches {
+            update_wh.execute(params![
+                ch_id,
+                source_id,
+                new_identity.source_fingerprint,
+                new_identity.source_host,
+                new_identity.source_username,
+                new_identity.source_name,
+                now,
+                wh_id,
+            ])?;
+            restamp_ch.execute(params![wh_last_watched, ch_id])?;
+        }
+    }
+
+    tx.execute(
+        r#"
+        UPDATE channels
+        SET last_watched = NULL
+        WHERE last_watched IS NOT NULL
+          AND id NOT IN (
+            SELECT id
+            FROM channels
+            WHERE last_watched IS NOT NULL
+            ORDER BY last_watched DESC
+            LIMIT 36
+          )
+        "#,
+        params![],
+    )?;
+
+    tx.commit()?;
+    Ok(matches.len())
+}
+
 pub fn clear_history() -> Result<()> {
     let sql = get_conn()?;
     sql.execute(
@@ -3375,6 +3761,205 @@ mod tests {
         assert_eq!(fp, "xtream:http://tv.example.com:8080|user1");
         assert_eq!(host.as_deref(), Some("tv.example.com:8080"));
         assert_eq!(user.as_deref(), Some("user1"));
+    }
+
+    #[test]
+    fn test_relink_same_source_with_rotated_password_and_idempotency() {
+        let mut conn = setup_test_db();
+        conn.execute(
+            "INSERT INTO sources (id, name, source_type, url, username, password, enabled) VALUES (1, 'XtreamOne', 2, 'http://tv.example.com:8080', 'user1', 'old_pass', 1)",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO channels (id, name, url, media_type, source_id, stream_id) VALUES (11, 'Inception (2010)', 'http://tv.example.com:8080/movie/u/old_pass/501.mp4', 1, 1, 501)",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO channels (id, name, url, media_type, source_id, stream_id) VALUES (12, 'Dark (2017)', '700', 2, 1, 700)",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO seasons (id, name, season_number, series_id, source_id) VALUES (100, 'Season 1', 1, 700, 1)",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO channels (id, name, url, media_type, source_id, series_id, season_id, episode_num, stream_id) VALUES (13, 'Secrets', 'http://tv.example.com:8080/series/u/old_pass/901.mp4', 1, 1, 700, 100, 1, 901)",
+            [],
+        )
+        .unwrap();
+
+        add_last_watched_on_conn(&conn, 11).unwrap();
+        add_last_watched_on_conn(&conn, 13).unwrap();
+        let orig_movie_lw: i64 = conn
+            .query_row("SELECT last_watched FROM watch_history WHERE channel_id = 11", [], |r| r.get(0))
+            .unwrap();
+
+        delete_source_on_conn(&mut conn, 1).unwrap();
+
+        // Re-add same Xtream source under new source id=2 with rotated password and different channel ids
+        conn.execute(
+            "INSERT INTO sources (id, name, source_type, url, username, password, enabled) VALUES (2, 'XtreamOne', 2, 'http://tv.example.com:8080', 'user1', 'new_pass', 1)",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO channels (id, name, url, media_type, source_id, stream_id) VALUES (211, 'Inception (2010)', 'http://tv.example.com:8080/movie/u/new_pass/501.mp4', 1, 2, 501)",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO channels (id, name, url, media_type, source_id, stream_id) VALUES (212, 'Dark (2017)', '700', 2, 2, 700)",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO seasons (id, name, season_number, series_id, source_id) VALUES (200, 'Season 1', 1, 700, 2)",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO channels (id, name, url, media_type, source_id, series_id, season_id, episode_num, stream_id) VALUES (213, 'Secrets', 'http://tv.example.com:8080/series/u/new_pass/901.mp4', 1, 2, 700, 200, 1, 901)",
+            [],
+        )
+        .unwrap();
+
+        let relinked = relink_watch_history_on_conn(&mut conn, 2).unwrap();
+        assert_eq!(relinked, 2);
+        // Running relink twice is idempotent
+        assert_eq!(relink_watch_history_on_conn(&mut conn, 2).unwrap(), 0);
+
+        let (m_ch, m_src, m_missing): (Option<i64>, Option<i64>, i64) = conn
+            .query_row(
+                "SELECT channel_id, source_id, source_missing FROM watch_history WHERE provider_stream_id = 501",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+            )
+            .unwrap();
+        assert_eq!(m_ch, Some(211));
+        assert_eq!(m_src, Some(2));
+        assert_eq!(m_missing, 0);
+
+        let restamped_lw: Option<i64> = conn
+            .query_row("SELECT last_watched FROM channels WHERE id = 211", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(restamped_lw, Some(orig_movie_lw));
+
+        let ep_ch: Option<i64> = conn
+            .query_row(
+                "SELECT channel_id FROM watch_history WHERE provider_series_id = 700",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(ep_ch, Some(213));
+    }
+
+    #[test]
+    fn test_relink_skips_ambiguous_duplicates_and_different_providers() {
+        let mut conn = setup_test_db();
+        conn.execute(
+            "INSERT INTO sources (id, name, source_type, url, username, enabled) VALUES (1, 'ProvA', 2, 'http://a.example.com:8080', 'alice', 1)",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO channels (id, name, url, media_type, source_id, stream_id) VALUES (10, 'Dune', 'http://a.example.com:8080/movie/alice/p/10.mp4', 1, 1, 10)",
+            [],
+        )
+        .unwrap();
+        add_last_watched_on_conn(&conn, 10).unwrap();
+        delete_source_on_conn(&mut conn, 1).unwrap();
+
+        // Different provider (different host AND username) with identical stream_id and title must NOT link
+        conn.execute(
+            "INSERT INTO sources (id, name, source_type, url, username, enabled) VALUES (2, 'ProvB', 2, 'http://b.example.com:8080', 'bob', 1)",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO channels (id, name, url, media_type, source_id, stream_id) VALUES (20, 'Dune', 'http://b.example.com:8080/movie/bob/p/10.mp4', 1, 2, 10)",
+            [],
+        )
+        .unwrap();
+        assert_eq!(relink_watch_history_on_conn(&mut conn, 2).unwrap(), 0);
+
+        // Same provider host/user re-added without stream_id, but TWO identical 'Dune' candidates without year -> ambiguous, must stay unlinked
+        conn.execute(
+            "INSERT INTO sources (id, name, source_type, url, username, enabled) VALUES (3, 'ProvA_Readded', 2, 'http://a.example.com:8080', 'alice', 1)",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO channels (id, name, url, media_type, source_id) VALUES (30, 'Dune', 'http://a.example.com:8080/movie/alice/p/new1.mp4', 1, 3)",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO channels (id, name, url, media_type, source_id) VALUES (31, 'Dune', 'http://a.example.com:8080/movie/alice/p/new2.mp4', 1, 3)",
+            [],
+        )
+        .unwrap();
+        assert_eq!(relink_watch_history_on_conn(&mut conn, 3).unwrap(), 0);
+
+        let (ch_id, missing): (Option<i64>, i64) = conn
+            .query_row(
+                "SELECT channel_id, source_missing FROM watch_history",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!(ch_id, None);
+        assert_eq!(missing, 1);
+    }
+
+    #[test]
+    fn test_relink_after_m3u_wipe_refresh_updates_channel_id() {
+        let mut conn = setup_test_db();
+        conn.execute(
+            "INSERT INTO sources (id, name, source_type, url, enabled) VALUES (1, 'M3USrc', 1, 'https://list.example.com/vod.m3u?token=old', 1)",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO channels (id, name, url, media_type, source_id) VALUES (50, 'Arrival (2016)', 'https://cdn.example.com/vod/arrival.mkv?token=old', 1, 1)",
+            [],
+        )
+        .unwrap();
+        add_last_watched_on_conn(&conn, 50).unwrap();
+
+        // Simulate M3U wipe refresh deleting channels and inserting with a brand-new channel id
+        {
+            let tx = conn.transaction().unwrap();
+            wipe(&tx, 1).unwrap();
+            tx.execute(
+                "INSERT INTO channels (id, name, url, media_type, source_id) VALUES (950, 'Arrival (2016)', 'https://cdn.example.com/vod/arrival.mkv?token=new', 1, 1)",
+                [],
+            )
+            .unwrap();
+            tx.commit().unwrap();
+        }
+
+        let relinked = relink_watch_history_on_conn(&mut conn, 1).unwrap();
+        assert_eq!(relinked, 1);
+
+        let (ch_id, missing): (Option<i64>, i64) = conn
+            .query_row(
+                "SELECT channel_id, source_missing FROM watch_history",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!(ch_id, Some(950));
+        assert_eq!(missing, 0);
+
+        let lw: Option<i64> = conn
+            .query_row("SELECT last_watched FROM channels WHERE id = 950", [], |r| r.get(0))
+            .unwrap();
+        assert!(lw.is_some());
     }
 }
 

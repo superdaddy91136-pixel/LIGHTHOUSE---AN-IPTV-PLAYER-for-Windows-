@@ -530,6 +530,13 @@ pub async fn get_xtream(app: Option<&AppHandle>, mut source: Source, wipe: bool)
         }
         tx.commit()?;
 
+        if let Err(e) = sql::relink_watch_history_for_source(effective_source_id) {
+            log::log(format!(
+                "Failed to relink watch_history for Xtream source {effective_source_id}: {:?}",
+                e
+            ));
+        }
+
         if !stage_errors_clone.is_empty() {
             log::log(format!(
                 "Source {effective_source_id} synchronized with partial warnings: {}",

@@ -179,6 +179,12 @@ pub fn read_m3u8(app: Option<&AppHandle>, mut source: Source, wipe: bool) -> Res
         sql::restore_preserve(&tx, source.id.context("no source id")?, channel_preserve)?;
     }
     tx.commit()?;
+    if let Err(e) = sql::relink_watch_history_for_source(processing.source_id) {
+        log::log(format!(
+            "Failed to relink watch_history for M3U source {}: {:?}",
+            processing.source_id, e
+        ));
+    }
     Ok(())
 }
 
