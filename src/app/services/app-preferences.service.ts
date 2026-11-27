@@ -119,6 +119,8 @@ export type ShortcutActionId =
   | 'volumeUp'
   | 'volumeDown'
   | 'toggleMute'
+  | 'speedUp'
+  | 'speedDown'
   | 'toggleFullscreen'
   | 'toggleNerdStats'
   | 'toggleChannelsDrawer'
@@ -141,6 +143,8 @@ export const SHORTCUT_DEFINITIONS: ShortcutDefinition[] = [
   { id: 'volumeUp', label: 'Volume Up', description: 'Increase player volume by 5%', defaultBinding: 'ArrowUp' },
   { id: 'volumeDown', label: 'Volume Down', description: 'Decrease player volume by 5%', defaultBinding: 'ArrowDown' },
   { id: 'toggleMute', label: 'Mute / Unmute', description: 'Toggle audio mute state', defaultBinding: 'KeyM' },
+  { id: 'speedUp', label: 'Increase Playback Speed', description: 'Increase playback speed by 0.25x (Movies & TV)', defaultBinding: 'BracketRight' },
+  { id: 'speedDown', label: 'Decrease Playback Speed', description: 'Decrease playback speed by 0.25x (Movies & TV)', defaultBinding: 'BracketLeft' },
   { id: 'toggleFullscreen', label: 'Fullscreen', description: 'Toggle embedded player fullscreen mode', defaultBinding: 'KeyF' },
   { id: 'toggleNerdStats', label: 'Playback Stats', description: 'Toggle stream diagnostics overlay', defaultBinding: 'KeyI' },
   { id: 'toggleChannelsDrawer', label: 'Channel Switcher', description: 'Open or close Live TV channel drawer', defaultBinding: 'KeyC' },
@@ -317,16 +321,31 @@ export class AppPreferencesService {
 
   public formatBindingLabel(binding: string): string {
     if (!binding) return '';
+    const punctuationLabels: Record<string, string> = {
+      ArrowLeft: 'Left Arrow',
+      ArrowRight: 'Right Arrow',
+      ArrowUp: 'Up Arrow',
+      ArrowDown: 'Down Arrow',
+      BracketLeft: '[',
+      BracketRight: ']',
+      Equal: '=',
+      Minus: '-',
+      Comma: ',',
+      Period: '.',
+      Slash: '/',
+      Backslash: '\\',
+      Semicolon: ';',
+      Quote: "'",
+      Backquote: '`',
+      NumpadAdd: 'Numpad +',
+      NumpadSubtract: 'Numpad -',
+    };
     return binding
       .split('+')
       .map((part) => {
         if (part.startsWith('Key')) return part.slice(3);
         if (part.startsWith('Digit')) return part.slice(5);
-        if (part === 'ArrowLeft') return 'Left Arrow';
-        if (part === 'ArrowRight') return 'Right Arrow';
-        if (part === 'ArrowUp') return 'Up Arrow';
-        if (part === 'ArrowDown') return 'Down Arrow';
-        return part;
+        return punctuationLabels[part] || part;
       })
       .join(' + ');
   }

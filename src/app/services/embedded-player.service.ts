@@ -973,6 +973,24 @@ export class EmbeddedPlayerService implements OnDestroy {
       return;
     }
 
+    if (this.appPreferences.matchesAction(event, 'speedUp')) {
+      if (this.currentMode !== 'live') {
+        emit('player-speed-up').catch(console.warn);
+      }
+      event.preventDefault();
+      event.stopPropagation();
+      return;
+    }
+
+    if (this.appPreferences.matchesAction(event, 'speedDown')) {
+      if (this.currentMode !== 'live') {
+        emit('player-speed-down').catch(console.warn);
+      }
+      event.preventDefault();
+      event.stopPropagation();
+      return;
+    }
+
     if (
       (event.key === '+' || event.key === '=' || event.code === 'NumpadAdd') &&
       !event.ctrlKey &&

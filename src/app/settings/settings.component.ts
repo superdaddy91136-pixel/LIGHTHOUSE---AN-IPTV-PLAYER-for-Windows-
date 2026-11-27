@@ -167,7 +167,7 @@ export class SettingsComponent {
     appearance:
       "appearance accent theme color crimson ocean emerald amber violet player overlay glass blur opacity frosted preview",
     shortcuts:
-      "shortcuts keyboard cheat sheet keybindings rebind play pause seek volume mute fullscreen stats channels next previous recall screenshot",
+      "shortcuts keyboard cheat sheet keybindings rebind play pause seek volume mute speed playback faster slower fullscreen stats channels next previous recall screenshot",
     system:
       "application system integration refresh sources on launch remember window size position clear history on exit startup pin lock security privacy",
     about:
