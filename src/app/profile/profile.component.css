@@ -39,6 +39,13 @@
   display: flex;
   align-items: center;
   justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 12px;
+}
+
+.profile-top-left {
+  display: flex;
+  align-items: center;
   gap: 12px;
 }
 
@@ -46,10 +53,70 @@
   position: static;
 }
 
-.profile-top-spacer {
-  width: 40px;
-  height: 40px;
-  flex-shrink: 0;
+.profile-snapshot-strip {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 4px 6px;
+  border-radius: 9999px;
+  background: rgba(255, 255, 255, 0.04);
+  backdrop-filter: blur(16px);
+  -webkit-backdrop-filter: blur(16px);
+  border: 1px solid rgba(255, 255, 255, 0.09);
+}
+
+.snapshot-chip {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 5px;
+  padding: 4px 10px;
+  border-radius: 9999px;
+  border: 1px solid transparent;
+  background: transparent;
+  color: rgba(255, 255, 255, 0.72);
+  font-size: 0.76rem;
+  cursor: pointer;
+  transition: all 0.16s ease;
+}
+
+.snapshot-chip:hover {
+  color: #ffffff;
+  background: rgba(255, 255, 255, 0.06);
+}
+
+.snapshot-chip.active {
+  color: #ffffff;
+  background: var(--lh-accent-soft, rgba(255, 77, 109, 0.14));
+  border-color: var(--lh-accent-border, rgba(255, 77, 109, 0.45));
+}
+
+.snapshot-chip:focus-visible,
+.profile-pill-btn:focus-visible,
+.fav-filter-btn:focus-visible {
+  outline: none;
+  box-shadow: 0 0 0 2px var(--lh-accent, #ff4d6d);
+}
+
+.snapshot-value {
+  font-weight: 700;
+  color: #ffffff;
+}
+
+.snapshot-label {
+  font-weight: 500;
+}
+
+.snapshot-divider {
+  width: 1px;
+  height: 14px;
+  background: rgba(255, 255, 255, 0.1);
+}
+
+@media (max-width: 575px) {
+  .profile-snapshot-strip {
+    width: 100%;
+    justify-content: center;
+  }
 }
 
 /* Profile liquid-glass tabs */
@@ -113,11 +180,35 @@
 }
 
 /* Favorites and History Controls */
+.controls-scroll-sentinel {
+  height: 1px;
+  width: 100%;
+  pointer-events: none;
+}
+
 .fav-controls-row {
+  position: sticky;
+  top: 0;
+  z-index: 20;
   display: flex;
   align-items: center;
   gap: 12px;
   flex-wrap: wrap;
+  padding: 10px 0;
+  border-bottom: 1px solid transparent;
+  transition: background-color 0.2s ease, border-color 0.2s ease, box-shadow 0.2s ease;
+}
+
+.fav-controls-row.is-scrolled {
+  margin-left: -12px;
+  margin-right: -12px;
+  padding: 10px 12px;
+  border-radius: 0 0 14px 14px;
+  background: rgba(11, 13, 19, 0.82);
+  backdrop-filter: blur(18px);
+  -webkit-backdrop-filter: blur(18px);
+  border-bottom-color: rgba(255, 255, 255, 0.1);
+  box-shadow: 0 10px 28px rgba(0, 0, 0, 0.45);
 }
 
 .fav-search-wrapper {
@@ -211,4 +302,95 @@
   display: flex;
   justify-content: center;
   padding: 1rem 0 2rem;
+}
+
+/* Profile Skeleton Cards */
+.profile-skeleton-card {
+  width: 100%;
+  max-width: 220px;
+  margin: 0 auto;
+  display: flex;
+  flex-direction: column;
+}
+
+.profile-skeleton-poster {
+  width: 100%;
+  height: auto;
+  aspect-ratio: 2 / 3;
+  border-radius: 12px;
+}
+
+.profile-skeleton-poster.skeleton-shimmer {
+  animation: detail-shimmer 2.2s cubic-bezier(0.4, 0, 0.6, 1) infinite;
+}
+
+.profile-skeleton-title {
+  width: 78%;
+  height: 12px;
+  margin-top: 8px;
+  border-radius: 6px;
+}
+
+.profile-skeleton-meta {
+  width: 48%;
+  height: 10px;
+  margin-top: 6px;
+  border-radius: 6px;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .profile-skeleton-poster.skeleton-shimmer {
+    animation: none;
+  }
+}
+
+/* Themed Clear History Confirmation Modal */
+.profile-confirm-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 1050;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 1.5rem;
+  background: rgba(7, 8, 12, 0.78);
+  backdrop-filter: blur(18px);
+  -webkit-backdrop-filter: blur(18px);
+}
+
+.profile-confirm-card {
+  width: 100%;
+  max-width: 400px;
+  padding: 1.5rem;
+  border-radius: 16px;
+  background: linear-gradient(180deg, rgba(20, 23, 31, 0.94) 0%, rgba(14, 16, 22, 0.96) 100%);
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  box-shadow: 0 24px 60px rgba(0, 0, 0, 0.6), inset 0 1px 0 rgba(255, 255, 255, 0.1);
+}
+
+.profile-confirm-title {
+  margin: 0 0 0.5rem;
+  font-size: 1.1rem;
+  font-weight: 700;
+  color: #ffffff;
+}
+
+.profile-confirm-message {
+  margin: 0 0 1.25rem;
+  font-size: 0.88rem;
+  line-height: 1.45;
+  color: rgba(255, 255, 255, 0.72);
+}
+
+.profile-confirm-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 10px;
+}
+
+.profile-confirm-cancel,
+.profile-confirm-submit {
+  border-radius: 10px;
+  padding: 6px 14px;
+  font-weight: 600;
 }

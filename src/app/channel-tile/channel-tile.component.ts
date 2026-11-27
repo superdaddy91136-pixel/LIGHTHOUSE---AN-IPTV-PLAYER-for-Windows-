@@ -163,6 +163,9 @@ export class ChannelTileComponent implements OnInit, OnDestroy, OnChanges {
   @Input() id!: number;
   @Input() viewMode: number = 0;
   @Input() isLiveTvCard?: boolean;
+  @Input() uniformPoster: boolean = false;
+  @Input() historyTimeLabel?: string;
+  @Input() historyProgressPercent?: number;
   @Output() unhidden = new EventEmitter<Channel>();
   @Output() removedFromHistory = new EventEmitter<Channel>();
   @ViewChild(MatMenuTrigger, { static: true }) matMenuTrigger!: MatMenuTrigger;

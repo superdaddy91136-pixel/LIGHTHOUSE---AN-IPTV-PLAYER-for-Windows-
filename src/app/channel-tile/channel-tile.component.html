@@ -56,7 +56,7 @@
     [attr.title]="channel?.name || ''">
 
     <!-- Poster / Artwork Container (2:3 Aspect Ratio for Movies/Series, 16:10 Landscape for Live TV) -->
-    <div class="poster-container" [class.folder-poster]="isGroupTile && (!channel?.image || !showImage)" [class.live-poster]="isLiveTvMode || isLivestreamChannel">
+    <div class="poster-container" [class.folder-poster]="isGroupTile && (!channel?.image || !showImage)" [class.live-poster]="isLiveTvMode || isLivestreamChannel" [class.uniform-poster]="uniformPoster">
       
       <!-- Image Artwork -->
       <img *ngIf="channel?.image && showImage" (error)="onError($event)" class="poster-img"
@@ -121,6 +121,13 @@
           </svg>
         </button>
       </div>
+
+      <!-- Watch History Partial Progress Bar -->
+      <div class="history-poster-progress"
+           *ngIf="viewMode === viewModeEnum.History && historyProgressPercent && historyProgressPercent > 0"
+           aria-hidden="true">
+        <div class="history-poster-progress-fill" [style.width.%]="historyProgressPercent"></div>
+      </div>
     </div>
 
     <!-- Card Info -->
@@ -132,6 +139,10 @@
         <span class="meta-type-tag" *ngIf="!isGroupTile && isSeriesTile">Series</span>
         <span class="meta-type-tag" *ngIf="!isGroupTile && isMovieTile">Movie</span>
         <span class="meta-type-tag live-tag" *ngIf="!isGroupTile && (isLivestreamChannel || isLiveTvMode)">Live</span>
+      </div>
+      <div class="card-history-time text-truncate"
+           *ngIf="viewMode === viewModeEnum.History && historyTimeLabel">
+        {{ historyTimeLabel }}
       </div>
 
       <!-- Integrated Currently Playing EPG Section -->

@@ -1,4 +1,4 @@
-import { ChangeDetectionStrategy, ChangeDetectorRef, Component, HostListener, OnDestroy, OnInit } from "@angular/core";
+import { ChangeDetectionStrategy, ChangeDetectorRef, Component, ElementRef, HostListener, OnDestroy, OnInit, ViewChild } from "@angular/core";
 import { Router } from "@angular/router";
 import { invoke } from "@tauri-apps/api/core";
 import { Subject, Subscription } from "rxjs";
@@ -10,7 +10,7 @@ import { MediaType } from "../models/mediaType";
 import { NavTab } from "../models/navTab";
 import { SourceType } from "../models/sourceType";
 import { ViewMode } from "../models/viewMode";
-import { EmbeddedPlayerService } from "../services/embedded-player.service";
+import { EmbeddedPlayerService, WatchProgressRecord } from "../services/embedded-player.service";
 import { FavoritesService } from "../services/favorites.service";
 
 type ProfileSection = "favorites" | "history" | "hidden";
@@ -41,6 +41,11 @@ const emptySectionCounts = (): ProfileSectionCounts => ({
 const PROFILE_PAGE_SIZE = 36;
 const SEARCH_DEBOUNCE_MS = 300;
 
+interface HistoryCardEnrichment {
+  timeLabel?: string;
+  progressPercent?: number;
+}
+
 @Component({
   selector: "app-profile",
   templateUrl: "./profile.component.html",
@@ -60,6 +65,17 @@ export class ProfileComponent implements OnInit, OnDestroy {
   private historyRequestId = 0;
   private hiddenRequestId = 0;
   private countsRequestId = 0;
+  private historyProgressRequestId = 0;
+
+  @ViewChild("controlsSentinel") controlsSentinel?: ElementRef<HTMLElement>;
+  @ViewChild("clearHistoryTrigger") clearHistoryTrigger?: ElementRef<HTMLButtonElement>;
+  @ViewChild("clearHistoryCancelBtn") clearHistoryCancelBtn?: ElementRef<HTMLButtonElement>;
+
+  readonly skeletonPlaceholders = Array.from({ length: 12 }, (_, i) => i);
+  isControlsScrolled: boolean = false;
+  showClearHistoryConfirm: boolean = false;
+  clearingHistory: boolean = false;
+  private historyEnrichmentById = new Map<number, HistoryCardEnrichment>();
 
   countsLoaded: boolean = false;
   profileCounts: ProfileCounts = {
@@ -129,8 +145,21 @@ export class ProfileComponent implements OnInit, OnDestroy {
     );
   }
 
+  @HostListener("window:scroll")
+  onWindowScroll() {
+    this.updateStickyControlsState();
+  }
+
   @HostListener("document:keydown", ["$event"])
   onKeyDown(event: KeyboardEvent) {
+    if (this.showClearHistoryConfirm) {
+      if (event.key === "Escape") {
+        this.cancelClearHistory();
+        event.preventDefault();
+        event.stopPropagation();
+      }
+      return;
+    }
     if (this.embeddedPlayer.isPlayingEmbedded) {
       // Key events during embedded playback are handled directly by EmbeddedPlayerService
       return;
@@ -220,12 +249,23 @@ export class ProfileComponent implements OnInit, OnDestroy {
 
   setSection(section: ProfileSection) {
     this.activeSection = section;
+    this.isControlsScrolled = false;
+    setTimeout(() => this.updateStickyControlsState(), 0);
     if (section === "favorites" && !this.favLoaded && !this.loadingFavorites) {
       void this.loadFavorites(true);
     } else if (section === "history" && !this.historyLoaded && !this.loadingHistory) {
       void this.loadHistory(true);
     } else if (section === "hidden" && !this.hiddenLoaded && !this.loadingHidden) {
       void this.loadHidden(true);
+    }
+  }
+
+  private updateStickyControlsState(): void {
+    const el = this.controlsSentinel?.nativeElement;
+    const next = el ? el.getBoundingClientRect().top < 0 : window.scrollY > 96;
+    if (next !== this.isControlsScrolled) {
+      this.isControlsScrolled = next;
+      this.cdr.markForCheck();
     }
   }
 
@@ -418,6 +458,10 @@ export class ProfileComponent implements OnInit, OnDestroy {
       this.historyPage = page;
       this.historyHasMore = results.length === PROFILE_PAGE_SIZE;
       this.historyLoaded = true;
+      if (reset) {
+        this.historyEnrichmentById.clear();
+      }
+      void this.enrichHistoryProgress(results, reset);
       if (refreshCounts) {
         void this.loadProfileCounts();
       }
@@ -438,23 +482,128 @@ export class ProfileComponent implements OnInit, OnDestroy {
     void this.loadHistory(false);
   }
 
-  async clearHistory() {
-    if (!window.confirm("Clear all watch history? This cannot be undone.")) return;
-    await this.memory.tryIPC(
-      "History cleared successfully",
-      "Failed to clear history",
-      async () => {
-        await invoke("clear_history");
-        this.embeddedPlayer.clearWatchHistoryCaches();
-        this.historyRequestId++;
-        this.historyChannels = [];
-        this.historyLoaded = true;
-        this.historyHasMore = false;
-        this.profileCounts.history = emptySectionCounts();
-        void this.loadProfileCounts();
-        this.cdr.markForCheck();
+  getHistoryTimeLabel(channel: Channel): string | undefined {
+    if (channel.id == null) return undefined;
+    return this.historyEnrichmentById.get(channel.id)?.timeLabel;
+  }
+
+  getHistoryProgressPercent(channel: Channel): number | undefined {
+    if (channel.id == null) return undefined;
+    return this.historyEnrichmentById.get(channel.id)?.progressPercent;
+  }
+
+  private async enrichHistoryProgress(channels: Channel[], reset: boolean): Promise<void> {
+    const requestId = reset ? ++this.historyProgressRequestId : this.historyProgressRequestId;
+    const ids = channels
+      .filter((c) => c.media_type !== MediaType.livestream && c.id != null && c.id > 0)
+      .map((c) => c.id as number);
+    if (ids.length === 0) return;
+
+    try {
+      const records = (await invoke("get_watch_progress_batch", {
+        channelIds: ids.slice(0, 200),
+      })) as WatchProgressRecord[];
+      if (requestId !== this.historyProgressRequestId || !Array.isArray(records)) return;
+
+      for (const rec of records) {
+        if (rec?.channel_id == null) continue;
+        const pos = Number.isFinite(rec.position_sec) && rec.position_sec > 0 ? rec.position_sec : 0;
+        const dur = Number.isFinite(rec.duration_sec) && rec.duration_sec > 0 ? rec.duration_sec : 0;
+        const rawPct =
+          Number.isFinite(rec.progress_percent) && rec.progress_percent >= 0
+            ? rec.progress_percent
+            : dur > 0
+              ? (pos / dur) * 100
+              : 0;
+        const isCompleted =
+          rec.completed === true ||
+          rawPct >= 95 ||
+          (dur > 30 && pos >= dur - 30) ||
+          (dur > 0 && pos / dur >= 0.95);
+        const isPartial = !isCompleted && (pos > 10 || rawPct > 1);
+        const progressPercent = isPartial ? Math.min(95, Math.max(2, Math.round(rawPct))) : undefined;
+        const timeLabel = rec.last_watched > 0 ? this.formatRelativeWatchedTime(rec.last_watched) : undefined;
+        if (timeLabel || progressPercent !== undefined) {
+          this.historyEnrichmentById.set(rec.channel_id, { timeLabel, progressPercent });
+        }
       }
-    );
+      this.cdr.markForCheck();
+    } catch {
+      // Non-critical enrichment: leave cards without extra metadata on failure
+    }
+  }
+
+  private formatRelativeWatchedTime(timestamp: number): string {
+    const ms = timestamp > 1e12 ? timestamp : timestamp * 1000;
+    const now = Date.now();
+    const diffMs = Math.max(0, now - ms);
+    const mins = Math.floor(diffMs / 60000);
+    if (mins < 1) return "Just now";
+    if (mins < 60) return `${mins}m ago`;
+    const hours = Math.floor(mins / 60);
+    if (hours < 24) return `${hours}h ago`;
+
+    const watchedDate = new Date(ms);
+    const today = new Date(now);
+    const yesterday = new Date(today);
+    yesterday.setDate(today.getDate() - 1);
+    if (
+      watchedDate.getFullYear() === yesterday.getFullYear() &&
+      watchedDate.getMonth() === yesterday.getMonth() &&
+      watchedDate.getDate() === yesterday.getDate()
+    ) {
+      return "Yesterday";
+    }
+
+    const sameYear = watchedDate.getFullYear() === today.getFullYear();
+    return watchedDate.toLocaleDateString(undefined, sameYear
+      ? { month: "short", day: "numeric" }
+      : { month: "short", day: "numeric", year: "numeric" });
+  }
+
+  clearHistory() {
+    this.showClearHistoryConfirm = true;
+    this.cdr.markForCheck();
+    setTimeout(() => {
+      this.clearHistoryCancelBtn?.nativeElement?.focus();
+    }, 0);
+  }
+
+  cancelClearHistory() {
+    if (this.clearingHistory) return;
+    this.showClearHistoryConfirm = false;
+    this.cdr.markForCheck();
+    setTimeout(() => {
+      this.clearHistoryTrigger?.nativeElement?.focus();
+    }, 0);
+  }
+
+  async confirmClearHistory() {
+    if (this.clearingHistory) return;
+    this.clearingHistory = true;
+    this.cdr.markForCheck();
+    try {
+      await this.memory.tryIPC(
+        "History cleared successfully",
+        "Failed to clear history",
+        async () => {
+          await invoke("clear_history");
+          this.embeddedPlayer.clearWatchHistoryCaches();
+          this.historyRequestId++;
+          this.historyProgressRequestId++;
+          this.historyChannels = [];
+          this.historyEnrichmentById.clear();
+          this.historyLoaded = true;
+          this.historyHasMore = false;
+          this.profileCounts.history = emptySectionCounts();
+          void this.loadProfileCounts();
+        }
+      );
+      this.showClearHistoryConfirm = false;
+    } finally {
+      this.clearingHistory = false;
+      this.cdr.markForCheck();
+    }
   }
 
   setHiddenMediaType(type: number) {

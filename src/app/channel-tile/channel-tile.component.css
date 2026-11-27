@@ -31,12 +31,13 @@
 .poster-img { width: 100%; height: 100%; object-fit: cover; transition: transform .3s ease; }
 .lh-card:hover .poster-img { transform: scale(1.05); }
 .poster-container.live-poster { aspect-ratio: 16/10; background: rgba(16,20,28,.7); display: flex; align-items: center; justify-content: center; }
+.poster-container.live-poster.uniform-poster { aspect-ratio: 2/3; }
 .poster-container.live-poster .poster-img { object-fit: contain; padding: 10px; }
 .lh-card.playing .poster-container { border-color: rgba(255,255,255,.45); box-shadow: inset 0 0 0 2px rgba(255,255,255,.35); animation: pulse 2s infinite ease-in-out; }
 .lh-card .card-info { margin-top: 6px; }
 .lh-card .card-title { font-size: .8rem; font-weight: 600; color: rgba(255,255,255,.95); line-height: 1.25; margin: 0; }
 .lh-card .card-meta-line { font-size: .7rem; color: rgba(255,255,255,.5); margin-top: 2px; }
-.lh-card .card-fav-btn { top: 6px; right: 6px; width: 26px; height: 26px; }
+.lh-card .card-fav-btn { top: 6px; right: 6px; width: 28px; height: 28px; }
 .lh-card .card-fav-btn svg { width: 16px; height: 16px; }
 .lh-card .hover-play-circle { width: 38px; height: 38px; }
 .lh-card .hover-play-circle svg { width: 18px; height: 18px; }
@@ -49,3 +50,6 @@
 .lh-card .poster-fallback { padding: 8px; }
 .lh-card .fallback-icon { width: 1.8rem; height: 1.8rem; }
 .lh-card .fallback-title { font-size: .72rem; }
+.history-poster-progress { position: absolute; left: 0; right: 0; bottom: 0; height: 3px; background: rgba(0,0,0,.6); z-index: 4; pointer-events: none; }
+.history-poster-progress-fill { height: 100%; background: var(--lh-accent, #ff4d6d); border-radius: 0 2px 2px 0; }
+.card-history-time { font-size: .68rem; color: rgba(255,255,255,.48); margin-top: 2px; }
