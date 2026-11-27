@@ -486,7 +486,7 @@
       <div class="settings-category" [hidden]="activeCategory !== 'livetv'">
         <div class="category-header">
           <h2 class="category-title">Live TV Preferences</h2>
-          <p class="category-subtitle">Default Live TV section, channel resume behavior, and hidden items</p>
+          <p class="category-subtitle">Default Live TV section and channel resume behavior</p>
         </div>
 
         <div class="settings-section" [hidden]="!matchesSearch('live tv startup navigation default folder favorites all channels recent resume last watched channel')">
@@ -533,42 +533,6 @@
                   <span class="toggle-slider"></span>
                 </label>
               </div>
-            </div>
-          </div>
-        </div>
-
-        <div class="settings-section" [hidden]="!matchesSearch('live tv hidden channels groups categories unhide filter manage')">
-          <div class="section-header-row">
-            <h3 class="section-title">Hidden Channels &amp; Categories</h3>
-            <div class="d-flex align-items-center gap-2">
-              <span class="section-badge" *ngIf="hiddenItems.length > 0">{{ hiddenItems.length }} Hidden</span>
-              <button type="button" class="btn-subtle btn-reset-section" (click)="loadHiddenItems()" [disabled]="loadingHiddenItems">
-                {{ loadingHiddenItems ? 'Loading...' : 'Refresh' }}
-              </button>
-            </div>
-          </div>
-          <div class="section-card">
-            <div class="hidden-list-toolbar" *ngIf="hiddenItems.length > 0">
-              <input
-                type="text"
-                class="hidden-search-input"
-                placeholder="Filter hidden channels or categories..."
-                [(ngModel)]="hiddenSearchQuery"
-                (ngModelChange)="filterHiddenItems()" />
-            </div>
-            <div class="hidden-items-scroll" *ngIf="filteredHiddenItems.length > 0">
-              <div class="setting-item" *ngFor="let item of filteredHiddenItems">
-                <div class="setting-meta">
-                  <span class="setting-title">{{ item.name }}</span>
-                  <p class="setting-hint">{{ getHiddenMediaLabel(item) }}</p>
-                </div>
-                <div class="setting-control">
-                  <button type="button" class="btn-subtle" (click)="unhideItem(item)">Unhide</button>
-                </div>
-              </div>
-            </div>
-            <div class="hidden-empty-row" *ngIf="!loadingHiddenItems && filteredHiddenItems.length === 0">
-              {{ hiddenItems.length === 0 ? 'No hidden channels or categories.' : 'No hidden items match your filter.' }}
             </div>
           </div>
         </div>

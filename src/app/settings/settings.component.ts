@@ -19,10 +19,6 @@ import { getCurrentWebview } from "@tauri-apps/api/webview";
 import { getName, getTauriVersion, getVersion } from "@tauri-apps/api/app";
 import { emit, listen, UnlistenFn } from "@tauri-apps/api/event";
 import { SourceRefreshProgress } from "../models/sourceRefreshProgress";
-import { Channel } from "../models/channel";
-import { MediaType } from "../models/mediaType";
-import { ViewMode } from "../models/viewMode";
-import { Filters } from "../models/filters";
 import {
   ACCENT_PRESETS,
   AppPreferencesService,
@@ -95,7 +91,7 @@ export class SettingsComponent {
     {
       id: "livetv",
       label: "Live TV",
-      description: "Startup folder, auto-resume, and hidden channels",
+      description: "Startup folder and auto-resume navigation",
       icon: "M21 3H3c-1.1 0-2 .9-2 2v12c0 1.1.9 2 2 2h5v2h8v-2h5c1.1 0 1.99-.9 1.99-2L23 5c0-1.1-.9-2-2-2zm0 14H3V5h18v12z",
     },
     {
@@ -159,7 +155,7 @@ export class SettingsComponent {
     playback:
       "playback audio buffering remember last volume startup volume level stream caching buffer preset low latency balanced smooth auto reconnect stream failure retry count default audio language subtitle language deinterlacing deinterlace hardware video decoding hwdec gpu render pipeline vo gpu-next advanced parameters mpv cli flags",
     livetv:
-      "live tv startup navigation default folder favorites all channels recent resume start last watched channel hidden channels groups unhide filter",
+      "live tv startup navigation default folder favorites all channels recent resume start last watched channel",
     library:
       "library connected sources iptv playlist xtream m3u add refresh all schedule auto-refresh interval hours epg sync frequency",
     storage:
@@ -266,12 +262,6 @@ export class SettingsComponent {
   private lastValidRestreamPort = 3000;
   private lastValidHttpProxy?: string;
 
-  // Hidden items manager state (Live TV tab)
-  hiddenItems: Channel[] = [];
-  filteredHiddenItems: Channel[] = [];
-  hiddenSearchQuery = "";
-  loadingHiddenItems = false;
-
   // Storage usage stats state
   storageStats: StorageStats = {
     sqlite_bytes: 0,
@@ -331,8 +321,6 @@ export class SettingsComponent {
       this.shortcutConflictError = "";
       if (category === "storage") {
         void this.loadStorageStats();
-      } else if (category === "livetv") {
-        void this.loadHiddenItems();
       }
       if (this.settingsPanel?.nativeElement) {
         this.settingsPanel.nativeElement.scrollTo({ top: 0, behavior: "instant" });
@@ -1064,80 +1052,6 @@ export class SettingsComponent {
       idx++;
     }
     return `${val >= 10 || idx === 0 ? Math.round(val) : val.toFixed(1)} ${units[idx]}`;
-  }
-
-  async loadHiddenItems(): Promise<void> {
-    this.loadingHiddenItems = true;
-    try {
-      const enabledIds = Array.from(this.memory.Sources.keys());
-      const sourceIds = enabledIds.length > 0
-        ? enabledIds
-        : this.sources.filter((s) => s.id != null).map((s) => s.id!);
-      if (sourceIds.length === 0) {
-        this.hiddenItems = [];
-        this.filteredHiddenItems = [];
-        return;
-      }
-      const filters: Filters = {
-        source_ids: sourceIds,
-        view_type: ViewMode.Hidden,
-        media_types: [MediaType.livestream, MediaType.movie, MediaType.serie, MediaType.group],
-        page: 1,
-        use_keywords: false,
-        sort: SortType.alphabeticalAscending,
-      };
-      let allHidden: Channel[] = [];
-      let page = 1;
-      let hasMore = true;
-      while (hasMore && page <= 15) {
-        filters.page = page;
-        const res = (await invoke("search", { filters })) as Channel[];
-        if (res && res.length > 0) {
-          allHidden = allHidden.concat(res);
-          hasMore = res.length === 36;
-          page++;
-        } else {
-          hasMore = false;
-        }
-      }
-      this.hiddenItems = allHidden;
-      this.filterHiddenItems();
-    } catch (e) {
-      console.warn("Failed to load hidden items in Settings:", e);
-    } finally {
-      this.loadingHiddenItems = false;
-      this.cdr.markForCheck();
-    }
-  }
-
-  filterHiddenItems(): void {
-    const q = this.hiddenSearchQuery.trim().toLowerCase();
-    this.filteredHiddenItems = q
-      ? this.hiddenItems.filter((item) => (item.name || "").toLowerCase().includes(q))
-      : [...this.hiddenItems];
-  }
-
-  getHiddenMediaLabel(item: Channel): string {
-    if (item.media_type === MediaType.group) return "Category";
-    if (item.media_type === MediaType.livestream) return "Live Channel";
-    if (item.media_type === MediaType.movie) return "Movie";
-    if (item.media_type === MediaType.serie) return "TV Show";
-    return "Item";
-  }
-
-  async unhideItem(item: Channel): Promise<void> {
-    if (item.id == null) return;
-    const command = item.media_type === MediaType.group ? "hide_group" : "hide_channel";
-    try {
-      await invoke(command, { id: item.id, hidden: false });
-      this.hiddenItems = this.hiddenItems.filter((c) => c.id !== item.id);
-      this.filterHiddenItems();
-      void this.loadStorageStats();
-      this.memory.RefreshSources.next(true);
-      this.toastr.success(`Unhidden "${item.name}"`);
-    } catch {
-      this.toastr.error(`Failed to unhide "${item.name}"`);
-    }
   }
 
   async enableAppPin(): Promise<void> {

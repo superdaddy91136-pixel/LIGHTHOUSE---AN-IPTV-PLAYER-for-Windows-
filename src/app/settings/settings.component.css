@@ -1190,7 +1190,7 @@
   border-radius: 8px;
 }
 
-/* Accent swatches, glass preview, hidden manager, PIN & shortcut pills */
+/* Accent swatches, glass preview, PIN & shortcut pills */
 .accent-swatch-row {
   display: flex;
   align-items: center;
@@ -1299,43 +1299,6 @@
   background: var(--lh-accent-soft, rgba(255, 77, 109, 0.16));
   color: #ffffff;
   box-shadow: 0 0 0 3px var(--lh-accent-soft, rgba(255, 77, 109, 0.16));
-}
-
-.hidden-list-toolbar {
-  display: flex;
-  align-items: center;
-  gap: 0.65rem;
-  padding: 0.85rem 1.25rem;
-  border-bottom: 1px solid rgba(255, 255, 255, 0.05);
-}
-
-.hidden-search-input {
-  flex: 1;
-  min-width: 0;
-  height: 32px;
-  padding: 0 12px;
-  border-radius: 8px;
-  background: rgba(255, 255, 255, 0.05);
-  border: 1px solid rgba(255, 255, 255, 0.1);
-  color: #ffffff;
-  font-size: 0.82rem;
-  outline: none;
-}
-
-.hidden-search-input:focus {
-  border-color: var(--lh-accent, #ff4d6d);
-}
-
-.hidden-items-scroll {
-  max-height: 260px;
-  overflow-y: auto;
-}
-
-.hidden-empty-row {
-  padding: 1.25rem;
-  text-align: center;
-  font-size: 0.82rem;
-  color: rgba(255, 255, 255, 0.48);
 }
 
 .pin-inline-form {
