@@ -165,11 +165,13 @@ export class HomeDiscoveryComponent implements OnInit, AfterViewInit, OnDestroy 
 
   // Hero pool state & transition
   isTransitioning: boolean = false;
+  outgoingBackdropUrl?: string;
   allLoadedMovies: Channel[] = [];
   allLoadedSeries: Channel[] = [];
   allRecommended: Channel[] = [];
   private transitionTimeout?: any;
   private transitionResetTimeout?: any;
+  private outgoingBackdropTimer?: any;
   private preloadedImages = new Set<HTMLImageElement>();
   private preloadedImageUrls = new Set<string>();
   private isWindowFocused: boolean =
@@ -776,14 +778,7 @@ export class HomeDiscoveryComponent implements OnInit, AfterViewInit, OnDestroy 
       clearTimeout(timer);
     }
     this.rowScrollTimers.clear();
-    if (this.transitionTimeout) {
-      clearTimeout(this.transitionTimeout);
-      this.transitionTimeout = undefined;
-    }
-    if (this.transitionResetTimeout) {
-      clearTimeout(this.transitionResetTimeout);
-      this.transitionResetTimeout = undefined;
-    }
+    this.clearTransitionTimers();
     if (this.resizeObserver) {
       this.resizeObserver.disconnect();
       this.resizeObserver = undefined;
@@ -1005,24 +1000,7 @@ export class HomeDiscoveryComponent implements OnInit, AfterViewInit, OnDestroy 
       // the early logo-ready exits below so upcoming heroes are ready on rotation.
       this.tmdbEnrichment.prefetchContentRating(hero.channel);
       if (cached) {
-        if (!hero.contentRating && cached.contentRating) {
-          hero.contentRating = cached.contentRating;
-        }
-        if (!hero.logoUrl && cached.logoPath && cached.logoVersion === CURRENT_LOGO_ALGO_VERSION) {
-          hero.logoUrl = getTmdbLogoUrl(cached.logoPath, 'w500');
-          if (hero.channel.id) {
-            this.discoveryState.updateHeroItemMetadata(hero.channel.id, { logoUrl: hero.logoUrl });
-          }
-        }
-        if (cached.backdropPath && !hero.imageUrl) {
-          const bd = getTmdbBackdropUrl(cached.backdropPath, 'original') || getTmdbBackdropUrl(cached.backdropPath, 'w1280');
-          if (bd) {
-            hero.imageUrl = bd;
-            if (hero.channel.id) {
-              this.discoveryState.updateHeroItemMetadata(hero.channel.id, { imageUrl: hero.imageUrl });
-            }
-          }
-        }
+        this.hydrateHeroFromCached(hero, cached, true);
       }
 
       // 2. Preload actual images if URLs are available
@@ -1060,58 +1038,161 @@ export class HomeDiscoveryComponent implements OnInit, AfterViewInit, OnDestroy 
     }
   }
 
-  get currentHero(): HeroItem | undefined {
-    if (this.heroItems.length === 0) return undefined;
-    const hero = this.heroItems[this.currentHeroIndex];
-    if (hero?.channel && (!hero.logoUrl || !hero.imageUrl)) {
-      const cached = this.tmdbEnrichment.getEnrichmentSync(hero.channel);
-      if (cached) {
-        if (!hero.logoUrl && cached.logoPath && cached.logoVersion === 2) {
-          hero.logoUrl = getTmdbLogoUrl(cached.logoPath, 'w500');
-        }
-        if (cached.backdropPath) {
-          const bd = getTmdbBackdropUrl(cached.backdropPath, 'original') || getTmdbBackdropUrl(cached.backdropPath, 'w1280');
-          if (bd) hero.imageUrl = bd;
-        }
+  private resolveHeroBackdropUrl(backdropPath?: string): string | undefined {
+    if (!backdropPath) return undefined;
+    return getTmdbBackdropUrl(backdropPath, 'w1280') || getTmdbBackdropUrl(backdropPath, 'original');
+  }
+
+  private hydrateHeroFromCached(
+    hero: HeroItem,
+    cached: TmdbMediaEnrichment | undefined,
+    persistMetadata: boolean = false,
+  ): void {
+    if (!cached) return;
+    let updatedLogo: string | undefined;
+    let updatedImage: string | undefined;
+    let updatedRating: string | undefined;
+
+    if (!hero.contentRating && cached.contentRating) {
+      hero.contentRating = cached.contentRating;
+      updatedRating = hero.contentRating;
+    }
+    if (!hero.logoUrl && cached.logoPath && cached.logoVersion === CURRENT_LOGO_ALGO_VERSION) {
+      hero.logoUrl = getTmdbLogoUrl(cached.logoPath, 'w500');
+      updatedLogo = hero.logoUrl;
+    }
+    if (!hero.imageUrl && cached.backdropPath) {
+      const bd = this.resolveHeroBackdropUrl(cached.backdropPath);
+      if (bd) {
+        hero.imageUrl = bd;
+        updatedImage = bd;
       }
     }
-    return hero;
+    if (!hero.description && cached.overview) {
+      hero.description = cached.overview;
+    }
+    if (!hero.year && cached.releaseYear) {
+      hero.year = cached.releaseYear;
+    }
+    if (!hero.genre && cached.genres && cached.genres.length > 0) {
+      hero.genre = cached.genres[0];
+    }
+    if (!hero.rating && cached.rating) {
+      hero.rating = cached.rating;
+    }
+
+    if (persistMetadata && hero.channel?.id && (updatedLogo || updatedImage || updatedRating)) {
+      const patch: Partial<HeroItem> = {};
+      if (updatedLogo) patch.logoUrl = updatedLogo;
+      if (updatedImage) patch.imageUrl = updatedImage;
+      if (updatedRating) patch.contentRating = updatedRating;
+      this.discoveryState.updateHeroItemMetadata(hero.channel.id, patch);
+    }
+  }
+
+  private hydrateHeroFromSyncCache(hero?: HeroItem, persistMetadata: boolean = false): void {
+    if (!hero?.channel) return;
+    if (hero.logoUrl && hero.imageUrl && hero.contentRating) return;
+    const cached = this.tmdbEnrichment.getEnrichmentSync(hero.channel);
+    if (cached) {
+      this.hydrateHeroFromCached(hero, cached, persistMetadata);
+    }
+  }
+
+  get currentHero(): HeroItem | undefined {
+    if (this.heroItems.length === 0) return undefined;
+    return this.heroItems[this.currentHeroIndex];
+  }
+
+  private clearTransitionTimers(): void {
+    if (this.transitionTimeout) {
+      clearTimeout(this.transitionTimeout);
+      this.transitionTimeout = undefined;
+    }
+    if (this.transitionResetTimeout) {
+      clearTimeout(this.transitionResetTimeout);
+      this.transitionResetTimeout = undefined;
+    }
+    if (this.outgoingBackdropTimer) {
+      clearTimeout(this.outgoingBackdropTimer);
+      this.outgoingBackdropTimer = undefined;
+    }
+  }
+
+  private transitionToHero(
+    resolveNext: (commitPool: boolean) => { index: number; hero?: HeroItem } | null,
+    isAuto: boolean = false,
+  ): void {
+    if (!isAuto) {
+      this.stopHeroTimer(false);
+    }
+
+    const outgoing = this.currentHero;
+    this.outgoingBackdropUrl =
+      outgoing?.imageUrl && !this.isImageBroken(outgoing.channel?.id)
+        ? outgoing.imageUrl
+        : undefined;
+    this.isTransitioning = true;
+    this.cdr.markForCheck();
+
+    this.clearTransitionTimers();
+
+    // Pre-hydrate & preload the target hero immediately during the 280ms content fade-out
+    const preview = resolveNext(false);
+    if (preview?.hero) {
+      this.hydrateHeroFromSyncCache(preview.hero, true);
+      this.preloadImage(preview.hero.imageUrl);
+      this.preloadImage(preview.hero.logoUrl);
+    }
+
+    this.transitionTimeout = setTimeout(() => {
+      this.transitionTimeout = undefined;
+      if (this.isDestroyed) return;
+
+      const resolved = resolveNext(true);
+      if (!resolved) {
+        this.isTransitioning = false;
+        this.outgoingBackdropUrl = undefined;
+        this.cdr.markForCheck();
+        return;
+      }
+
+      this.currentHeroIndex = resolved.index;
+      this.hydrateHeroFromSyncCache(this.currentHero, true);
+      this.recordHeroShown(this.currentHero?.channel?.id);
+      this.updateAmbientBackground();
+      this.preloadVisibleHeroImages();
+      this.cdr.markForCheck();
+      this.startHeroTimer();
+
+      this.transitionResetTimeout = setTimeout(() => {
+        this.transitionResetTimeout = undefined;
+        if (this.isDestroyed) return;
+        this.isTransitioning = false;
+        this.cdr.markForCheck();
+
+        this.outgoingBackdropTimer = setTimeout(() => {
+          this.outgoingBackdropTimer = undefined;
+          if (this.isDestroyed) return;
+          this.outgoingBackdropUrl = undefined;
+          this.cdr.markForCheck();
+        }, 460);
+      }, 40);
+    }, 280);
   }
 
   setHeroIndex(index: number) {
     if (index >= 0 && index < this.heroItems.length && index !== this.currentHeroIndex) {
       if (this.heroItems.length <= 1) {
         this.currentHeroIndex = index;
+        this.hydrateHeroFromSyncCache(this.currentHero, true);
         return;
       }
-      this.stopHeroTimer(false);
-      this.isTransitioning = true;
-
-      if (this.transitionTimeout) {
-        clearTimeout(this.transitionTimeout);
-      }
-      if (this.transitionResetTimeout) {
-        clearTimeout(this.transitionResetTimeout);
-        this.transitionResetTimeout = undefined;
-      }
-
-      this.transitionTimeout = setTimeout(() => {
-        this.transitionTimeout = undefined;
-        if (this.isDestroyed) return;
-        this.currentHeroIndex = index;
-        this.recordHeroShown(this.currentHero?.channel?.id);
-        this.updateAmbientBackground();
-        this.preloadVisibleHeroImages();
-        this.cdr.markForCheck();
-        this.startHeroTimer();
-
-        this.transitionResetTimeout = setTimeout(() => {
-          this.transitionResetTimeout = undefined;
-          if (this.isDestroyed) return;
-          this.isTransitioning = false;
-          this.cdr.markForCheck();
-        }, 50);
-      }, 280);
+      this.transitionToHero(() => {
+        if (this.heroItems.length === 0) return null;
+        const idx = index >= 0 && index < this.heroItems.length ? index : 0;
+        return { index: idx, hero: this.heroItems[idx] };
+      });
     }
   }
 
@@ -1165,87 +1246,38 @@ export class HomeDiscoveryComponent implements OnInit, AfterViewInit, OnDestroy 
 
   nextHero(isAuto: boolean = false) {
     if (this.heroItems.length <= 1) return;
-    if (!isAuto) {
-      this.stopHeroTimer(false);
-    }
-    this.isTransitioning = true;
-    this.cdr.markForCheck();
+    let cachedNextCycle: HeroItem[] | null = null;
 
-    if (this.transitionTimeout) {
-      clearTimeout(this.transitionTimeout);
-    }
-    if (this.transitionResetTimeout) {
-      clearTimeout(this.transitionResetTimeout);
-      this.transitionResetTimeout = undefined;
-    }
-
-    this.transitionTimeout = setTimeout(() => {
-      this.transitionTimeout = undefined;
-      if (this.isDestroyed) return;
+    this.transitionToHero((commitPool) => {
+      if (this.heroItems.length === 0) return null;
       const nextIndex = this.currentHeroIndex + 1;
       if (nextIndex >= this.heroItems.length) {
-        // Full pool cycle complete!
-        // Re-shuffle to keep subsequent cycles fresh,
-        // and ensure the new first item is not identical to the last shown item.
-        const lastShownId = this.heroItems[this.currentHeroIndex]?.channel?.id;
-        const reshuffled = this.shufflePool(this.heroItems);
-        if (reshuffled.length > 1 && reshuffled[0].channel?.id === lastShownId) {
-          const swapIdx = Math.floor(Math.random() * (reshuffled.length - 1)) + 1;
-          [reshuffled[0], reshuffled[swapIdx]] = [reshuffled[swapIdx], reshuffled[0]];
+        if (!cachedNextCycle) {
+          // Full pool cycle complete: reshuffle while avoiding an identical back-to-back opener
+          const lastShownId = this.heroItems[this.currentHeroIndex]?.channel?.id;
+          const reshuffled = this.shufflePool(this.heroItems);
+          if (reshuffled.length > 1 && reshuffled[0].channel?.id === lastShownId) {
+            const swapIdx = Math.floor(Math.random() * (reshuffled.length - 1)) + 1;
+            [reshuffled[0], reshuffled[swapIdx]] = [reshuffled[swapIdx], reshuffled[0]];
+          }
+          cachedNextCycle = reshuffled;
         }
-        this.heroItems = reshuffled;
-        this.currentHeroIndex = 0;
-      } else {
-        this.currentHeroIndex = nextIndex;
+        if (commitPool) {
+          this.heroItems = cachedNextCycle;
+        }
+        return { index: 0, hero: cachedNextCycle[0] };
       }
-
-      this.recordHeroShown(this.currentHero?.channel?.id);
-      this.updateAmbientBackground();
-      this.preloadVisibleHeroImages();
-      this.cdr.markForCheck();
-      this.startHeroTimer();
-
-      this.transitionResetTimeout = setTimeout(() => {
-        this.transitionResetTimeout = undefined;
-        if (this.isDestroyed) return;
-        this.isTransitioning = false;
-        this.cdr.markForCheck();
-      }, 50);
-    }, 280);
+      return { index: nextIndex, hero: this.heroItems[nextIndex] };
+    }, isAuto);
   }
 
   prevHero() {
     if (this.heroItems.length <= 1) return;
-    this.stopHeroTimer(false);
-    this.isTransitioning = true;
-    this.cdr.markForCheck();
-
-    if (this.transitionTimeout) {
-      clearTimeout(this.transitionTimeout);
-    }
-    if (this.transitionResetTimeout) {
-      clearTimeout(this.transitionResetTimeout);
-      this.transitionResetTimeout = undefined;
-    }
-
-    this.transitionTimeout = setTimeout(() => {
-      this.transitionTimeout = undefined;
-      if (this.isDestroyed) return;
-      this.currentHeroIndex =
-        (this.currentHeroIndex - 1 + this.heroItems.length) % this.heroItems.length;
-      this.recordHeroShown(this.currentHero?.channel?.id);
-      this.updateAmbientBackground();
-      this.preloadVisibleHeroImages();
-      this.cdr.markForCheck();
-      this.startHeroTimer();
-
-      this.transitionResetTimeout = setTimeout(() => {
-        this.transitionResetTimeout = undefined;
-        if (this.isDestroyed) return;
-        this.isTransitioning = false;
-        this.cdr.markForCheck();
-      }, 50);
-    }, 280);
+    this.transitionToHero(() => {
+      if (this.heroItems.length === 0) return null;
+      const idx = (this.currentHeroIndex - 1 + this.heroItems.length) % this.heroItems.length;
+      return { index: idx, hero: this.heroItems[idx] };
+    });
   }
 
   canScrollRight(rowId: string): boolean {
@@ -2074,51 +2106,62 @@ export class HomeDiscoveryComponent implements OnInit, AfterViewInit, OnDestroy 
     this.applyContentPreferences();
   }
 
-  private applyContentPreferences(): void {
+  private applyHeroPreferences(): void {
     const prevHeroCount = this.heroItems.length;
+    const prevHeroId = this.currentHero?.channel?.id;
+
     if (this.selectedContentPref === "all") {
-      this.discoveryRows = this.masterDiscoveryRows;
       this.heroItems = this.masterHeroItems;
-      if (this.currentHeroIndex >= this.heroItems.length) {
-        this.currentHeroIndex = 0;
-      }
-      this.rowCanScrollRight = {};
-      this.debouncedCheckAllRowsScrollState();
-      if (prevHeroCount <= 1 && this.heroItems.length > 1) {
-        this.startHeroTimer();
-      }
-      return;
+    } else {
+      // The master pool is built only from language-filtered TMDB discovery
+      // results. Do not rebuild it from the broader provider catalog here.
+      const prefHeroPool = this.masterHeroItems.filter((hero) =>
+        this.matchesContentPreference(hero.channel, this.selectedContentPref)
+      );
+      this.heroItems = prefHeroPool.length > 0 ? prefHeroPool : [...this.masterHeroItems];
     }
 
-    this.discoveryRows = this.masterDiscoveryRows
-      .map((row) => {
-        if (row.id === "row-continue-watching") {
-          return row;
-        }
-        const filtered = row.items.filter((item) =>
-          this.matchesContentPreference(item, this.selectedContentPref)
-        );
-        return {
-          ...row,
-          items: filtered,
-        };
-      })
-      .filter((row) => row.items.length > 0);
-
-    // The master pool is built only from language-filtered TMDB discovery
-    // results. Do not rebuild it from the broader provider catalog here.
-    const prefHeroPool = this.masterHeroItems.filter((hero) =>
-      this.matchesContentPreference(hero.channel, this.selectedContentPref)
-    );
-    this.heroItems = prefHeroPool.length > 0 ? prefHeroPool : [...this.masterHeroItems];
     if (this.currentHeroIndex >= this.heroItems.length) {
       this.currentHeroIndex = 0;
     }
-    this.rowCanScrollRight = {};
-    this.debouncedCheckAllRowsScrollState();
+    this.hydrateHeroFromSyncCache(this.currentHero, true);
+
     if (prevHeroCount <= 1 && this.heroItems.length > 1) {
       this.startHeroTimer();
+    } else if (this.heroItems.length <= 1) {
+      this.stopHeroTimer(false);
     }
+
+    if (this.currentHero?.channel?.id !== prevHeroId) {
+      this.recordHeroShown(this.currentHero?.channel?.id);
+      this.updateAmbientBackground();
+      this.preloadVisibleHeroImages();
+    }
+  }
+
+  private applyContentPreferences(): void {
+    if (this.selectedContentPref === "all") {
+      this.discoveryRows = this.masterDiscoveryRows;
+    } else {
+      this.discoveryRows = this.masterDiscoveryRows
+        .map((row) => {
+          if (row.id === "row-continue-watching") {
+            return row;
+          }
+          const filtered = row.items.filter((item) =>
+            this.matchesContentPreference(item, this.selectedContentPref)
+          );
+          return {
+            ...row,
+            items: filtered,
+          };
+        })
+        .filter((row) => row.items.length > 0);
+    }
+
+    this.applyHeroPreferences();
+    this.rowCanScrollRight = {};
+    this.debouncedCheckAllRowsScrollState();
   }
 
   matchesContentPreference(channel: Channel, pref: ContentPreference): boolean {
@@ -2248,7 +2291,6 @@ export class HomeDiscoveryComponent implements OnInit, AfterViewInit, OnDestroy 
   private recordHeroShown(channelId?: number): void {
     if (!channelId || isNaN(channelId) || channelId <= 0) return;
     this.discoveryState.setActiveHero(channelId);
-    this.preloadVisibleHeroImages();
     try {
       const recent = this.getRecentHeroIds();
       if (recent.length > 0 && recent[0] === channelId) {
@@ -4994,10 +5036,10 @@ export class HomeDiscoveryComponent implements OnInit, AfterViewInit, OnDestroy 
     const cached = this.tmdbEnrichment.getEnrichmentSync(channel);
     if (cached) {
       if (cached.backdropPath) {
-        const bd = getTmdbBackdropUrl(cached.backdropPath, 'original') || getTmdbBackdropUrl(cached.backdropPath, 'w1280');
+        const bd = this.resolveHeroBackdropUrl(cached.backdropPath);
         if (bd) imageUrl = bd;
       }
-      if (cached.logoPath && cached.logoVersion === 2) {
+      if (cached.logoPath && cached.logoVersion === CURRENT_LOGO_ALGO_VERSION) {
         logoUrl = getTmdbLogoUrl(cached.logoPath, 'w500');
       }
       if (cached.overview) {
@@ -5036,37 +5078,42 @@ export class HomeDiscoveryComponent implements OnInit, AfterViewInit, OnDestroy 
     };
   }
 
+  private removeHeroItem(channelId?: number): void {
+    if (channelId == null) return;
+    this.masterHeroItems = this.masterHeroItems.filter((h) => h.channel.id !== channelId);
+    this.heroItems = this.heroItems.filter((h) => h.channel.id !== channelId);
+    if (this.heroItems.length === 0 && this.masterHeroItems.length > 0) {
+      this.heroItems = [...this.masterHeroItems];
+    }
+    if (this.currentHeroIndex >= this.heroItems.length) {
+      this.currentHeroIndex = 0;
+    }
+    this.hydrateHeroFromSyncCache(this.currentHero, true);
+    this.recordHeroShown(this.currentHero?.channel?.id);
+    this.updateAmbientBackground();
+    this.preloadVisibleHeroImages();
+    this.cdr.markForCheck();
+  }
+
   applyEnrichmentUpdate(enrichment: TmdbMediaEnrichment): void {
     if (!enrichment.providerItemId) return;
 
-    if (enrichment.providerItemId) {
-      this.cardArtworkCache.delete(enrichment.providerItemId);
-      this.cwArtworkCache.delete(enrichment.providerItemId);
-    }
+    this.cardArtworkCache.delete(enrichment.providerItemId);
+    this.cwArtworkCache.delete(enrichment.providerItemId);
 
-    const matches = [
+    const matchSet = new Set<HeroItem>([
       ...this.masterHeroItems.filter((h) => h.channel.id === enrichment.providerItemId),
       ...this.heroItems.filter((h) => h.channel.id === enrichment.providerItemId),
-    ];
+    ]);
+    const matches = Array.from(matchSet);
 
     for (const heroMatch of matches) {
       if (this.isBollywood(heroMatch.channel, enrichment) && (!enrichment.logoPath || enrichment.logoPath.trim() === '')) {
-        this.masterHeroItems = this.masterHeroItems.filter((h) => h.channel.id !== heroMatch.channel.id);
-        this.heroItems = this.heroItems.filter((h) => h.channel.id !== heroMatch.channel.id);
-        if (this.heroItems.length === 0 && this.masterHeroItems.length > 0) {
-          this.heroItems = [...this.masterHeroItems];
-        }
-        if (this.currentHeroIndex >= this.heroItems.length) {
-          this.currentHeroIndex = 0;
-        }
-        this.recordHeroShown(this.currentHero?.channel?.id);
-        this.updateAmbientBackground();
-        this.preloadVisibleHeroImages();
-        this.cdr.markForCheck();
+        this.removeHeroItem(heroMatch.channel.id);
         continue;
       }
       if (enrichment.backdropPath) {
-        const bd = getTmdbBackdropUrl(enrichment.backdropPath, 'original') || getTmdbBackdropUrl(enrichment.backdropPath, 'w1280');
+        const bd = this.resolveHeroBackdropUrl(enrichment.backdropPath);
         if (bd) heroMatch.imageUrl = bd;
       }
       if (enrichment.logoPath && enrichment.logoVersion === CURRENT_LOGO_ALGO_VERSION) {
@@ -5114,18 +5161,7 @@ export class HomeDiscoveryComponent implements OnInit, AfterViewInit, OnDestroy 
       this.discoveryState.updateHeroItemMetadata(hero.channel.id, { logoUrl: undefined });
     }
     if (this.isBollywood(hero.channel)) {
-      this.masterHeroItems = this.masterHeroItems.filter((h) => h.channel.id !== hero.channel.id);
-      this.heroItems = this.heroItems.filter((h) => h.channel.id !== hero.channel.id);
-      if (this.heroItems.length === 0 && this.masterHeroItems.length > 0) {
-        this.heroItems = [...this.masterHeroItems];
-      }
-      if (this.currentHeroIndex >= this.heroItems.length) {
-        this.currentHeroIndex = 0;
-      }
-      this.recordHeroShown(this.currentHero?.channel?.id);
-      this.updateAmbientBackground();
-      this.preloadVisibleHeroImages();
-      this.cdr.markForCheck();
+      this.removeHeroItem(hero.channel.id);
     }
   }
 
