@@ -12,6 +12,14 @@
   --lh-accent-soft: rgba(255, 77, 109, 0.14);
   --lh-accent-border: rgba(255, 77, 109, 0.45);
   --lh-accent-contrast: #ffffff;
+  --lh-glass-vibrant-bg: rgba(255, 255, 255, 0.08);
+  --lh-glass-vibrant-bg-hover: rgba(255, 255, 255, 0.14);
+  --lh-glass-vibrant-bg-active: rgba(255, 255, 255, 0.11);
+  --lh-glass-vibrant-filter: blur(24px) saturate(180%);
+  --lh-glass-vibrant-border: rgba(255, 255, 255, 0.14);
+  --lh-glass-vibrant-border-hover: rgba(255, 255, 255, 0.24);
+  --lh-glass-vibrant-shadow: 0 16px 40px rgba(0, 0, 0, 0.45), 0 1px 0 rgba(255, 255, 255, 0.18) inset;
+  --lh-glass-vibrant-shadow-hover: 0 18px 44px rgba(0, 0, 0, 0.5), 0 1px 0 rgba(255, 255, 255, 0.24) inset;
   accent-color: var(--lh-accent);
   caret-color: var(--lh-accent);
 }
@@ -1426,15 +1434,15 @@ body:has(app-tv-detail)::-webkit-scrollbar {
   min-width: 40px;
   min-height: 40px;
   border-radius: 50%;
-  background: rgba(255, 255, 255, 0.08);
-  backdrop-filter: blur(16px);
-  -webkit-backdrop-filter: blur(16px);
-  border: 1px solid rgba(255, 255, 255, 0.14);
+  background: var(--lh-glass-vibrant-bg);
+  backdrop-filter: var(--lh-glass-vibrant-filter);
+  -webkit-backdrop-filter: var(--lh-glass-vibrant-filter);
+  border: 1px solid var(--lh-glass-vibrant-border);
   color: #ffffff;
   cursor: pointer;
   padding: 0;
   outline: none;
-  box-shadow: 0 4px 14px rgba(0, 0, 0, 0.3);
+  box-shadow: var(--lh-glass-vibrant-shadow);
   transition: all 0.2s cubic-bezier(0.16, 1, 0.3, 1);
   user-select: none;
   flex-shrink: 0;
@@ -1443,18 +1451,18 @@ body:has(app-tv-detail)::-webkit-scrollbar {
 .lh-back-btn:hover,
 .detail-back-btn:hover,
 .btn-back-glass:hover {
-  background: rgba(255, 255, 255, 0.16);
-  border-color: rgba(255, 255, 255, 0.26);
+  background: var(--lh-glass-vibrant-bg-hover);
+  border-color: var(--lh-glass-vibrant-border-hover);
   color: #ffffff;
   transform: scale(1.05);
-  box-shadow: 0 6px 18px rgba(0, 0, 0, 0.4);
+  box-shadow: var(--lh-glass-vibrant-shadow-hover);
 }
 
 .lh-back-btn:active,
 .detail-back-btn:active,
 .btn-back-glass:active {
   transform: scale(0.96);
-  background: rgba(255, 255, 255, 0.12);
+  background: var(--lh-glass-vibrant-bg-active);
 }
 
 .lh-back-btn svg,
@@ -1472,12 +1480,6 @@ body:has(app-tv-detail)::-webkit-scrollbar {
   top: 1.2rem;
   left: 6.2rem;
   z-index: 60;
-  background: rgba(15, 17, 23, 0.72);
-}
-
-.detail-back-btn:hover {
-  background: rgba(255, 255, 255, 0.18);
-  border-color: rgba(255, 255, 255, 0.28);
 }
 
 /* ── Cinematic Hero Banner ── */
