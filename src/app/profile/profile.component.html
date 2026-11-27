@@ -9,17 +9,12 @@
   <div class="container px-md-5 px-3">
   <!-- Profile Section Tabs Header -->
   <div class="profile-header mt-3 mb-4">
-    <div class="profile-top-bar mb-3">
-      <div class="profile-top-left">
-        <button type="button" class="lh-back-btn profile-back-btn" (click)="goBack()" title="Go back" aria-label="Go back">
-          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round">
-            <path d="M15 18l-6-6 6-6" />
-          </svg>
-        </button>
-        <h2 class="profile-title mb-0">Profile</h2>
-      </div>
-    </div>
-    <div class="profile-nav-pill mx-auto" role="tablist" aria-label="Profile sections">
+    <button type="button" class="lh-back-btn profile-back-btn" (click)="goBack()" title="Go back" aria-label="Go back">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round">
+        <path d="M15 18l-6-6 6-6" />
+      </svg>
+    </button>
+    <div class="profile-nav-pill" role="tablist" aria-label="Profile sections">
       <button 
         type="button" 
         class="profile-pill-btn" 
@@ -60,6 +55,7 @@
         <span class="pill-badge" *ngIf="countsLoaded">{{ profileCounts.hidden.total }}</span>
       </button>
     </div>
+    <span class="profile-header-spacer" aria-hidden="true"></span>
   </div>
 
   <!-- SECTION 1: FAVORITES -->
