@@ -314,12 +314,12 @@
       </div>
 
       <!-- Empty State -->
-      <div class="episodes-empty-state" *ngIf="!loadingSeasons && !loadingEpisodes && enrichedEpisodes.length === 0">
+      <div class="episodes-empty-state" *ngIf="!loadingSeasons && !loadingEpisodes && enrichedEpisodes.length === 0 && upcomingEpisodes.length === 0">
         <p class="text-secondary mb-0">No episodes found for this season.</p>
       </div>
 
       <!-- Real Episode Cards Grid/List -->
-      <div class="episodes-list progressive-fade-in" *ngIf="!loadingSeasons && !loadingEpisodes && enrichedEpisodes.length > 0">
+      <div class="episodes-list progressive-fade-in" *ngIf="!loadingSeasons && !loadingEpisodes && (enrichedEpisodes.length > 0 || upcomingEpisodes.length > 0)">
         <div 
           *ngFor="let ep of enrichedEpisodes" 
           class="episode-card" 
@@ -391,6 +391,52 @@
 
             <p class="episode-overview" *ngIf="ep.overview">
               {{ ep.overview }}
+            </p>
+          </div>
+        </div>
+
+        <!-- Upcoming / Planned TMDB Episodes (Display-only) -->
+        <div
+          *ngFor="let up of upcomingEpisodes"
+          class="episode-card episode-card-upcoming"
+          aria-disabled="true">
+
+          <div class="episode-thumb-wrap">
+            <img
+              *ngIf="up.stillUrl && !isEpisodeImageBroken(-up.tmdbEpisodeId)"
+              [src]="up.stillUrl"
+              (error)="onEpisodeImageError(-up.tmdbEpisodeId)"
+              class="episode-thumb-img progressive-fade-in"
+              alt="{{ up.title }}"
+              loading="lazy" />
+
+            <div *ngIf="!up.stillUrl || isEpisodeImageBroken(-up.tmdbEpisodeId)" class="episode-thumb-fallback">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+                <rect x="3" y="4" width="18" height="18" rx="2" ry="2"/>
+                <line x1="16" y1="2" x2="16" y2="6"/>
+                <line x1="8" y1="2" x2="8" y2="6"/>
+                <line x1="3" y1="10" x2="21" y2="10"/>
+              </svg>
+              <span class="ep-fallback-num">E{{ up.episodeNum }}</span>
+            </div>
+
+            <div class="episode-upcoming-badge" [class.is-aired]="!up.isFutureRelease">
+              <span>{{ up.isFutureRelease ? 'Upcoming' : 'Unavailable' }}</span>
+            </div>
+          </div>
+
+          <div class="episode-info-wrap">
+            <div class="episode-title-row">
+              <h4 class="episode-title">{{ up.title }}</h4>
+
+              <div class="episode-meta-badges">
+                <span class="ep-chip" *ngIf="up.runtimeText">{{ up.runtimeText }}</span>
+                <span class="ep-chip ep-upcoming-chip" [class.is-aired]="!up.isFutureRelease">{{ up.statusLabel }}</span>
+              </div>
+            </div>
+
+            <p class="episode-overview" *ngIf="up.overview">
+              {{ up.overview }}
             </p>
           </div>
         </div>

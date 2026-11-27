@@ -70,6 +70,20 @@ export interface EnrichedEpisode {
   isWatched?: boolean;
 }
 
+export interface UpcomingEpisode {
+  tmdbEpisodeId: number;
+  episodeNum: number;
+  seasonNum: number;
+  title: string;
+  overview?: string;
+  stillUrl?: string;
+  airDate?: string;
+  formattedAirDate?: string;
+  statusLabel: string;
+  isFutureRelease: boolean;
+  runtimeText?: string;
+}
+
 @Component({
   selector: 'app-tv-detail',
   templateUrl: './tv-detail.component.html',
@@ -130,6 +144,7 @@ export class TvDetailComponent implements OnInit, AfterViewInit, OnDestroy {
   showSeasonMenu: boolean = false;
   episodes: Channel[] = [];
   enrichedEpisodes: EnrichedEpisode[] = [];
+  upcomingEpisodes: UpcomingEpisode[] = [];
   continueEpisode?: EnrichedEpisode;
   lastWatchedEpisode?: Channel;
   highlightedEpisodeId?: number;
@@ -434,6 +449,7 @@ export class TvDetailComponent implements OnInit, AfterViewInit, OnDestroy {
     this.selectedSeason = undefined;
     this.episodes = [];
     this.enrichedEpisodes = [];
+    this.upcomingEpisodes = [];
     this.loadingSeasons = false;
     this.loadingEpisodes = false;
     this.continueEpisode = undefined;
@@ -570,6 +586,7 @@ export class TvDetailComponent implements OnInit, AfterViewInit, OnDestroy {
           this.selectedSeason = undefined;
           this.episodes = [];
           this.enrichedEpisodes = [];
+          this.upcomingEpisodes = [];
           this.continueEpisode = undefined;
           await this.loadSeasonsAndEpisodes(this.show);
         }
@@ -673,6 +690,7 @@ export class TvDetailComponent implements OnInit, AfterViewInit, OnDestroy {
     this.selectedSeason = undefined;
     this.episodes = [];
     this.enrichedEpisodes = [];
+    this.upcomingEpisodes = [];
     this.continueEpisode = undefined;
     await this.loadSeasonsAndEpisodes(this.show);
   }
@@ -1085,6 +1103,7 @@ export class TvDetailComponent implements OnInit, AfterViewInit, OnDestroy {
       if (this.show !== show || requestId !== this.episodeLoadRequestId) return;
       console.error('Failed to load episodes for season:', err);
       this.enrichedEpisodes = [];
+      this.upcomingEpisodes = [];
     } finally {
       if (this.show === show && requestId === this.episodeLoadRequestId) {
         this.loadingEpisodes = false;
@@ -1171,6 +1190,69 @@ export class TvDetailComponent implements OnInit, AfterViewInit, OnDestroy {
         isWatched,
       };
     });
+
+    this.upcomingEpisodes = this.buildUpcomingEpisodes(tmdbSeason);
+  }
+
+  private getTodayIsoDate(): string {
+    const now = new Date();
+    return `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-${String(now.getDate()).padStart(2, '0')}`;
+  }
+
+  private formatUpcomingAirDate(isoDate: string): string {
+    const match = isoDate.match(/^(\d{4})-(\d{2})-(\d{2})$/);
+    if (!match) return isoDate;
+    const d = new Date(Number(match[1]), Number(match[2]) - 1, Number(match[3]));
+    if (Number.isNaN(d.getTime())) return isoDate;
+    return d.toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' });
+  }
+
+  private buildUpcomingEpisodes(tmdbSeason?: TmdbSeasonDetail): UpcomingEpisode[] {
+    if (!tmdbSeason?.episodes || tmdbSeason.episodes.length === 0) return [];
+    const availableEpNums = new Set(this.enrichedEpisodes.map((ep) => ep.episodeNum));
+    const todayIso = this.getTodayIsoDate();
+
+    return tmdbSeason.episodes
+      .filter((ep) => ep.episodeNumber > 0 && !availableEpNums.has(ep.episodeNumber))
+      .sort((a, b) => a.episodeNumber - b.episodeNumber)
+      .map((ep, idx) => {
+        const rawName = (ep.name || '').trim();
+        const hasEpPrefix = /^(?:episode|ep\.?|e)\s*\d+/i.test(rawName);
+        const title = rawName
+          ? hasEpPrefix
+            ? rawName
+            : `E${ep.episodeNumber} · ${rawName}`
+          : `Episode ${ep.episodeNumber}`;
+
+        let isFutureRelease = true;
+        let formattedAirDate: string | undefined;
+        let statusLabel = 'Release Date TBA';
+
+        if (ep.airDate) {
+          formattedAirDate = this.formatUpcomingAirDate(ep.airDate);
+          if (ep.airDate > todayIso) {
+            isFutureRelease = true;
+            statusLabel = `Releases ${formattedAirDate}`;
+          } else {
+            isFutureRelease = false;
+            statusLabel = 'Aired · Not on source';
+          }
+        }
+
+        return {
+          tmdbEpisodeId: ep.id || (this.selectedSeasonNumber * 10000 + ep.episodeNumber + idx),
+          episodeNum: ep.episodeNumber,
+          seasonNum: this.selectedSeasonNumber,
+          title,
+          overview: ep.overview,
+          stillUrl: ep.stillPath ? getTmdbStillUrl(ep.stillPath, 'w300') : undefined,
+          airDate: ep.airDate,
+          formattedAirDate,
+          statusLabel,
+          isFutureRelease,
+          runtimeText: this.formatRuntime(ep.runtime),
+        };
+      });
   }
 
   private async reEnrichEpisodes(): Promise<void> {

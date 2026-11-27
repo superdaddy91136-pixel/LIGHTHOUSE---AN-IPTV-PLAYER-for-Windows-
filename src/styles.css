@@ -2783,6 +2783,41 @@ body:has(app-tv-detail)::-webkit-scrollbar {
 .episode-card.highlighted .episode-title {
   color: var(--lh-accent);
 }
+.episode-card.episode-card-upcoming {
+  cursor: default;
+  opacity: 0.72;
+}
+.episode-card.episode-card-upcoming:hover {
+  background: linear-gradient(180deg, rgba(255, 255, 255, 0.045) 0%, rgba(255, 255, 255, 0.015) 100%);
+  border-color: rgba(255, 255, 255, 0.07);
+  box-shadow: 0 2px 4px rgba(0, 0, 0, 0.25), 0 8px 24px rgba(0, 0, 0, 0.35), inset 0 1px 0 rgba(255, 255, 255, 0.12), inset 0 -1px 0 rgba(0, 0, 0, 0.2);
+  transform: none;
+}
+.episode-card.episode-card-upcoming .episode-thumb-img {
+  filter: saturate(0.75) brightness(0.85);
+}
+.episode-upcoming-badge {
+  position: absolute;
+  top: 6px;
+  left: 6px;
+  display: inline-flex;
+  align-items: center;
+  background: rgba(14, 16, 22, 0.72);
+  backdrop-filter: blur(8px);
+  -webkit-backdrop-filter: blur(8px);
+  border: 1px solid rgba(255, 255, 255, 0.16);
+  color: rgba(255, 255, 255, 0.88);
+  font-size: 0.62rem;
+  font-weight: 600;
+  letter-spacing: 0.03em;
+  padding: 2.5px 7px;
+  border-radius: 5px;
+  z-index: 2;
+}
+.episode-upcoming-badge.is-aired {
+  border-color: rgba(245, 158, 11, 0.35);
+  color: #fcd34d;
+}
 .episode-card:hover .episode-play-circle {
   transform: scale(1.05);
   background: rgba(255, 255, 255, 0.28);
@@ -2955,6 +2990,16 @@ body:has(app-tv-detail)::-webkit-scrollbar {
   background: rgba(245, 158, 11, 0.12);
   border-color: rgba(245, 158, 11, 0.25);
   font-weight: 600;
+}
+.ep-chip.ep-upcoming-chip {
+  color: rgba(255, 255, 255, 0.78);
+  background: rgba(255, 255, 255, 0.07);
+  border-color: rgba(255, 255, 255, 0.14);
+}
+.ep-chip.ep-upcoming-chip.is-aired {
+  color: #fcd34d;
+  background: rgba(245, 158, 11, 0.1);
+  border-color: rgba(245, 158, 11, 0.22);
 }
 
 .episode-overview {

@@ -433,6 +433,17 @@ export class TmdbEnrichmentService {
   }
 
   /**
+   * Returns true if a cached season has unreleased, unscheduled, or recently aired episodes
+   * so ongoing shows refresh metadata more frequently than completed catalog seasons.
+   */
+  private isSeasonPotentiallyOngoing(season: TmdbSeasonDetail): boolean {
+    if (!season.episodes || season.episodes.length === 0) return true;
+    const cutoff = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000);
+    const cutoffIso = `${cutoff.getFullYear()}-${String(cutoff.getMonth() + 1).padStart(2, '0')}-${String(cutoff.getDate()).padStart(2, '0')}`;
+    return season.episodes.some((ep) => !ep.airDate || ep.airDate >= cutoffIso);
+  }
+
+  /**
    * Fetches TV season details with cache-first strategy.
    */
   async getSeasonDetails(
@@ -440,7 +451,11 @@ export class TmdbEnrichmentService {
     seasonNumber: number,
   ): Promise<TmdbSeasonDetail | undefined> {
     const cached = await this.cacheService.getSeasonDetail(tmdbId, seasonNumber);
-    if (cached && !this.cacheService.isStale(cached as any, 14 * 24 * 60 * 60 * 1000)) {
+    const ttlMs =
+      cached && this.isSeasonPotentiallyOngoing(cached)
+        ? 24 * 60 * 60 * 1000
+        : 14 * 24 * 60 * 60 * 1000;
+    if (cached && !this.cacheService.isStale(cached as any, ttlMs)) {
       return cached;
     }
 

@@ -246,4 +246,51 @@ describe('TvDetailComponent (Phase 4C Authoritative Series & Episode Progress)',
     expect(component.selectedSeason?.id).toBe(20);
     expect(component.continueEpisode?.channel.id).toBe(201);
   });
+
+  it('builds display-only upcomingEpisodes from TMDB season details without altering enrichedEpisodes or continueEpisode', async () => {
+    spyOn((component as any).tmdbEnrichment, 'getSeasonDetails').and.returnValue(
+      Promise.resolve({
+        id: 500,
+        tmdbId: 9001,
+        seasonNumber: 1,
+        name: 'Season 1',
+        episodeCount: 4,
+        lastUpdated: Date.now(),
+        episodes: [
+          { id: 1, episodeNumber: 1, seasonNumber: 1, name: 'Pilot', overview: 'Ep 1' },
+          { id: 2, episodeNumber: 2, seasonNumber: 1, name: 'Second', overview: 'Ep 2', airDate: '2020-01-10' },
+          { id: 3, episodeNumber: 3, seasonNumber: 1, name: 'Future Ep', overview: 'Coming soon', airDate: '2099-12-15' },
+          { id: 4, episodeNumber: 4, seasonNumber: 1, name: 'TBA Ep', airDate: undefined },
+        ],
+      }),
+    );
+
+    const show: Channel = {
+      id: 701,
+      name: 'Weekly Show',
+      media_type: MediaType.serie,
+      source_id: 1,
+      series_id: 701,
+    };
+    component.show = show;
+    component.enrichment = { tmdbId: 9001 } as any;
+
+    seasonChannelsResponse = [{ id: 10, name: 'Season 1', media_type: MediaType.serie, source_id: 1 }];
+    episodeChannelsResponse = [
+      { id: 101, name: 'Weekly Show S01E01', media_type: MediaType.movie, source_id: 1, series_id: 701, season_id: 10, episode_num: 1 },
+      { id: 102, name: 'Weekly Show S01E02', media_type: MediaType.movie, source_id: 1, series_id: 701, season_id: 10, episode_num: 2 },
+    ];
+
+    await component.loadSeasonsAndEpisodes(show);
+    await Promise.resolve();
+
+    expect(component.enrichedEpisodes.length).toBe(2);
+    expect(component.upcomingEpisodes.length).toBe(2);
+    expect(component.upcomingEpisodes[0].episodeNum).toBe(3);
+    expect(component.upcomingEpisodes[0].isFutureRelease).toBeTrue();
+    expect(component.upcomingEpisodes[0].statusLabel).toContain('Releases');
+    expect(component.upcomingEpisodes[1].episodeNum).toBe(4);
+    expect(component.upcomingEpisodes[1].statusLabel).toBe('Release Date TBA');
+    expect(component.continueEpisode?.episodeNum).toBe(1);
+  });
 });
