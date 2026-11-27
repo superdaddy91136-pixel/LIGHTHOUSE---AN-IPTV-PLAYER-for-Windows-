@@ -8,8 +8,8 @@ use tauri::{AppHandle, Emitter, Manager, State};
 use tokio::sync::Mutex;
 use types::{
     AppState, Channel, ContinueWatchingEntry, CustomChannel, CustomChannelExtraData, EPG,
-    EPGNotify, Filters, Group, IdName, LegacyWatchProgressEntry, NetworkInfo, Settings, Source,
-    SourceContentCounts, WatchProgressRecord, WatchProgressUpsert,
+    EPGNotify, Filters, Group, IdName, LegacyWatchProgressEntry, NetworkInfo, ProfileCounts,
+    Settings, Source, SourceContentCounts, WatchProgressRecord, WatchProgressUpsert,
 };
 
 pub mod auto_refresh;
@@ -57,6 +57,7 @@ pub fn run() {
             export_settings_backup,
             import_settings_backup,
             get_storage_stats,
+            get_profile_counts,
             search,
             cancel_search,
             bulk_update,
@@ -750,6 +751,11 @@ fn get_adjacent_live_channel(
 #[tauri::command(async)]
 fn get_storage_stats() -> Result<types::StorageStats, String> {
     settings::get_storage_stats().map_err(map_err_frontend)
+}
+
+#[tauri::command(async)]
+fn get_profile_counts() -> Result<ProfileCounts, String> {
+    sql::get_profile_counts().map_err(map_err_frontend)
 }
 
 fn restore_main_window_state(window: &tauri::WebviewWindow) {

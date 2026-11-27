@@ -6,8 +6,9 @@ import { Channel } from '../models/channel';
 import { Filters } from '../models/filters';
 import { ViewMode } from '../models/viewMode';
 import { MediaType } from '../models/mediaType';
-import { SortType } from '../models/sortType';
 import { MemoryService } from '../memory.service';
+
+const FAVORITES_PAGE_SIZE = 36;
 
 export interface FavoriteChangeEvent {
   channelId: number;
@@ -222,18 +223,17 @@ export class FavoritesService {
         media_types: [MediaType.livestream, MediaType.movie, MediaType.serie],
         page: 1,
         use_keywords: false,
-        sort: SortType.alphabeticalAscending,
       };
 
       let allFavs: Channel[] = [];
       let page = 1;
       let hasMore = true;
-      while (hasMore && page <= 25) {
+      while (hasMore) {
         filters.page = page;
         const res = (await invoke('search', { filters })) as Channel[];
         if (res && res.length > 0) {
           allFavs = allFavs.concat(res);
-          hasMore = res.length === 36;
+          hasMore = res.length === FAVORITES_PAGE_SIZE;
           page++;
         } else {
           hasMore = false;

@@ -46,11 +46,12 @@
 
 <!-- MODERN LIGHTHOUSE POSTER & CATEGORY CARDS (Movies, TV Shows & Favorites) -->
 <ng-container *ngIf="isCard">
-  <div id="tile-{{ id }}" tabindex="0" (keyup.enter)="click()" [ngClass]="{
+  <div id="tile-{{ id }}" [attr.tabindex]="isNonClickableHiddenGroup ? -1 : 0" (keyup.enter)="click()" [ngClass]="{
       playing: starting,
       faded: fade,
       'lh-category-card': isGroupTile,
-      'lh-media-card': !isGroupTile
+      'lh-media-card': !isGroupTile,
+      'non-clickable': isNonClickableHiddenGroup
     }" (click)="click()" class="lh-card" (contextmenu)="onRightClick($event)"
     [attr.title]="channel?.name || ''">
 
@@ -106,7 +107,7 @@
       </div>
 
       <!-- Hover Overlay -->
-      <div class="card-hover-overlay">
+      <div class="card-hover-overlay" *ngIf="!isNonClickableHiddenGroup">
         <button type="button" class="hover-play-circle" [class.folder-hover-circle]="isGroupTile"
           (click)="onPlayClick($event)" [disabled]="starting" [attr.aria-label]="isGroupTile ? 'Open folder' : (starting ? 'Starting playback' : 'Play')" [title]="isGroupTile ? 'Open' : (starting ? 'Starting playback...' : 'Play')">
           <svg *ngIf="!isGroupTile && !starting" viewBox="0 0 24 24" fill="currentColor">

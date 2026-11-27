@@ -28,11 +28,28 @@
   background: transparent;
 }
 
+.profile-header {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+}
+
+.profile-top-bar {
+  width: 100%;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
 .profile-back-btn {
-  position: absolute;
-  top: 1.25rem;
-  left: 1.25rem;
-  z-index: 10;
+  position: static;
+}
+
+.profile-top-spacer {
+  width: 40px;
+  height: 40px;
+  flex-shrink: 0;
 }
 
 /* Profile liquid-glass tabs */
@@ -180,36 +197,18 @@
   color: rgba(255, 255, 255, 0.2);
 }
 
-/* Favorites Grouped Sections */
-.fav-group-section {
-  border-bottom: 1px solid rgba(255, 255, 255, 0.07);
-  padding-bottom: 1.5rem;
+.profile-feedback {
+  margin: 0 0 1rem;
+  color: rgba(255, 255, 255, 0.7);
+  font-size: 0.9rem;
 }
 
-.fav-group-section:last-child {
-  border-bottom: none;
-  padding-bottom: 0;
+.profile-feedback-error {
+  color: #fca5a5;
 }
 
-.fav-group-header {
+.profile-load-more {
   display: flex;
-  align-items: center;
-  gap: 10px;
-}
-
-.fav-group-title {
-  font-size: 1.2rem;
-  font-weight: 700;
-  color: #f1f5f9;
-  letter-spacing: -0.01em;
-}
-
-.fav-group-badge {
-  font-size: 0.76rem;
-  font-weight: 600;
-  padding: 2px 9px;
-  border-radius: 9999px;
-  background: rgba(255, 255, 255, 0.08);
-  color: rgba(255, 255, 255, 0.8);
-  border: 1px solid rgba(255, 255, 255, 0.12);
+  justify-content: center;
+  padding: 1rem 0 2rem;
 }

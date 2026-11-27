@@ -1081,7 +1081,7 @@ export class SettingsComponent {
       const filters: Filters = {
         source_ids: sourceIds,
         view_type: ViewMode.Hidden,
-        media_types: [MediaType.livestream, MediaType.movie, MediaType.serie],
+        media_types: [MediaType.livestream, MediaType.movie, MediaType.serie, MediaType.group],
         page: 1,
         use_keywords: false,
         sort: SortType.alphabeticalAscending,

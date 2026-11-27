@@ -178,6 +178,7 @@ pub struct Filters {
     pub series_id: Option<i64>,
     pub group_id: Option<i64>,
     pub use_keywords: bool,
+    #[serde(default)]
     pub sort: u8,
     pub season: Option<i64>,
 }
@@ -348,6 +349,22 @@ pub struct StorageStats {
     pub history_count: u64,
     pub hidden_count: u64,
     pub favorites_count: u64,
+}
+
+#[derive(Clone, PartialEq, Debug, Deserialize, Serialize, Default)]
+pub struct ProfileSectionCounts {
+    pub total: u64,
+    pub live: u64,
+    pub movies: u64,
+    pub series: u64,
+    pub groups: u64,
+}
+
+#[derive(Clone, PartialEq, Debug, Deserialize, Serialize, Default)]
+pub struct ProfileCounts {
+    pub favorites: ProfileSectionCounts,
+    pub history: ProfileSectionCounts,
+    pub hidden: ProfileSectionCounts,
 }
 
 #[derive(Clone, PartialEq, Debug, Deserialize, Serialize)]

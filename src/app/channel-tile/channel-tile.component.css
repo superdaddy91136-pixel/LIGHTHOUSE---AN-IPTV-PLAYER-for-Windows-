@@ -21,6 +21,9 @@
 .chevron-tile-icon { width: 18px; height: 18px; color: rgba(255,255,255,.4); flex-shrink: 0; margin-right: 6px; }
 .lh-card { width: 100%; max-width: 220px; margin: 0 auto; cursor: pointer; user-select: none; transition: transform .25s cubic-bezier(.2,0,.2,1); display: flex; flex-direction: column; }
 .lh-card:hover { transform: translateY(-5px); }
+.lh-card.non-clickable { cursor: default; }
+.lh-card.non-clickable:hover { transform: none; }
+.lh-card.non-clickable:hover .poster-container { box-shadow: none; border-color: rgba(255,255,255,.09); }
 .lh-card:focus { outline: none; }
 .lh-card:focus-visible .poster-container { border-color: var(--lh-accent, #ff4d6d); box-shadow: 0 0 0 2px var(--lh-accent-border, rgba(255, 77, 109, 0.45)); }
 .poster-container { aspect-ratio: 2/3; width: 100%; border-radius: 12px; overflow: hidden; position: relative; background: rgba(255,255,255,.04); border: 1px solid rgba(255,255,255,.09); box-shadow: none; transition: box-shadow .25s, border-color .25s; }

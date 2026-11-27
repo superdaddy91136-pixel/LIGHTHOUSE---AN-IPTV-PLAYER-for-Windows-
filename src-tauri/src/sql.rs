@@ -5,8 +5,8 @@ use crate::log::log;
 use crate::sort_type;
 use crate::types::{
     ChannelPreserve, ContinueWatchingEntry, CustomChannel, CustomChannelExtraData, EPGNotify,
-    ExportedGroup, FavoriteMapping, Group, IdName, LegacyWatchProgressEntry, Season,
-    WatchProgressRecord, WatchProgressUpsert,
+    ExportedGroup, FavoriteMapping, Group, IdName, LegacyWatchProgressEntry, ProfileCounts,
+    ProfileSectionCounts, Season, WatchProgressRecord, WatchProgressUpsert,
 };
 use crate::{
     media_type, source_type,
@@ -686,6 +686,149 @@ fn get_storage_counts_on_conn(sql: &rusqlite::Connection) -> Result<(u64, u64, u
     ))
 }
 
+pub fn get_profile_counts() -> Result<ProfileCounts> {
+    let sql = get_conn()?;
+    get_profile_counts_on_conn(&sql)
+}
+
+fn add_media_type_count(counts: &mut ProfileSectionCounts, media_type_val: u8, count: u64) {
+    match media_type_val {
+        media_type::LIVESTREAM => counts.live += count,
+        media_type::MOVIE => counts.movies += count,
+        media_type::SERIE => counts.series += count,
+        media_type::GROUP => counts.groups += count,
+        _ => {}
+    }
+}
+
+pub(crate) fn get_profile_counts_on_conn(sql: &rusqlite::Connection) -> Result<ProfileCounts> {
+    let mut counts = ProfileCounts::default();
+
+    {
+        let mut stmt = sql.prepare(
+            r#"
+            SELECT c.media_type, COUNT(1)
+            FROM channels c
+            INNER JOIN sources s ON s.id = c.source_id
+            WHERE s.enabled = 1
+              AND c.favorite = 1
+              AND c.hidden = 0
+              AND c.url IS NOT NULL
+              AND c.series_id IS NULL
+              AND c.season_id IS NULL
+              AND c.episode_num IS NULL
+              AND c.media_type IN (0, 1, 2)
+            GROUP BY c.media_type
+            "#,
+        )?;
+        let rows = stmt.query_map([], |row| {
+            Ok((row.get::<_, u8>(0)?, row.get::<_, i64>(1)?.max(0) as u64))
+        })?;
+        for row in rows.filter_map(Result::ok) {
+            add_media_type_count(&mut counts.favorites, row.0, row.1);
+        }
+        counts.favorites.total =
+            counts.favorites.live + counts.favorites.movies + counts.favorites.series;
+    }
+
+    {
+        let live_history: i64 = sql.query_row(
+            r#"
+            SELECT COUNT(1)
+            FROM channels c
+            INNER JOIN sources s ON s.id = c.source_id
+            WHERE s.enabled = 1
+              AND c.media_type = 0
+              AND c.last_watched IS NOT NULL
+              AND c.url IS NOT NULL
+              AND c.hidden = 0
+            "#,
+            [],
+            |row| row.get(0),
+        )?;
+        counts.history.live = live_history.max(0) as u64;
+
+        let mut stmt = sql.prepare(
+            r#"
+            SELECT c.media_type, COUNT(DISTINCT c.id)
+            FROM watch_history wh
+            INNER JOIN channels c ON c.id = wh.channel_id
+            INNER JOIN sources s ON s.id = c.source_id
+            WHERE wh.source_missing = 0
+              AND s.enabled = 1
+              AND c.media_type IN (1, 2)
+              AND c.url IS NOT NULL
+              AND c.hidden = 0
+            GROUP BY c.media_type
+            "#,
+        )?;
+        let rows = stmt.query_map([], |row| {
+            Ok((row.get::<_, u8>(0)?, row.get::<_, i64>(1)?.max(0) as u64))
+        })?;
+        for row in rows.filter_map(Result::ok) {
+            add_media_type_count(&mut counts.history, row.0, row.1);
+        }
+        counts.history.total =
+            counts.history.live + counts.history.movies + counts.history.series;
+    }
+
+    {
+        let mut stmt = sql.prepare(
+            r#"
+            SELECT c.media_type, COUNT(1)
+            FROM channels c
+            INNER JOIN sources s ON s.id = c.source_id
+            WHERE s.enabled = 1
+              AND c.hidden = 1
+              AND c.series_id IS NULL
+              AND c.media_type IN (0, 1, 2)
+            GROUP BY c.media_type
+            "#,
+        )?;
+        let rows = stmt.query_map([], |row| {
+            Ok((row.get::<_, u8>(0)?, row.get::<_, i64>(1)?.max(0) as u64))
+        })?;
+        for row in rows.filter_map(Result::ok) {
+            add_media_type_count(&mut counts.hidden, row.0, row.1);
+        }
+
+        let hidden_groups: i64 = sql.query_row(
+            r#"
+            SELECT COUNT(1)
+            FROM groups g
+            INNER JOIN sources s ON s.id = g.source_id
+            WHERE s.enabled = 1
+              AND g.hidden = 1
+              AND (g.media_type IS NULL OR g.media_type IN (0, 1, 2))
+            "#,
+            [],
+            |row| row.get(0),
+        )?;
+        counts.hidden.groups = hidden_groups.max(0) as u64;
+        counts.hidden.total = counts.hidden.live
+            + counts.hidden.movies
+            + counts.hidden.series
+            + counts.hidden.groups;
+    }
+
+    Ok(counts)
+}
+
+fn build_keyword_patterns(query: Option<&str>, use_keywords: bool) -> Vec<String> {
+    let q = query.unwrap_or("").trim();
+    if use_keywords {
+        let mut words: Vec<&str> = q.split_whitespace().collect();
+        words.sort_by(|a, b| b.len().cmp(&a.len()));
+        if words.is_empty() {
+            vec!["%".to_string()]
+        } else {
+            words.into_iter().map(|w| format!("%{w}%")).collect()
+        }
+    } else {
+        vec![format!("%{q}%")]
+    }
+}
+
 fn get_keywords_sql_aliased(size: usize, alias: &str) -> String {
     std::iter::repeat(format!("{alias}.name LIKE ?"))
         .take(size)
@@ -732,15 +875,7 @@ fn search_history_on_conn(sql: &rusqlite::Connection, filters: &Filters) -> Resu
         return Ok(Vec::new());
     }
 
-    let query = filters.query.as_deref().unwrap_or("");
-    let keywords: Vec<String> = match filters.use_keywords {
-        true => {
-            let mut words: Vec<&str> = query.split(' ').filter(|w| !w.is_empty()).collect();
-            words.sort_by(|a, b| b.len().cmp(&a.len()));
-            words.into_iter().map(|f| format!("%{f}%")).collect()
-        }
-        false => vec![format!("%{query}%")],
-    };
+    let keywords = build_keyword_patterns(filters.query.as_deref(), filters.use_keywords);
 
     let wants_live = media_types.contains(&media_type::LIVESTREAM);
     let vod_media_types: Vec<u8> = media_types
@@ -868,17 +1003,12 @@ pub fn search(filters: Filters) -> Result<Vec<Channel>> {
     let offset: u32 = (filters.page.max(1) as u32 - 1) * PAGE_SIZE as u32;
     let media_types = match filters.series_id.is_some() {
         true => vec![1],
-        false => filters.media_types.clone().unwrap(),
+        false => filters.media_types.clone().unwrap_or_default(),
     };
-    let query = filters.query.unwrap_or("".to_string());
-    let keywords: Vec<String> = match filters.use_keywords {
-        true => {
-            let mut words: Vec<&str> = query.split(' ').filter(|w| !w.is_empty()).collect();
-            words.sort_by(|a, b| b.len().cmp(&a.len()));
-            words.into_iter().map(|f| format!("%{f}%")).collect()
-        }
-        false => vec![format!("%{query}%")],
-    };
+    if media_types.is_empty() || filters.source_ids.is_empty() {
+        return Ok(Vec::new());
+    }
+    let keywords = build_keyword_patterns(filters.query.as_deref(), filters.use_keywords);
     let mut sql_query = format!(
         r#"
         SELECT * FROM CHANNELS
@@ -1049,15 +1179,7 @@ pub fn bulk_update(filters: Filters, action: u8) -> Result<()> {
 
     let (field, value) = get_action_params(action)?;
 
-    let query = filters.query.as_deref().unwrap_or("");
-    let keywords: Vec<String> = match filters.use_keywords {
-        true => {
-            let mut words: Vec<&str> = query.split(' ').filter(|w| !w.is_empty()).collect();
-            words.sort_by(|a, b| b.len().cmp(&a.len()));
-            words.into_iter().map(|f| format!("%{f}%")).collect()
-        }
-        false => vec![format!("%{query}%")],
-    };
+    let keywords = build_keyword_patterns(filters.query.as_deref(), filters.use_keywords);
 
     if filters.view_type == view_type::CATEGORIES
         && filters.group_id.is_none()
@@ -1253,61 +1375,72 @@ fn search_hidden(filters: Filters) -> Result<Vec<Channel>> {
 
     let media_types = match filters.series_id.is_some() {
         true => vec![1],
-        false => filters.media_types.clone().unwrap(),
+        false => filters.media_types.clone().unwrap_or_default(),
     };
+    if media_types.is_empty() || filters.source_ids.is_empty() {
+        return Ok(Vec::new());
+    }
 
-    let query = filters.query.unwrap_or("".to_string());
-    let keywords: Vec<String> = match filters.use_keywords {
-        true => {
-            let mut words: Vec<&str> = query.split(' ').filter(|w| !w.is_empty()).collect();
-            words.sort_by(|a, b| b.len().cmp(&a.len()));
-            words.into_iter().map(|f| format!("%{f}%")).collect()
-        }
-        false => vec![format!("%{query}%")],
-    };
+    let channel_types: Vec<u8> = media_types
+        .iter()
+        .copied()
+        .filter(|&m| m != media_type::GROUP)
+        .collect();
+    let wants_groups = media_types.contains(&media_type::GROUP);
+    if channel_types.is_empty() && !wants_groups {
+        return Ok(Vec::new());
+    }
 
+    let keywords = build_keyword_patterns(filters.query.as_deref(), filters.use_keywords);
     let keywords_sql = get_keywords_sql(keywords.len());
-    let media_placeholders = generate_placeholders(media_types.len());
     let source_placeholders = generate_placeholders(filters.source_ids.len());
 
-    let sql_query = format!(
-        r#"
-        SELECT id, image, name, series_id, source_id, stream_id, tv_archive, url, episode_num, hidden, media_type, NULL as group_id, NULL as season_id, favorite
-        FROM channels
-        WHERE ({})
-        AND media_type IN ({})
-        AND source_id IN ({})
-        AND hidden = 1
-        AND series_id IS NULL
-        UNION ALL
-        SELECT id, image, name, NULL as series_id, source_id, NULL as stream_id, NULL as tv_archive, NULL as url, NULL as episode_num, hidden, 3 as media_type, NULL as group_id, NULL as season_id, 0 as favorite
-        FROM groups
-        WHERE ({})
-        AND source_id IN ({})
-        AND (media_type IS NULL OR media_type IN ({}))
-        AND hidden = 1
-        ORDER BY name ASC
-        LIMIT ?, ?
-        "#,
-        keywords_sql,
-        media_placeholders,
-        source_placeholders,
-        keywords_sql,
-        source_placeholders,
-        media_placeholders
-    );
-
+    let mut branches: Vec<String> = Vec::with_capacity(2);
     let mut params: Vec<&dyn rusqlite::ToSql> = Vec::new();
 
-    // Channels params
-    params.extend(to_to_sql(&keywords));
-    params.extend(to_to_sql(&media_types));
-    params.extend(to_to_sql(&filters.source_ids));
+    if !channel_types.is_empty() {
+        let media_placeholders = generate_placeholders(channel_types.len());
+        branches.push(format!(
+            r#"
+        SELECT id, image, name, series_id, source_id, stream_id, tv_archive, url, episode_num, hidden, media_type, NULL as group_id, NULL as season_id, favorite
+        FROM channels
+        WHERE ({keywords_sql})
+        AND media_type IN ({media_placeholders})
+        AND source_id IN ({source_placeholders})
+        AND hidden = 1
+        AND series_id IS NULL"#
+        ));
+        params.extend(to_to_sql(&keywords));
+        params.extend(to_to_sql(&channel_types));
+        params.extend(to_to_sql(&filters.source_ids));
+    }
 
-    // Groups params
-    params.extend(to_to_sql(&keywords));
-    params.extend(to_to_sql(&filters.source_ids));
-    params.extend(to_to_sql(&media_types));
+    if wants_groups {
+        let group_media_clause = if channel_types.is_empty() {
+            String::new()
+        } else {
+            let group_media_placeholders = generate_placeholders(channel_types.len());
+            format!("\n        AND (media_type IS NULL OR media_type IN ({group_media_placeholders}))")
+        };
+        branches.push(format!(
+            r#"
+        SELECT id, image, name, NULL as series_id, source_id, NULL as stream_id, NULL as tv_archive, NULL as url, NULL as episode_num, hidden, 3 as media_type, NULL as group_id, NULL as season_id, 0 as favorite
+        FROM groups
+        WHERE ({keywords_sql})
+        AND source_id IN ({source_placeholders}){group_media_clause}
+        AND hidden = 1"#
+        ));
+        params.extend(to_to_sql(&keywords));
+        params.extend(to_to_sql(&filters.source_ids));
+        if !channel_types.is_empty() {
+            params.extend(to_to_sql(&channel_types));
+        }
+    }
+
+    let sql_query = format!(
+        "{}\nORDER BY name ASC\nLIMIT ?, ?",
+        branches.join("\nUNION ALL\n")
+    );
 
     params.push(&offset);
     params.push(&PAGE_SIZE);

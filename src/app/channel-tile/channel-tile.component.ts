@@ -164,6 +164,7 @@ export class ChannelTileComponent implements OnInit, OnDestroy, OnChanges {
   @Input() viewMode: number = 0;
   @Input() isLiveTvCard?: boolean;
   @Output() unhidden = new EventEmitter<Channel>();
+  @Output() removedFromHistory = new EventEmitter<Channel>();
   @ViewChild(MatMenuTrigger, { static: true }) matMenuTrigger!: MatMenuTrigger;
   menuTopLeftPosition = { x: 0, y: 0 };
   showImage: boolean = true;
@@ -278,9 +279,13 @@ export class ChannelTileComponent implements OnInit, OnDestroy, OnChanges {
     }
   }
 
+  get isNonClickableHiddenGroup(): boolean {
+    return this.viewMode === ViewMode.Hidden && this.isGroupTile;
+  }
+
   async onPlayClick(event: MouseEvent): Promise<void> {
     event.stopPropagation();
-    if (this.starting) return;
+    if (this.starting || this.isNonClickableHiddenGroup) return;
     if (this.isGroup()) {
       this.click();
       return;
@@ -301,7 +306,7 @@ export class ChannelTileComponent implements OnInit, OnDestroy, OnChanges {
   }
 
   async click() {
-    if (this.starting === true) {
+    if (this.starting === true || this.isNonClickableHiddenGroup) {
       return;
     }
     if (this.channel?.media_type === MediaType.serie) {
@@ -437,6 +442,9 @@ export class ChannelTileComponent implements OnInit, OnDestroy, OnChanges {
       await invoke("remove_from_history", { id: this.channel!.id });
       if (this.channel?.id != null) {
         this.embeddedPlayer.clearWatchHistoryCaches([this.channel.id]);
+      }
+      if (this.channel) {
+        this.removedFromHistory.emit(this.channel);
       }
       this.memory.Refresh.next(false);
       this.toastr.success(`Removed "${this.channel?.name}" from history`);

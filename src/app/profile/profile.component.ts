@@ -1,93 +1,120 @@
-import { ChangeDetectorRef, Component, HostListener, OnDestroy, OnInit } from "@angular/core";
+import { ChangeDetectionStrategy, ChangeDetectorRef, Component, HostListener, OnDestroy, OnInit } from "@angular/core";
 import { Router } from "@angular/router";
 import { invoke } from "@tauri-apps/api/core";
-import { ToastrService } from "ngx-toastr";
-import { Subscription } from "rxjs";
+import { Subject, Subscription } from "rxjs";
+import { debounceTime } from "rxjs/operators";
 import { MemoryService } from "../memory.service";
 import { Channel } from "../models/channel";
 import { Filters } from "../models/filters";
 import { MediaType } from "../models/mediaType";
 import { NavTab } from "../models/navTab";
-import { SortType } from "../models/sortType";
 import { SourceType } from "../models/sourceType";
 import { ViewMode } from "../models/viewMode";
 import { EmbeddedPlayerService } from "../services/embedded-player.service";
 import { FavoritesService } from "../services/favorites.service";
 
+type ProfileSection = "favorites" | "history" | "hidden";
+
+export interface ProfileSectionCounts {
+  total: number;
+  live: number;
+  movies: number;
+  series: number;
+  groups: number;
+}
+
+export interface ProfileCounts {
+  favorites: ProfileSectionCounts;
+  history: ProfileSectionCounts;
+  hidden: ProfileSectionCounts;
+}
+
+const emptySectionCounts = (): ProfileSectionCounts => ({
+  total: 0,
+  live: 0,
+  movies: 0,
+  series: 0,
+  groups: 0,
+});
+
+// Kept in sync with the existing Rust search page size until that command exposes pagination metadata.
+const PROFILE_PAGE_SIZE = 36;
+const SEARCH_DEBOUNCE_MS = 300;
+
 @Component({
   selector: "app-profile",
   templateUrl: "./profile.component.html",
   styleUrl: "./profile.component.css",
+  changeDetection: ChangeDetectionStrategy.OnPush,
 })
 export class ProfileComponent implements OnInit, OnDestroy {
-  activeSection: "favorites" | "history" | "hidden" = "favorites";
+  activeSection: ProfileSection = "favorites";
   private playerSub?: Subscription;
   private favSub?: Subscription;
+  private searchSubs: Subscription[] = [];
+  private favSearch$ = new Subject<void>();
+  private historySearch$ = new Subject<void>();
+  private hiddenSearch$ = new Subject<void>();
+  private enabledSourceIds?: number[];
+  private favRequestId = 0;
+  private historyRequestId = 0;
+  private hiddenRequestId = 0;
+  private countsRequestId = 0;
+
+  countsLoaded: boolean = false;
+  profileCounts: ProfileCounts = {
+    favorites: emptySectionCounts(),
+    history: emptySectionCounts(),
+    hidden: emptySectionCounts(),
+  };
 
   // Favorites state
   favoriteChannels: Channel[] = [];
-  filteredFavorites: Channel[] = [];
   favSearchQuery: string = "";
   favMediaType: number = -1;
   loadingFavorites: boolean = false;
+  favLoaded: boolean = false;
+  favHasMore: boolean = false;
+  favError?: string;
+  private favPage = 0;
 
   // History state
   historyChannels: Channel[] = [];
-  filteredHistory: Channel[] = [];
   historySearchQuery: string = "";
   historyMediaType: number = -1;
   loadingHistory: boolean = false;
+  historyLoaded: boolean = false;
+  historyHasMore: boolean = false;
+  historyError?: string;
+  private historyPage = 0;
 
   // Hidden state
   hiddenChannels: Channel[] = [];
-  filteredHidden: Channel[] = [];
   hiddenSearchQuery: string = "";
   hiddenMediaType: number = -1;
   loadingHidden: boolean = false;
+  hiddenLoaded: boolean = false;
+  hiddenHasMore: boolean = false;
+  hiddenError?: string;
+  private hiddenPage = 0;
 
-  mediaTypeEnum = MediaType;
   viewModeEnum = ViewMode;
 
-  get favoriteMovies(): Channel[] {
-    return this.filteredFavorites.filter((c) => c.media_type === MediaType.movie);
+  get hasFavFilters(): boolean {
+    return this.favMediaType !== -1 || this.favSearchQuery.trim().length > 0;
   }
 
-  get favoriteTvShows(): Channel[] {
-    return this.filteredFavorites.filter((c) => c.media_type === MediaType.serie);
+  get hasHistoryFilters(): boolean {
+    return this.historyMediaType !== -1 || this.historySearchQuery.trim().length > 0;
   }
 
-  get favoriteLiveTv(): Channel[] {
-    return this.filteredFavorites.filter((c) => c.media_type === MediaType.livestream);
-  }
-
-  get historyMovies(): Channel[] {
-    return this.filteredHistory.filter((c) => c.media_type === MediaType.movie);
-  }
-
-  get historyTvShows(): Channel[] {
-    return this.filteredHistory.filter((c) => c.media_type === MediaType.serie);
-  }
-
-  get historyLiveTv(): Channel[] {
-    return this.filteredHistory.filter((c) => c.media_type === MediaType.livestream);
-  }
-
-  get hiddenMovies(): Channel[] {
-    return this.filteredHidden.filter((c) => c.media_type === MediaType.movie);
-  }
-
-  get hiddenTvShows(): Channel[] {
-    return this.filteredHidden.filter((c) => c.media_type === MediaType.serie);
-  }
-
-  get hiddenLiveTv(): Channel[] {
-    return this.filteredHidden.filter((c) => c.media_type === MediaType.livestream);
+  get hasHiddenFilters(): boolean {
+    return this.hiddenMediaType !== -1 || this.hiddenSearchQuery.trim().length > 0;
   }
 
   constructor(
     private router: Router,
     public memory: MemoryService,
-    private toastr: ToastrService,
     public embeddedPlayer: EmbeddedPlayerService,
     private favoritesService: FavoritesService,
     private cdr: ChangeDetectorRef,
@@ -136,62 +163,86 @@ export class ProfileComponent implements OnInit, OnDestroy {
           event.channel || this.favoriteChannels.find((c) => Number(c.id) === Number(channelId));
         if (targetChannel) {
           targetChannel.favorite = true;
-          if (!this.favoriteChannels.some((c) => Number(c.id) === Number(channelId))) {
-            this.favoriteChannels.unshift(targetChannel);
+          const matchesType =
+            this.favMediaType === -1 || targetChannel.media_type === this.favMediaType;
+          const q = this.favSearchQuery.trim().toLowerCase();
+          const matchesQuery = !q || (targetChannel.name || "").toLowerCase().includes(q);
+          if (
+            matchesType &&
+            matchesQuery &&
+            !this.favoriteChannels.some(
+              (c) => Number(c.id) === Number(channelId) && c.media_type === targetChannel.media_type
+            )
+          ) {
+            this.favoriteChannels = [targetChannel, ...this.favoriteChannels];
           }
         }
       } else {
-        this.favoriteChannels = this.favoriteChannels.filter(
-          (c) => Number(c.id) !== Number(channelId)
+        const beforeLen = this.favoriteChannels.length;
+        this.favoriteChannels = this.favoriteChannels.filter((c) =>
+          event.channel
+            ? !(Number(c.id) === Number(channelId) && c.media_type === event.channel.media_type)
+            : Number(c.id) !== Number(channelId)
         );
+        if (this.favoriteChannels.length < beforeLen) {
+          const mediaType = event.channel?.media_type;
+          this.decrementSectionCount(this.profileCounts.favorites, mediaType);
+        }
       }
-      this.filterFavorites();
+      void this.loadProfileCounts();
       this.cdr.markForCheck();
     });
 
-    this.loadFavorites();
-    this.loadHistory();
-    this.loadHidden();
+    this.searchSubs.push(
+      this.favSearch$.pipe(debounceTime(SEARCH_DEBOUNCE_MS)).subscribe(() => {
+        void this.loadFavorites(true);
+      }),
+      this.historySearch$.pipe(debounceTime(SEARCH_DEBOUNCE_MS)).subscribe(() => {
+        void this.loadHistory(true);
+      }),
+      this.hiddenSearch$.pipe(debounceTime(SEARCH_DEBOUNCE_MS)).subscribe(() => {
+        void this.loadHidden(true);
+      }),
+    );
+
+    void this.loadProfileCounts();
+    void this.loadFavorites(true);
   }
 
   ngOnDestroy(): void {
     this.playerSub?.unsubscribe();
     this.favSub?.unsubscribe();
+    this.searchSubs.forEach((sub) => sub.unsubscribe());
     if (this.embeddedPlayer.isPlayingEmbedded) {
       this.embeddedPlayer.stopPlayer().catch(console.warn);
     }
   }
 
-  setSection(section: "favorites" | "history" | "hidden") {
+  setSection(section: ProfileSection) {
     this.activeSection = section;
-    if (section === "favorites") {
-      if (this.favoriteChannels.length === 0) {
-        this.loadFavorites();
-      } else {
-        this.filterFavorites();
-      }
-    } else if (section === "history") {
-      this.loadHistory();
-    } else {
-      this.loadHidden();
+    if (section === "favorites" && !this.favLoaded && !this.loadingFavorites) {
+      void this.loadFavorites(true);
+    } else if (section === "history" && !this.historyLoaded && !this.loadingHistory) {
+      void this.loadHistory(true);
+    } else if (section === "hidden" && !this.hiddenLoaded && !this.loadingHidden) {
+      void this.loadHidden(true);
     }
   }
 
   setFavMediaType(type: number) {
+    if (this.favMediaType === type) return;
     this.favMediaType = type;
-    this.filterFavorites();
+    void this.loadFavorites(true);
   }
 
-  filterFavorites() {
-    let list = this.favoriteChannels;
-    if (this.favMediaType !== -1) {
-      list = list.filter((c) => c.media_type === this.favMediaType);
-    }
-    if (this.favSearchQuery && this.favSearchQuery.trim() !== "") {
-      const q = this.favSearchQuery.toLowerCase().trim();
-      list = list.filter((c) => (c.name || "").toLowerCase().includes(q));
-    }
-    this.filteredFavorites = list;
+  onFavSearchChange() {
+    this.favSearch$.next();
+  }
+
+  clearFavFilters() {
+    this.favMediaType = -1;
+    this.favSearchQuery = "";
+    void this.loadFavorites(true);
   }
 
   private populateSourceMaps(sources: any[]): void {
@@ -205,176 +256,281 @@ export class ProfileComponent implements OnInit, OnDestroy {
     }
   }
 
-  async loadFavorites(forceRefresh: boolean = false) {
-    const cached = this.favoritesService.getCachedFavorites();
-    if (cached && !forceRefresh) {
-      this.favoriteChannels = cached;
-      this.filterFavorites();
-      return;
+  trackByChannelId(index: number, channel: Channel): string {
+    return `${channel.media_type}:${channel.id ?? index}`;
+  }
+
+  private async getEnabledSourceIds(forceRefresh: boolean = false): Promise<number[]> {
+    if (this.enabledSourceIds && !forceRefresh) {
+      return this.enabledSourceIds;
     }
 
-    this.loadingFavorites = true;
+    const sources = (await invoke("get_sources")) as any[];
+    this.populateSourceMaps(sources || []);
+    this.enabledSourceIds = (sources || [])
+      .filter((source) => source.enabled && source.id != null)
+      .map((source) => source.id);
+    return this.enabledSourceIds;
+  }
+
+  private decrementSectionCount(counts: ProfileSectionCounts, mediaType?: number): void {
+    if (counts.total > 0) {
+      counts.total--;
+    }
+    if (mediaType === MediaType.livestream && counts.live > 0) counts.live--;
+    else if (mediaType === MediaType.movie && counts.movies > 0) counts.movies--;
+    else if (mediaType === MediaType.serie && counts.series > 0) counts.series--;
+    else if (mediaType === MediaType.group && counts.groups > 0) counts.groups--;
+  }
+
+  private mergePageChannels(existing: Channel[], incoming: Channel[]): Channel[] {
+    const seen = new Set(existing.map((c) => `${c.media_type}:${c.id}`));
+    const merged = [...existing];
+    for (const item of incoming) {
+      const key = `${item.media_type}:${item.id}`;
+      if (!seen.has(key)) {
+        seen.add(key);
+        merged.push(item);
+      }
+    }
+    return merged;
+  }
+
+  async loadProfileCounts(): Promise<void> {
+    const requestId = ++this.countsRequestId;
     try {
-      this.favoriteChannels = await this.favoritesService.loadFavorites(forceRefresh);
-      this.filterFavorites();
+      const counts = (await invoke("get_profile_counts")) as ProfileCounts;
+      if (requestId !== this.countsRequestId || !counts) return;
+      this.profileCounts = counts;
+      this.countsLoaded = true;
+      this.cdr.markForCheck();
+    } catch (e) {
+      console.error("Failed to load profile counts", e);
+    }
+  }
+
+  private async loadPage(
+    viewType: ViewMode,
+    page: number,
+    mediaType: number,
+    query: string,
+    forceSources: boolean
+  ): Promise<Channel[]> {
+    const sourceIds = await this.getEnabledSourceIds(forceSources);
+    if (sourceIds.length === 0) return [];
+
+    const mediaTypes =
+      mediaType !== -1
+        ? [mediaType]
+        : viewType === ViewMode.Hidden
+          ? [MediaType.livestream, MediaType.movie, MediaType.serie, MediaType.group]
+          : [MediaType.livestream, MediaType.movie, MediaType.serie];
+    const trimmedQuery = query.trim();
+
+    const filters: Filters = {
+      source_ids: sourceIds,
+      view_type: viewType,
+      media_types: mediaTypes,
+      page,
+      query: trimmedQuery.length > 0 ? trimmedQuery : undefined,
+      use_keywords: trimmedQuery.length > 0,
+    };
+    return (await invoke("search", { filters })) as Channel[];
+  }
+
+  async loadFavorites(reset: boolean = true, refreshCounts: boolean = false) {
+    if (!reset && this.loadingFavorites) return;
+    const requestId = ++this.favRequestId;
+    this.loadingFavorites = true;
+    this.favError = undefined;
+    this.cdr.markForCheck();
+    try {
+      const page = reset ? 1 : this.favPage + 1;
+      const results = await this.loadPage(
+        ViewMode.Favorites,
+        page,
+        this.favMediaType,
+        this.favSearchQuery,
+        reset
+      );
+      if (requestId !== this.favRequestId) return;
+      this.favoriteChannels = reset
+        ? results
+        : this.mergePageChannels(this.favoriteChannels, results);
+      this.favPage = page;
+      this.favHasMore = results.length === PROFILE_PAGE_SIZE;
+      this.favLoaded = true;
+      if (refreshCounts) {
+        void this.loadProfileCounts();
+      }
     } catch (e) {
       console.error("Failed to load favorites", e);
+      if (requestId === this.favRequestId) {
+        this.favError = "Favorites could not be loaded. Please try again.";
+      }
     } finally {
-      this.loadingFavorites = false;
-      this.cdr.markForCheck();
+      if (requestId === this.favRequestId) {
+        this.loadingFavorites = false;
+        this.cdr.markForCheck();
+      }
     }
+  }
+
+  loadMoreFavorites() {
+    void this.loadFavorites(false);
   }
 
   setHistoryMediaType(type: number) {
+    if (this.historyMediaType === type) return;
     this.historyMediaType = type;
-    this.filterHistory();
+    void this.loadHistory(true);
   }
 
-  filterHistory() {
-    let list = this.historyChannels;
-    if (this.historyMediaType !== -1) {
-      list = list.filter((c) => c.media_type === this.historyMediaType);
-    }
-    if (this.historySearchQuery && this.historySearchQuery.trim() !== "") {
-      const q = this.historySearchQuery.toLowerCase().trim();
-      list = list.filter((c) => (c.name || "").toLowerCase().includes(q));
-    }
-    this.filteredHistory = list;
+  onHistorySearchChange() {
+    this.historySearch$.next();
   }
 
-  async loadHistory() {
+  clearHistoryFilters() {
+    this.historyMediaType = -1;
+    this.historySearchQuery = "";
+    void this.loadHistory(true);
+  }
+
+  async loadHistory(reset: boolean = true, refreshCounts: boolean = false) {
+    if (!reset && this.loadingHistory) return;
+    const requestId = ++this.historyRequestId;
     this.loadingHistory = true;
+    this.historyError = undefined;
+    this.cdr.markForCheck();
     try {
-      const sources = (await invoke("get_sources")) as any[];
-      this.populateSourceMaps(sources);
-      const enabledSources = sources.filter((s) => s.enabled);
-      if (enabledSources.length === 0) {
-        this.historyChannels = [];
-        this.filteredHistory = [];
-        this.loadingHistory = false;
-        return;
+      const page = reset ? 1 : this.historyPage + 1;
+      const results = await this.loadPage(
+        ViewMode.History,
+        page,
+        this.historyMediaType,
+        this.historySearchQuery,
+        reset
+      );
+      if (requestId !== this.historyRequestId) return;
+      this.historyChannels = reset
+        ? results
+        : this.mergePageChannels(this.historyChannels, results);
+      this.historyPage = page;
+      this.historyHasMore = results.length === PROFILE_PAGE_SIZE;
+      this.historyLoaded = true;
+      if (refreshCounts) {
+        void this.loadProfileCounts();
       }
-      const sourceIds = enabledSources.map((s) => s.id);
-      const filters: Filters = {
-        source_ids: sourceIds,
-        view_type: ViewMode.History,
-        media_types: [MediaType.livestream, MediaType.movie, MediaType.serie],
-        page: 1,
-        use_keywords: false,
-        sort: SortType.alphabeticalAscending,
-      };
-      let allHistory: Channel[] = [];
-      let page = 1;
-      let hasMore = true;
-      while (hasMore && page <= 25) {
-        filters.page = page;
-        const res = (await invoke("search", { filters })) as Channel[];
-        if (res && res.length > 0) {
-          allHistory = allHistory.concat(res);
-          hasMore = res.length === 36;
-          page++;
-        } else {
-          hasMore = false;
-        }
-      }
-      this.historyChannels = allHistory;
-      this.filterHistory();
     } catch (e) {
       console.error("Failed to load history", e);
+      if (requestId === this.historyRequestId) {
+        this.historyError = "Watch History could not be loaded. Please try again.";
+      }
+    } finally {
+      if (requestId === this.historyRequestId) {
+        this.loadingHistory = false;
+        this.cdr.markForCheck();
+      }
     }
-    this.loadingHistory = false;
+  }
+
+  loadMoreHistory() {
+    void this.loadHistory(false);
   }
 
   async clearHistory() {
+    if (!window.confirm("Clear all watch history? This cannot be undone.")) return;
     await this.memory.tryIPC(
       "History cleared successfully",
       "Failed to clear history",
       async () => {
         await invoke("clear_history");
         this.embeddedPlayer.clearWatchHistoryCaches();
+        this.historyRequestId++;
         this.historyChannels = [];
-        this.filteredHistory = [];
+        this.historyLoaded = true;
+        this.historyHasMore = false;
+        this.profileCounts.history = emptySectionCounts();
+        void this.loadProfileCounts();
+        this.cdr.markForCheck();
       }
     );
   }
 
   setHiddenMediaType(type: number) {
+    if (this.hiddenMediaType === type) return;
     this.hiddenMediaType = type;
-    this.filterHidden();
+    void this.loadHidden(true);
   }
 
-  filterHidden() {
-    let list = this.hiddenChannels;
-    if (this.hiddenMediaType !== -1) {
-      list = list.filter((c) => c.media_type === this.hiddenMediaType);
-    }
-    if (this.hiddenSearchQuery && this.hiddenSearchQuery.trim() !== "") {
-      const q = this.hiddenSearchQuery.toLowerCase().trim();
-      list = list.filter((c) => (c.name || "").toLowerCase().includes(q));
-    }
-    this.filteredHidden = list;
+  onHiddenSearchChange() {
+    this.hiddenSearch$.next();
   }
 
-  async loadHidden() {
+  clearHiddenFilters() {
+    this.hiddenMediaType = -1;
+    this.hiddenSearchQuery = "";
+    void this.loadHidden(true);
+  }
+
+  async loadHidden(reset: boolean = true, refreshCounts: boolean = false) {
+    if (!reset && this.loadingHidden) return;
+    const requestId = ++this.hiddenRequestId;
     this.loadingHidden = true;
+    this.hiddenError = undefined;
+    this.cdr.markForCheck();
     try {
-      const sources = (await invoke("get_sources")) as any[];
-      this.populateSourceMaps(sources);
-      const enabledSources = sources.filter((s) => s.enabled);
-      if (enabledSources.length === 0) {
-        this.hiddenChannels = [];
-        this.filteredHidden = [];
-        this.loadingHidden = false;
-        return;
+      const page = reset ? 1 : this.hiddenPage + 1;
+      const results = await this.loadPage(
+        ViewMode.Hidden,
+        page,
+        this.hiddenMediaType,
+        this.hiddenSearchQuery,
+        reset
+      );
+      if (requestId !== this.hiddenRequestId) return;
+      this.hiddenChannels = reset
+        ? results
+        : this.mergePageChannels(this.hiddenChannels, results);
+      this.hiddenPage = page;
+      this.hiddenHasMore = results.length === PROFILE_PAGE_SIZE;
+      this.hiddenLoaded = true;
+      if (refreshCounts) {
+        void this.loadProfileCounts();
       }
-      const sourceIds = enabledSources.map((s) => s.id);
-      const filters: Filters = {
-        source_ids: sourceIds,
-        view_type: ViewMode.Hidden,
-        media_types: [MediaType.livestream, MediaType.movie, MediaType.serie],
-        page: 1,
-        use_keywords: false,
-        sort: SortType.alphabeticalAscending,
-      };
-      let allHidden: Channel[] = [];
-      let page = 1;
-      let hasMore = true;
-      while (hasMore && page <= 25) {
-        filters.page = page;
-        const res = (await invoke("search", { filters })) as Channel[];
-        if (res && res.length > 0) {
-          allHidden = allHidden.concat(res);
-          hasMore = res.length === 36;
-          page++;
-        } else {
-          hasMore = false;
-        }
-      }
-      this.hiddenChannels = allHidden;
-      this.filterHidden();
     } catch (e) {
       console.error("Failed to load hidden items", e);
+      if (requestId === this.hiddenRequestId) {
+        this.hiddenError = "Hidden items could not be loaded. Please try again.";
+      }
+    } finally {
+      if (requestId === this.hiddenRequestId) {
+        this.loadingHidden = false;
+        this.cdr.markForCheck();
+      }
     }
-    this.loadingHidden = false;
   }
 
-  async unhideChannel(channel: Channel) {
-    const isGroup = channel.media_type === MediaType.group;
-    const command = isGroup ? "hide_group" : "hide_channel";
-    try {
-      await invoke(command, { id: channel.id, hidden: false });
-      channel.hidden = false;
-      this.hiddenChannels = this.hiddenChannels.filter((c) => c.id !== channel.id);
-      this.filterHidden();
-      this.toastr.success(`Unhidden "${channel.name}"`);
-    } catch (e) {
-      this.toastr.error(`Failed to unhide "${channel.name}"`);
-    }
+  loadMoreHidden() {
+    void this.loadHidden(false);
+  }
+
+  onRemovedFromHistory(channel: Channel) {
+    this.historyChannels = this.historyChannels.filter(
+      (c) => !(c.id === channel.id && c.media_type === channel.media_type)
+    );
+    this.decrementSectionCount(this.profileCounts.history, channel.media_type);
+    void this.loadProfileCounts();
+    this.cdr.markForCheck();
   }
 
   onChannelUnhidden(channel: Channel) {
-    this.hiddenChannels = this.hiddenChannels.filter((c) => c.id !== channel.id);
-    this.filterHidden();
+    this.hiddenChannels = this.hiddenChannels.filter(
+      (c) => !(c.id === channel.id && c.media_type === channel.media_type)
+    );
+    this.decrementSectionCount(this.profileCounts.hidden, channel.media_type);
+    void this.loadProfileCounts();
+    this.cdr.markForCheck();
   }
 
   goBack() {
