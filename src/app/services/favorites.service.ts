@@ -117,6 +117,36 @@ export class FavoritesService {
   }
 
   /**
+   * Syncs in-memory favorite caches and notifies subscribers after external/bulk unfavorite IPC calls.
+   */
+  public syncUnfavoritedChannels(channels: Channel[]): void {
+    if (!channels || channels.length === 0) return;
+    const ids = new Set<number>();
+    for (const ch of channels) {
+      if (ch.id != null) {
+        ids.add(ch.id);
+        ch.favorite = false;
+        this.favoriteIds.delete(ch.id);
+        this.desiredState.set(ch.id, false);
+        this.lastPersistedState.set(ch.id, false);
+      }
+    }
+    if (this.cachedFavorites && ids.size > 0) {
+      this.cachedFavorites = this.cachedFavorites.filter((c) => c.id == null || !ids.has(c.id));
+    }
+    this.memory.clearCatalogPageCache();
+    for (const ch of channels) {
+      if (ch.id != null) {
+        this.favoriteChangedSubject.next({
+          channelId: ch.id,
+          isFavorite: false,
+          channel: ch,
+        });
+      }
+    }
+  }
+
+  /**
    * Serializes background SQLite persistence per channel ID.
    * Handles rapid toggling safely: debounces/merges redundant calls so older async results
    * never overwrite newer user clicks, and SQLite transactions are never bombarded.

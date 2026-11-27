@@ -1170,9 +1170,7 @@ body::-webkit-scrollbar-thumb:active {
   width: 46px;
   height: 46px;
   border-radius: 50%;
-  background: rgba(255, 255, 255, 0.16);
-  backdrop-filter: blur(20px);
-  -webkit-backdrop-filter: blur(20px);
+  background: rgba(20, 24, 34, 0.78);
   border: 1px solid rgba(255, 255, 255, 0.32);
   color: #ffffff;
   display: flex;
@@ -4627,8 +4625,7 @@ body:has(app-tv-detail)::-webkit-scrollbar {
   width: 42px;
   height: 42px;
   border-radius: 50%;
-  background: rgba(255, 255, 255, 0.07);
-  backdrop-filter: blur(10px);
+  background: rgba(30, 35, 48, 0.85);
   border: 1px solid rgba(255, 255, 255, 0.12);
   display: flex;
   align-items: center;
@@ -4681,7 +4678,6 @@ body:has(app-tv-detail)::-webkit-scrollbar {
 .card-unhide-btn {
   position: absolute;
   top: 6px;
-  backdrop-filter: blur(8px);
 }
 
 .card-archive-badge {
@@ -4756,7 +4752,6 @@ body:has(app-tv-detail)::-webkit-scrollbar {
   background: rgba(255, 255, 255, 0.04);
   border: 1px solid rgba(255, 255, 255, 0.06);
   border-radius: 8px;
-  backdrop-filter: blur(8px);
 }
 
 .card-epg-header {
@@ -4774,13 +4769,7 @@ body:has(app-tv-detail)::-webkit-scrollbar {
   border-radius: 50%;
   background-color: #ff3b5c;
   box-shadow: 0 0 6px rgba(255, 59, 92, 0.8);
-  animation: epg-live-pulse 1.8s infinite ease-in-out;
   flex-shrink: 0;
-}
-
-@keyframes epg-live-pulse {
-  0%, 100% { opacity: 1; transform: scale(1); }
-  50% { opacity: 0.4; transform: scale(0.8); }
 }
 
 .card-epg-badge {

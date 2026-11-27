@@ -18,38 +18,6 @@
         </button>
         <h2 class="profile-title mb-0">Profile</h2>
       </div>
-
-      <div class="profile-snapshot-strip" *ngIf="countsLoaded" role="group" aria-label="Library summary">
-        <button type="button"
-                class="snapshot-chip"
-                [class.active]="activeSection === 'favorites'"
-                [attr.aria-pressed]="activeSection === 'favorites'"
-                [attr.aria-label]="'Favorites: ' + profileCounts.favorites.total"
-                (click)="setSection('favorites')">
-          <span class="snapshot-value">{{ profileCounts.favorites.total }}</span>
-          <span class="snapshot-label">Favorites</span>
-        </button>
-        <span class="snapshot-divider" aria-hidden="true"></span>
-        <button type="button"
-                class="snapshot-chip"
-                [class.active]="activeSection === 'history'"
-                [attr.aria-pressed]="activeSection === 'history'"
-                [attr.aria-label]="'Watch History: ' + profileCounts.history.total"
-                (click)="setSection('history')">
-          <span class="snapshot-value">{{ profileCounts.history.total }}</span>
-          <span class="snapshot-label">History</span>
-        </button>
-        <span class="snapshot-divider" aria-hidden="true"></span>
-        <button type="button"
-                class="snapshot-chip"
-                [class.active]="activeSection === 'hidden'"
-                [attr.aria-pressed]="activeSection === 'hidden'"
-                [attr.aria-label]="'Hidden: ' + profileCounts.hidden.total"
-                (click)="setSection('hidden')">
-          <span class="snapshot-value">{{ profileCounts.hidden.total }}</span>
-          <span class="snapshot-label">Hidden</span>
-        </button>
-      </div>
     </div>
     <div class="profile-nav-pill mx-auto" role="tablist" aria-label="Profile sections">
       <button 
@@ -97,34 +65,66 @@
   <!-- SECTION 1: FAVORITES -->
   <div *ngIf="activeSection === 'favorites'" class="favorites-section">
     <div #controlsSentinel class="controls-scroll-sentinel" aria-hidden="true"></div>
-    <div class="fav-controls-row mb-4" [class.is-scrolled]="isControlsScrolled">
-      <div class="fav-search-wrapper">
-        <input 
-          type="text" 
-          [(ngModel)]="favSearchQuery" 
-          (ngModelChange)="onFavSearchChange()" 
-          placeholder="Filter favorites..." 
-          class="form-control fav-search-input" />
+    <div class="profile-controls-dock mb-4" [class.is-scrolled]="isControlsScrolled">
+      <div class="fav-controls-row">
+        <div class="fav-search-wrapper">
+          <input 
+            type="text" 
+            [(ngModel)]="favSearchQuery" 
+            (ngModelChange)="onFavSearchChange()" 
+            placeholder="Filter favorites..." 
+            class="form-control fav-search-input" />
+        </div>
+        <div class="fav-filter-pills">
+          <button class="fav-filter-btn" [class.active]="favMediaType === -1" (click)="setFavMediaType(-1)">
+            All<ng-container *ngIf="countsLoaded"> ({{ profileCounts.favorites.total }})</ng-container>
+          </button>
+          <button class="fav-filter-btn" [class.active]="favMediaType === 0" (click)="setFavMediaType(0)">
+            Live TV<ng-container *ngIf="countsLoaded"> ({{ profileCounts.favorites.live }})</ng-container>
+          </button>
+          <button class="fav-filter-btn" [class.active]="favMediaType === 1" (click)="setFavMediaType(1)">
+            Movies<ng-container *ngIf="countsLoaded"> ({{ profileCounts.favorites.movies }})</ng-container>
+          </button>
+          <button class="fav-filter-btn" [class.active]="favMediaType === 2" (click)="setFavMediaType(2)">
+            Series<ng-container *ngIf="countsLoaded"> ({{ profileCounts.favorites.series }})</ng-container>
+          </button>
+        </div>
+        <button type="button"
+                class="profile-select-btn"
+                [class.active]="selectionMode"
+                [attr.aria-pressed]="selectionMode"
+                [disabled]="favoriteChannels.length === 0 && !selectionMode"
+                (click)="toggleSelectionMode()">
+          {{ selectionMode ? 'Done' : 'Select' }}
+        </button>
+        <button class="btn btn-sm btn-outline-secondary d-inline-flex align-items-center fav-reload-btn" (click)="loadFavorites(true, true)" [disabled]="loadingFavorites" title="Reload Favorites" aria-label="Reload favorites">
+          <svg class="refresh-sm" viewBox="0 0 24 24" fill="currentColor">
+            <path d="M17.65,6.35C16.2,4.9 14.21,4 12,4A8,8 0 0,0 4,12A8,8 0 0,0 12,20C15.73,20 18.84,17.45 19.73,14H17.65C16.83,16.33 14.61,18 12,18A6,6 0 0,1 6,12A6,6 0 0,1 12,6C13.66,6 15.14,6.69 16.22,7.78L13,11H20V4L17.65,6.35Z" />
+          </svg>
+        </button>
       </div>
-      <div class="fav-filter-pills">
-        <button class="fav-filter-btn" [class.active]="favMediaType === -1" (click)="setFavMediaType(-1)">
-          All<ng-container *ngIf="countsLoaded"> ({{ profileCounts.favorites.total }})</ng-container>
-        </button>
-        <button class="fav-filter-btn" [class.active]="favMediaType === 0" (click)="setFavMediaType(0)">
-          Live TV<ng-container *ngIf="countsLoaded"> ({{ profileCounts.favorites.live }})</ng-container>
-        </button>
-        <button class="fav-filter-btn" [class.active]="favMediaType === 1" (click)="setFavMediaType(1)">
-          Movies<ng-container *ngIf="countsLoaded"> ({{ profileCounts.favorites.movies }})</ng-container>
-        </button>
-        <button class="fav-filter-btn" [class.active]="favMediaType === 2" (click)="setFavMediaType(2)">
-          Series<ng-container *ngIf="countsLoaded"> ({{ profileCounts.favorites.series }})</ng-container>
-        </button>
+      <div class="profile-bulk-bar" *ngIf="selectionMode">
+        <span class="bulk-count">{{ selectedCount }} selected</span>
+        <div class="bulk-actions-group">
+          <button type="button" class="bulk-link-btn" (click)="selectAllLoaded()" [disabled]="favoriteChannels.length === 0 || bulkActionRunning">Select all</button>
+          <button type="button" class="bulk-link-btn" (click)="clearSelection()" [disabled]="selectedCount === 0 || bulkActionRunning">Clear selection</button>
+          <button #bulkActionBtn
+                  type="button"
+                  class="btn btn-sm btn-danger bulk-primary-btn"
+                  [disabled]="selectedCount === 0 || bulkActionRunning"
+                  (click)="requestBulkAction(bulkActionBtn)">
+            {{ bulkActionRunning ? 'Working...' : bulkActionLabel }}
+          </button>
+        </div>
       </div>
-      <button class="btn btn-sm btn-outline-secondary d-inline-flex align-items-center fav-reload-btn" (click)="loadFavorites(true, true)" [disabled]="loadingFavorites" title="Reload Favorites" aria-label="Reload favorites">
-        <svg class="refresh-sm" viewBox="0 0 24 24" fill="currentColor">
-          <path d="M17.65,6.35C16.2,4.9 14.21,4 12,4A8,8 0 0,0 4,12A8,8 0 0,0 12,20C15.73,20 18.84,17.45 19.73,14H17.65C16.83,16.33 14.61,18 12,18A6,6 0 0,1 6,12A6,6 0 0,1 12,6C13.66,6 15.14,6.69 16.22,7.78L13,11H20V4L17.65,6.35Z" />
-        </svg>
-      </button>
+    </div>
+
+    <div *ngIf="bulkStatusMessage"
+         class="profile-inline-status mb-3"
+         [class.is-error]="bulkStatusIsError"
+         role="status">
+      <span>{{ bulkStatusMessage }}</span>
+      <button type="button" class="inline-status-dismiss" (click)="dismissBulkStatus()" aria-label="Dismiss status">×</button>
     </div>
 
     <div class="row g-2 g-md-3" *ngIf="loadingFavorites && favoriteChannels.length === 0" aria-busy="true" aria-label="Loading favorites">
@@ -164,7 +164,10 @@
         [id]="i" 
         [channel]="channel" 
         [viewMode]="viewModeEnum.Favorites"
-        [uniformPoster]="true">
+        [uniformPoster]="true"
+        [selectable]="selectionMode"
+        [selected]="!!selectedKeyMap[channel.media_type + ':' + channel.id]"
+        (selectionToggled)="toggleItemSelection($event)">
       </app-channel-tile>
     </div>
     <div class="profile-load-more" *ngIf="favHasMore">
@@ -177,42 +180,98 @@
   <!-- SECTION 2: WATCH HISTORY -->
   <div *ngIf="activeSection === 'history'" class="history-section">
     <div #controlsSentinel class="controls-scroll-sentinel" aria-hidden="true"></div>
-    <div class="fav-controls-row mb-4" [class.is-scrolled]="isControlsScrolled">
-      <div class="fav-search-wrapper">
-        <input 
-          type="text" 
-          [(ngModel)]="historySearchQuery" 
-          (ngModelChange)="onHistorySearchChange()" 
-          placeholder="Filter watch history..." 
-          class="form-control fav-search-input" />
+    <div class="profile-controls-dock mb-4" [class.is-scrolled]="isControlsScrolled">
+      <div class="fav-controls-row">
+        <div class="fav-search-wrapper">
+          <input 
+            type="text" 
+            [(ngModel)]="historySearchQuery" 
+            (ngModelChange)="onHistorySearchChange()" 
+            placeholder="Filter watch history..." 
+            class="form-control fav-search-input" />
+        </div>
+        <div class="fav-filter-pills">
+          <button class="fav-filter-btn" [class.active]="historyMediaType === -1" (click)="setHistoryMediaType(-1)">
+            All<ng-container *ngIf="countsLoaded"> ({{ profileCounts.history.total }})</ng-container>
+          </button>
+          <button class="fav-filter-btn" [class.active]="historyMediaType === 0" (click)="setHistoryMediaType(0)">
+            Live TV<ng-container *ngIf="countsLoaded"> ({{ profileCounts.history.live }})</ng-container>
+          </button>
+          <button class="fav-filter-btn" [class.active]="historyMediaType === 1" (click)="setHistoryMediaType(1)">
+            Movies<ng-container *ngIf="countsLoaded"> ({{ profileCounts.history.movies }})</ng-container>
+          </button>
+          <button class="fav-filter-btn" [class.active]="historyMediaType === 2" (click)="setHistoryMediaType(2)">
+            Series<ng-container *ngIf="countsLoaded"> ({{ profileCounts.history.series }})</ng-container>
+          </button>
+        </div>
+        <div class="history-view-toggle" role="group" aria-label="Watch history layout">
+          <button type="button"
+                  class="view-toggle-btn"
+                  [class.active]="historyViewMode === 'grid'"
+                  [attr.aria-pressed]="historyViewMode === 'grid'"
+                  (click)="setHistoryViewMode('grid')"
+                  title="Grid view"
+                  aria-label="Grid view">
+            <svg viewBox="0 0 24 24" fill="currentColor">
+              <path d="M3,3H10V10H3V3M14,3H21V10H14V3M3,14H10V21H3V14M14,14H21V21H14V14Z" />
+            </svg>
+          </button>
+          <button type="button"
+                  class="view-toggle-btn"
+                  [class.active]="historyViewMode === 'list'"
+                  [attr.aria-pressed]="historyViewMode === 'list'"
+                  (click)="setHistoryViewMode('list')"
+                  title="List view"
+                  aria-label="Compact list view">
+            <svg viewBox="0 0 24 24" fill="currentColor">
+              <path d="M3,4H21V6H3V4M3,11H21V13H3V11M3,18H21V20H3V18Z" />
+            </svg>
+          </button>
+        </div>
+        <button type="button"
+                class="profile-select-btn"
+                [class.active]="selectionMode"
+                [attr.aria-pressed]="selectionMode"
+                [disabled]="historyChannels.length === 0 && !selectionMode"
+                (click)="toggleSelectionMode()">
+          {{ selectionMode ? 'Done' : 'Select' }}
+        </button>
+        <button class="btn btn-sm btn-outline-secondary d-inline-flex align-items-center fav-reload-btn" (click)="loadHistory(true, true)" [disabled]="loadingHistory" title="Reload History" aria-label="Reload watch history">
+          <svg class="refresh-sm" viewBox="0 0 24 24" fill="currentColor">
+            <path d="M17.65,6.35C16.2,4.9 14.21,4 12,4A8,8 0 0,0 4,12A8,8 0 0,0 12,20C15.73,20 18.84,17.45 19.73,14H17.65C16.83,16.33 14.61,18 12,18A6,6 0 0,1 6,12A6,6 0 0,1 12,6C13.66,6 15.14,6.69 16.22,7.78L13,11H20V4L17.65,6.35Z" />
+          </svg>
+        </button>
+        <button 
+          #clearHistoryTrigger
+          *ngIf="profileCounts.history.total > 0 || historyChannels.length > 0"
+          class="btn btn-sm btn-outline-danger d-inline-flex align-items-center ms-auto" 
+          (click)="clearHistory()" 
+          title="Clear Watch History">
+          Clear History
+        </button>
       </div>
-      <div class="fav-filter-pills">
-        <button class="fav-filter-btn" [class.active]="historyMediaType === -1" (click)="setHistoryMediaType(-1)">
-          All<ng-container *ngIf="countsLoaded"> ({{ profileCounts.history.total }})</ng-container>
-        </button>
-        <button class="fav-filter-btn" [class.active]="historyMediaType === 0" (click)="setHistoryMediaType(0)">
-          Live TV<ng-container *ngIf="countsLoaded"> ({{ profileCounts.history.live }})</ng-container>
-        </button>
-        <button class="fav-filter-btn" [class.active]="historyMediaType === 1" (click)="setHistoryMediaType(1)">
-          Movies<ng-container *ngIf="countsLoaded"> ({{ profileCounts.history.movies }})</ng-container>
-        </button>
-        <button class="fav-filter-btn" [class.active]="historyMediaType === 2" (click)="setHistoryMediaType(2)">
-          Series<ng-container *ngIf="countsLoaded"> ({{ profileCounts.history.series }})</ng-container>
-        </button>
+      <div class="profile-bulk-bar" *ngIf="selectionMode">
+        <span class="bulk-count">{{ selectedCount }} selected</span>
+        <div class="bulk-actions-group">
+          <button type="button" class="bulk-link-btn" (click)="selectAllLoaded()" [disabled]="historyChannels.length === 0 || bulkActionRunning">Select all</button>
+          <button type="button" class="bulk-link-btn" (click)="clearSelection()" [disabled]="selectedCount === 0 || bulkActionRunning">Clear selection</button>
+          <button #bulkActionBtn
+                  type="button"
+                  class="btn btn-sm btn-danger bulk-primary-btn"
+                  [disabled]="selectedCount === 0 || bulkActionRunning"
+                  (click)="requestBulkAction(bulkActionBtn)">
+            {{ bulkActionRunning ? 'Working...' : bulkActionLabel }}
+          </button>
+        </div>
       </div>
-      <button class="btn btn-sm btn-outline-secondary d-inline-flex align-items-center fav-reload-btn" (click)="loadHistory(true, true)" [disabled]="loadingHistory" title="Reload History" aria-label="Reload watch history">
-        <svg class="refresh-sm" viewBox="0 0 24 24" fill="currentColor">
-          <path d="M17.65,6.35C16.2,4.9 14.21,4 12,4A8,8 0 0,0 4,12A8,8 0 0,0 12,20C15.73,20 18.84,17.45 19.73,14H17.65C16.83,16.33 14.61,18 12,18A6,6 0 0,1 6,12A6,6 0 0,1 12,6C13.66,6 15.14,6.69 16.22,7.78L13,11H20V4L17.65,6.35Z" />
-        </svg>
-      </button>
-      <button 
-        #clearHistoryTrigger
-        *ngIf="profileCounts.history.total > 0 || historyChannels.length > 0"
-        class="btn btn-sm btn-outline-danger d-inline-flex align-items-center ms-auto" 
-        (click)="clearHistory()" 
-        title="Clear Watch History">
-        Clear History
-      </button>
+    </div>
+
+    <div *ngIf="bulkStatusMessage"
+         class="profile-inline-status mb-3"
+         [class.is-error]="bulkStatusIsError"
+         role="status">
+      <span>{{ bulkStatusMessage }}</span>
+      <button type="button" class="inline-status-dismiss" (click)="dismissBulkStatus()" aria-label="Dismiss status">×</button>
     </div>
 
     <div class="row g-2 g-md-3" *ngIf="loadingHistory && historyChannels.length === 0" aria-busy="true" aria-label="Loading watch history">
@@ -245,7 +304,7 @@
     </div>
 
     <!-- History Grid -->
-    <div class="row g-2 g-md-3" *ngIf="historyChannels.length > 0">
+    <div class="row g-2 g-md-3" *ngIf="historyChannels.length > 0 && historyViewMode === 'grid'">
       <app-channel-tile 
         *ngFor="let channel of historyChannels; let i = index; trackBy: trackByChannelId"
         class="col-compact-card" 
@@ -253,10 +312,68 @@
         [channel]="channel" 
         [viewMode]="viewModeEnum.History"
         [uniformPoster]="true"
-        [historyTimeLabel]="getHistoryTimeLabel(channel)"
-        [historyProgressPercent]="getHistoryProgressPercent(channel)"
+        [selectable]="selectionMode"
+        [selected]="!!selectedKeyMap[channel.media_type + ':' + channel.id]"
+        [historyTimeLabel]="channel.id != null ? historyTimeMap[channel.id] : undefined"
+        [historyProgressPercent]="channel.id != null ? historyProgressMap[channel.id] : undefined"
+        (selectionToggled)="toggleItemSelection($event)"
         (removedFromHistory)="onRemovedFromHistory($event)">
       </app-channel-tile>
+    </div>
+
+    <!-- History Compact List View -->
+    <div class="history-list" *ngIf="historyChannels.length > 0 && historyViewMode === 'list'">
+      <div *ngFor="let channel of historyChannels; trackBy: trackByChannelId"
+           class="history-list-row"
+           [class.is-selectable]="selectionMode"
+           [class.is-selected]="selectionMode && !!selectedKeyMap[channel.media_type + ':' + channel.id]"
+           tabindex="0"
+           [attr.aria-pressed]="selectionMode ? !!selectedKeyMap[channel.media_type + ':' + channel.id] : null"
+           (click)="openHistoryItem(channel)"
+           (keydown.enter)="openHistoryItem(channel)"
+           (keydown.space)="onHistoryRowSpace(channel, $event)">
+        <div class="history-row-checkbox" *ngIf="selectionMode" [class.checked]="!!selectedKeyMap[channel.media_type + ':' + channel.id]" aria-hidden="true">
+          <svg *ngIf="!!selectedKeyMap[channel.media_type + ':' + channel.id]" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round">
+            <polyline points="20 6 9 17 4 12" />
+          </svg>
+        </div>
+
+        <div class="history-row-thumb" [class.is-live]="channel.media_type === 0">
+          <img *ngIf="channel.image && !brokenListImageMap[channel.image]"
+               [src]="channel.image"
+               [alt]="historyListMetaMap[channel.media_type + ':' + channel.id]?.cleanTitle || channel.name || ''"
+               loading="lazy"
+               decoding="async"
+               (error)="onListImageError(channel)" />
+          <svg *ngIf="!channel.image || brokenListImageMap[channel.image]" class="history-row-fallback-icon" viewBox="0 0 24 24" fill="currentColor">
+            <path *ngIf="channel.media_type === 2" d="M21,3H3C1.89,3 1,3.89 1,5V17A2,2 0 0,0 3,19H8V21H16V19H21A2,2 0 0,0 23,17V5C23,3.89 22.1,3 21,3M21,17H3V5H21V17Z" />
+            <path *ngIf="channel.media_type !== 2" d="M18,4L20,8H17L15,4H13L15,8H12L10,4H8L10,8H7L5,4H4A2,2 0 0,0 2,6V18A2,2 0 0,0 4,20H20A2,2 0 0,0 22,18V4H18Z" />
+          </svg>
+        </div>
+
+        <div class="history-row-main">
+          <div class="history-row-title text-truncate" [title]="channel.name || ''">{{ historyListMetaMap[channel.media_type + ':' + channel.id]?.cleanTitle || channel.name }}</div>
+          <div class="history-row-meta">
+            <span class="history-row-source text-truncate" *ngIf="historyListMetaMap[channel.media_type + ':' + channel.id]?.sourceName">{{ historyListMetaMap[channel.media_type + ':' + channel.id]?.sourceName }}</span>
+            <span class="meta-type-tag" [class.live-tag]="channel.media_type === 0">{{ historyListMetaMap[channel.media_type + ':' + channel.id]?.typeLabel }}</span>
+            <span class="history-row-time" *ngIf="channel.id != null && historyTimeMap[channel.id]">{{ historyTimeMap[channel.id] }}</span>
+          </div>
+          <div class="history-row-progress" *ngIf="channel.id != null && historyProgressMap[channel.id] as pct" aria-hidden="true">
+            <div class="history-row-progress-fill" [style.width.%]="pct"></div>
+          </div>
+        </div>
+
+        <button *ngIf="!selectionMode"
+                type="button"
+                class="history-row-remove-btn"
+                title="Remove from history"
+                [attr.aria-label]="'Remove ' + (historyListMetaMap[channel.media_type + ':' + channel.id]?.cleanTitle || channel.name || '') + ' from history'"
+                (click)="removeSingleHistoryRow(channel, $event)">
+          <svg viewBox="0 0 24 24" fill="currentColor">
+            <path d="M19,6.41L17.59,5L12,10.59L6.41,5L5,6.41L10.59,12L5,17.59L6.41,19L12,13.41L17.59,19L19,17.59L13.41,12L19,6.41Z" />
+          </svg>
+        </button>
+      </div>
     </div>
     <div class="profile-load-more" *ngIf="historyHasMore">
       <button type="button" class="btn btn-outline-secondary" (click)="loadMoreHistory()" [disabled]="loadingHistory">
@@ -268,37 +385,69 @@
   <!-- SECTION 3: HIDDEN TITLES -->
   <div *ngIf="activeSection === 'hidden'" class="hidden-section">
     <div #controlsSentinel class="controls-scroll-sentinel" aria-hidden="true"></div>
-    <div class="fav-controls-row mb-4" [class.is-scrolled]="isControlsScrolled">
-      <div class="fav-search-wrapper">
-        <input 
-          type="text" 
-          [(ngModel)]="hiddenSearchQuery" 
-          (ngModelChange)="onHiddenSearchChange()" 
-          placeholder="Filter hidden titles..." 
-          class="form-control fav-search-input" />
+    <div class="profile-controls-dock mb-4" [class.is-scrolled]="isControlsScrolled">
+      <div class="fav-controls-row">
+        <div class="fav-search-wrapper">
+          <input 
+            type="text" 
+            [(ngModel)]="hiddenSearchQuery" 
+            (ngModelChange)="onHiddenSearchChange()" 
+            placeholder="Filter hidden titles..." 
+            class="form-control fav-search-input" />
+        </div>
+        <div class="fav-filter-pills">
+          <button class="fav-filter-btn" [class.active]="hiddenMediaType === -1" (click)="setHiddenMediaType(-1)">
+            All<ng-container *ngIf="countsLoaded"> ({{ profileCounts.hidden.total }})</ng-container>
+          </button>
+          <button class="fav-filter-btn" [class.active]="hiddenMediaType === 0" (click)="setHiddenMediaType(0)">
+            Live TV<ng-container *ngIf="countsLoaded"> ({{ profileCounts.hidden.live }})</ng-container>
+          </button>
+          <button class="fav-filter-btn" [class.active]="hiddenMediaType === 1" (click)="setHiddenMediaType(1)">
+            Movies<ng-container *ngIf="countsLoaded"> ({{ profileCounts.hidden.movies }})</ng-container>
+          </button>
+          <button class="fav-filter-btn" [class.active]="hiddenMediaType === 2" (click)="setHiddenMediaType(2)">
+            Series<ng-container *ngIf="countsLoaded"> ({{ profileCounts.hidden.series }})</ng-container>
+          </button>
+          <button class="fav-filter-btn" [class.active]="hiddenMediaType === 3" (click)="setHiddenMediaType(3)">
+            Groups<ng-container *ngIf="countsLoaded"> ({{ profileCounts.hidden.groups }})</ng-container>
+          </button>
+        </div>
+        <button type="button"
+                class="profile-select-btn"
+                [class.active]="selectionMode"
+                [attr.aria-pressed]="selectionMode"
+                [disabled]="hiddenChannels.length === 0 && !selectionMode"
+                (click)="toggleSelectionMode()">
+          {{ selectionMode ? 'Done' : 'Select' }}
+        </button>
+        <button class="btn btn-sm btn-outline-secondary d-inline-flex align-items-center fav-reload-btn" (click)="loadHidden(true, true)" [disabled]="loadingHidden" title="Reload Hidden Titles" aria-label="Reload hidden items">
+          <svg class="refresh-sm" viewBox="0 0 24 24" fill="currentColor">
+            <path d="M17.65,6.35C16.2,4.9 14.21,4 12,4A8,8 0 0,0 4,12A8,8 0 0,0 12,20C15.73,20 18.84,17.45 19.73,14H17.65C16.83,16.33 14.61,18 12,18A6,6 0 0,1 6,12A6,6 0 0,1 12,6C13.66,6 15.14,6.69 16.22,7.78L13,11H20V4L17.65,6.35Z" />
+          </svg>
+        </button>
       </div>
-      <div class="fav-filter-pills">
-        <button class="fav-filter-btn" [class.active]="hiddenMediaType === -1" (click)="setHiddenMediaType(-1)">
-          All<ng-container *ngIf="countsLoaded"> ({{ profileCounts.hidden.total }})</ng-container>
-        </button>
-        <button class="fav-filter-btn" [class.active]="hiddenMediaType === 0" (click)="setHiddenMediaType(0)">
-          Live TV<ng-container *ngIf="countsLoaded"> ({{ profileCounts.hidden.live }})</ng-container>
-        </button>
-        <button class="fav-filter-btn" [class.active]="hiddenMediaType === 1" (click)="setHiddenMediaType(1)">
-          Movies<ng-container *ngIf="countsLoaded"> ({{ profileCounts.hidden.movies }})</ng-container>
-        </button>
-        <button class="fav-filter-btn" [class.active]="hiddenMediaType === 2" (click)="setHiddenMediaType(2)">
-          Series<ng-container *ngIf="countsLoaded"> ({{ profileCounts.hidden.series }})</ng-container>
-        </button>
-        <button class="fav-filter-btn" [class.active]="hiddenMediaType === 3" (click)="setHiddenMediaType(3)">
-          Groups<ng-container *ngIf="countsLoaded"> ({{ profileCounts.hidden.groups }})</ng-container>
-        </button>
+      <div class="profile-bulk-bar" *ngIf="selectionMode">
+        <span class="bulk-count">{{ selectedCount }} selected</span>
+        <div class="bulk-actions-group">
+          <button type="button" class="bulk-link-btn" (click)="selectAllLoaded()" [disabled]="hiddenChannels.length === 0 || bulkActionRunning">Select all</button>
+          <button type="button" class="bulk-link-btn" (click)="clearSelection()" [disabled]="selectedCount === 0 || bulkActionRunning">Clear selection</button>
+          <button #bulkActionBtn
+                  type="button"
+                  class="btn btn-sm btn-danger bulk-primary-btn"
+                  [disabled]="selectedCount === 0 || bulkActionRunning"
+                  (click)="requestBulkAction(bulkActionBtn)">
+            {{ bulkActionRunning ? 'Working...' : bulkActionLabel }}
+          </button>
+        </div>
       </div>
-      <button class="btn btn-sm btn-outline-secondary d-inline-flex align-items-center fav-reload-btn" (click)="loadHidden(true, true)" [disabled]="loadingHidden" title="Reload Hidden Titles" aria-label="Reload hidden items">
-        <svg class="refresh-sm" viewBox="0 0 24 24" fill="currentColor">
-          <path d="M17.65,6.35C16.2,4.9 14.21,4 12,4A8,8 0 0,0 4,12A8,8 0 0,0 12,20C15.73,20 18.84,17.45 19.73,14H17.65C16.83,16.33 14.61,18 12,18A6,6 0 0,1 6,12A6,6 0 0,1 12,6C13.66,6 15.14,6.69 16.22,7.78L13,11H20V4L17.65,6.35Z" />
-        </svg>
-      </button>
+    </div>
+
+    <div *ngIf="bulkStatusMessage"
+         class="profile-inline-status mb-3"
+         [class.is-error]="bulkStatusIsError"
+         role="status">
+      <span>{{ bulkStatusMessage }}</span>
+      <button type="button" class="inline-status-dismiss" (click)="dismissBulkStatus()" aria-label="Dismiss status">×</button>
     </div>
 
     <div class="row g-2 g-md-3" *ngIf="loadingHidden && hiddenChannels.length === 0" aria-busy="true" aria-label="Loading hidden items">
@@ -339,6 +488,9 @@
         [channel]="channel" 
         [viewMode]="viewModeEnum.Hidden"
         [uniformPoster]="true"
+        [selectable]="selectionMode"
+        [selected]="!!selectedKeyMap[channel.media_type + ':' + channel.id]"
+        (selectionToggled)="toggleItemSelection($event)"
         (unhidden)="onChannelUnhidden($event)">
       </app-channel-tile>
     </div>
@@ -350,31 +502,29 @@
   </div>
 </div>
 
-  <!-- Themed Clear History Confirmation Modal -->
-  <div *ngIf="showClearHistoryConfirm"
+  <!-- Themed Confirmation Modal (Clear History & Bulk Destructive Actions) -->
+  <div *ngIf="confirmModal"
        class="profile-confirm-overlay"
        role="dialog"
        aria-modal="true"
-       aria-labelledby="clear-history-modal-title"
-       (click)="cancelClearHistory()">
+       aria-labelledby="profile-confirm-modal-title"
+       (click)="cancelConfirmModal()">
     <div class="profile-confirm-card" (click)="$event.stopPropagation()">
-      <h5 id="clear-history-modal-title" class="profile-confirm-title">Clear Watch History?</h5>
-      <p class="profile-confirm-message">
-        This will permanently remove all watched movies, TV shows, and live channels from your watch history.
-      </p>
+      <h5 id="profile-confirm-modal-title" class="profile-confirm-title">{{ confirmModal.title }}</h5>
+      <p class="profile-confirm-message">{{ confirmModal.message }}</p>
       <div class="profile-confirm-actions">
-        <button #clearHistoryCancelBtn
+        <button #confirmCancelBtn
                 type="button"
                 class="btn btn-sm btn-outline-light profile-confirm-cancel"
-                [disabled]="clearingHistory"
-                (click)="cancelClearHistory()">
+                [disabled]="confirmBusy"
+                (click)="cancelConfirmModal()">
           Cancel
         </button>
         <button type="button"
                 class="btn btn-sm btn-danger profile-confirm-submit"
-                [disabled]="clearingHistory"
-                (click)="confirmClearHistory()">
-          {{ clearingHistory ? 'Clearing...' : 'Clear History' }}
+                [disabled]="confirmBusy"
+                (click)="executeConfirmModal()">
+          {{ confirmBusy ? 'Working...' : confirmModal.confirmLabel }}
         </button>
       </div>
     </div>

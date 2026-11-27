@@ -49,7 +49,7 @@ import { cleanMediaTitle } from "../utils/media-presentation";
 export class EpgQueueManager {
   private static cache = new Map<number, { epg: EPG | null; timestamp: number }>();
   private static inFlight = new Map<number, Promise<EPG | null>>();
-  private static queue: { channel: Channel; resolve: (val: EPG | null) => void }[] = [];
+  private static queue: { channel: Channel; resolve: (val: EPG | null) => void; shouldFetch?: () => boolean }[] = [];
   private static activeCount = 0;
   private static readonly MAX_CONCURRENT = 2;
   private static readonly CACHE_TTL_MS = 10 * 60 * 1000; // 10 minutes
@@ -74,7 +74,7 @@ export class EpgQueueManager {
     return entry.epg;
   }
 
-  static requestEpg(channel: Channel): Promise<EPG | null> {
+  static requestEpg(channel: Channel, shouldFetch?: () => boolean): Promise<EPG | null> {
     if (!channel.id) return Promise.resolve(null);
     const cached = this.getCached(channel.id);
     if (cached !== undefined) {
@@ -89,7 +89,7 @@ export class EpgQueueManager {
 
     const promise = new Promise<EPG | null>((resolve) => {
       // Prioritize recently requested (LIFO so visible channels jump ahead of scrolled-past ones)
-      this.queue.unshift({ channel, resolve });
+      this.queue.unshift({ channel, resolve, shouldFetch });
       this.processNext();
     });
 
@@ -98,7 +98,13 @@ export class EpgQueueManager {
   }
 
   static clearQueue(): void {
-    this.queue = [];
+    const pending = this.queue.splice(0, this.queue.length);
+    for (const item of pending) {
+      if (item.channel.id != null) {
+        this.inFlight.delete(item.channel.id);
+      }
+      item.resolve(null);
+    }
   }
 
   private static processNext(): void {
@@ -106,7 +112,14 @@ export class EpgQueueManager {
       return;
     }
 
-    const item = this.queue.shift();
+    let item = this.queue.shift();
+    while (item && item.shouldFetch && !item.shouldFetch()) {
+      if (item.channel.id != null) {
+        this.inFlight.delete(item.channel.id);
+      }
+      item.resolve(null);
+      item = this.queue.shift();
+    }
     if (!item) return;
 
     this.activeCount++;
@@ -164,10 +177,13 @@ export class ChannelTileComponent implements OnInit, OnDestroy, OnChanges {
   @Input() viewMode: number = 0;
   @Input() isLiveTvCard?: boolean;
   @Input() uniformPoster: boolean = false;
+  @Input() selectable: boolean = false;
+  @Input() selected: boolean = false;
   @Input() historyTimeLabel?: string;
   @Input() historyProgressPercent?: number;
   @Output() unhidden = new EventEmitter<Channel>();
   @Output() removedFromHistory = new EventEmitter<Channel>();
+  @Output() selectionToggled = new EventEmitter<Channel>();
   @ViewChild(MatMenuTrigger, { static: true }) matMenuTrigger!: MatMenuTrigger;
   menuTopLeftPosition = { x: 0, y: 0 };
   showImage: boolean = true;
@@ -179,6 +195,7 @@ export class ChannelTileComponent implements OnInit, OnDestroy, OnChanges {
   subscriptions: Subscription[] = [];
   fade = false;
   nowPlayingEpg?: EPG;
+  private isDestroyed = false;
 
   // Precomputed properties to avoid thousands of template method calls per second
   cleanTitle: string = '';
@@ -283,11 +300,21 @@ export class ChannelTileComponent implements OnInit, OnDestroy, OnChanges {
   }
 
   get isNonClickableHiddenGroup(): boolean {
-    return this.viewMode === ViewMode.Hidden && this.isGroupTile;
+    return !this.selectable && this.viewMode === ViewMode.Hidden && this.isGroupTile;
+  }
+
+  onSpaceKey(event: Event): void {
+    if (!this.selectable) return;
+    event.preventDefault();
+    void this.click();
   }
 
   async onPlayClick(event: MouseEvent): Promise<void> {
     event.stopPropagation();
+    if (this.selectable) {
+      await this.click();
+      return;
+    }
     if (this.starting || this.isNonClickableHiddenGroup) return;
     if (this.isGroup()) {
       this.click();
@@ -309,6 +336,12 @@ export class ChannelTileComponent implements OnInit, OnDestroy, OnChanges {
   }
 
   async click() {
+    if (this.selectable) {
+      if (this.channel) {
+        this.selectionToggled.emit(this.channel);
+      }
+      return;
+    }
     if (this.starting === true || this.isNonClickableHiddenGroup) {
       return;
     }
@@ -378,6 +411,10 @@ export class ChannelTileComponent implements OnInit, OnDestroy, OnChanges {
   }
 
   onRightClick(event: MouseEvent) {
+    if (this.selectable) {
+      event.preventDefault();
+      return;
+    }
     if (this.channel?.media_type == MediaType.season) return;
     this.alreadyExistsInFav = this.channel!.favorite!;
     this.alreadyHidden = this.channel!.hidden!;
@@ -533,11 +570,11 @@ export class ChannelTileComponent implements OnInit, OnDestroy, OnChanges {
   }
 
   async loadNowPlayingEPG() {
-    if (!this.channel?.id || !this.showEPG() || !this.channel.stream_id) return;
+    if (this.isDestroyed || !this.channel?.id || !this.showEPG() || !this.channel.stream_id) return;
     const channelId = this.channel.id;
     try {
-      const current = await EpgQueueManager.requestEpg(this.channel);
-      if (this.channel?.id === channelId) {
+      const current = await EpgQueueManager.requestEpg(this.channel, () => !this.isDestroyed);
+      if (!this.isDestroyed && this.channel?.id === channelId) {
         this.nowPlayingEpg = current || undefined;
         this.updateEpgDisplay();
         this.cdr.markForCheck();
@@ -771,6 +808,7 @@ export class ChannelTileComponent implements OnInit, OnDestroy, OnChanges {
   }
 
   ngOnDestroy() {
+    this.isDestroyed = true;
     this.subscriptions.forEach((x) => x.unsubscribe());
   }
 }
