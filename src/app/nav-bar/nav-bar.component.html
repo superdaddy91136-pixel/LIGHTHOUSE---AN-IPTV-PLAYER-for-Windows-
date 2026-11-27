@@ -11,7 +11,8 @@
       id="nav-tab-home"
     >
       <svg class="tab-icon home-tab-icon" viewBox="0 0 24 24" fill="currentColor" stroke="currentColor" stroke-width="0.35" stroke-linejoin="round">
-        <path d="M12,3C11.567331,3,11.146916,3.1407894,10.800781,3.4003906L4,8.5C3.3708368,8.9718724,3,9.713546,3,10.5v8C3,19.874788,4.1252118,21,5.5,21H8c.822504,0,1.5-.677496,1.5-1.5v-5c0-.282064.2179356-.5.5-.5h4c.282064,0,.5.217936.5.5v5c0,.822504.677496,1.5,1.5,1.5h2.5c1.374788,0,2.5-1.125212,2.5-2.5v-8c0-.786454-.370837-1.528128-1-2L13.199219,3.4003906C12.853084,3.1407894,12.432669,3,12,3Zm0,1c.216441,0,.426456.069354.599609.1992187l6.800782,5.1015626C19.77845,9.5843257,20,10.027426,20,10.5v8c0,.834349-.665651,1.5-1.5,1.5H16c-.282064,0-.5-.217936-.5-.5v-5c0-.822504-.677496-1.5-1.5-1.5h-4c-.822504,0-1.5.677496-1.5,1.5v5c0,.282064-.2179356.5-.5.5H5.5C4.6656514,20,4,19.334349,4,18.5v-8c0-.472574.2215502-.9156743.5996094-1.1992187l6.8007816-5.1015626C11.573544,4.069354,11.783559,4,12,4Z"/>
+        <path class="tab-shape-outline" d="M12,3C11.567331,3,11.146916,3.1407894,10.800781,3.4003906L4,8.5C3.3708368,8.9718724,3,9.713546,3,10.5v8C3,19.874788,4.1252118,21,5.5,21H8c.822504,0,1.5-.677496,1.5-1.5v-5c0-.282064.2179356-.5.5-.5h4c.282064,0,.5.217936.5.5v5c0,.822504.677496,1.5,1.5,1.5h2.5c1.374788,0,2.5-1.125212,2.5-2.5v-8c0-.786454-.370837-1.528128-1-2L13.199219,3.4003906C12.853084,3.1407894,12.432669,3,12,3Zm0,1c.216441,0,.426456.069354.599609.1992187l6.800782,5.1015626C19.77845,9.5843257,20,10.027426,20,10.5v8c0,.834349-.665651,1.5-1.5,1.5H16c-.282064,0-.5-.217936-.5-.5v-5c0-.822504-.677496-1.5-1.5-1.5h-4c-.822504,0-1.5.677496-1.5,1.5v5c0,.282064-.2179356.5-.5.5H5.5C4.6656514,20,4,19.334349,4,18.5v-8c0-.472574.2215502-.9156743.5996094-1.1992187l6.8007816-5.1015626C11.573544,4.069354,11.783559,4,12,4Z"/>
+        <path class="tab-shape-solid" d="M12,3C11.567331,3,11.146916,3.1407894,10.800781,3.4003906L4,8.5C3.3708368,8.9718724,3,9.713546,3,10.5v8C3,19.874788,4.1252118,21,5.5,21H8c.822504,0,1.5-.677496,1.5-1.5v-5c0-.282064.2179356-.5.5-.5h4c.282064,0,.5.217936.5.5v5c0,.822504.677496,1.5,1.5,1.5h2.5c1.374788,0,2.5-1.125212,2.5-2.5v-8c0-.786454-.370837-1.528128-1-2L13.199219,3.4003906C12.853084,3.1407894,12.432669,3,12,3Z"/>
       </svg>
       <span class="nav-tooltip" role="tooltip">Home</span>
     </button>
@@ -26,9 +27,21 @@
       id="nav-tab-live"
     >
       <svg class="tab-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-        <rect x="2" y="7" width="20" height="14" rx="3"/>
-        <path d="M17 2l-5 5-5-5"/>
-        <circle cx="17" cy="11.5" r="1.5" fill="currentColor"/>
+        <defs>
+          <mask id="navMaskLive">
+            <rect x="0" y="0" width="24" height="24" fill="white"/>
+            <circle cx="17" cy="11.5" r="2" fill="black" stroke="none"/>
+          </mask>
+        </defs>
+        <g class="tab-shape-outline">
+          <rect x="2" y="7" width="20" height="14" rx="3"/>
+          <path d="M17 2l-5 5-5-5"/>
+          <circle cx="17" cy="11.5" r="1.5" fill="currentColor"/>
+        </g>
+        <g class="tab-shape-solid">
+          <rect x="1" y="6" width="22" height="16" rx="4" fill="currentColor" stroke="none" mask="url(#navMaskLive)"/>
+          <path d="M17 2l-5 5-5-5"/>
+        </g>
       </svg>
       <span class="nav-tooltip" role="tooltip">Live TV</span>
     </button>
@@ -43,14 +56,25 @@
       id="nav-tab-movies"
     >
       <svg class="tab-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-        <rect x="2" y="4" width="20" height="16" rx="3"/>
-        <path d="M7 4v16"/>
-        <path d="M17 4v16"/>
-        <path d="M2 12h20"/>
-        <path d="M2 8h5"/>
-        <path d="M2 16h5"/>
-        <path d="M17 8h5"/>
-        <path d="M17 16h5"/>
+        <defs>
+          <mask id="navMaskMovies">
+            <rect x="0" y="0" width="24" height="24" fill="white"/>
+            <path d="M7 4.5v15M17 4.5v15M7 12h10M2.5 8h4.5M2.5 16h4.5M17 8h4.5M17 16h4.5" stroke="black" stroke-width="1.7" stroke-linecap="round"/>
+          </mask>
+        </defs>
+        <g class="tab-shape-outline">
+          <rect x="2" y="4" width="20" height="16" rx="3"/>
+          <path d="M7 4v16"/>
+          <path d="M17 4v16"/>
+          <path d="M2 12h20"/>
+          <path d="M2 8h5"/>
+          <path d="M2 16h5"/>
+          <path d="M17 8h5"/>
+          <path d="M17 16h5"/>
+        </g>
+        <g class="tab-shape-solid">
+          <rect x="1" y="3" width="22" height="18" rx="4" fill="currentColor" stroke="none" mask="url(#navMaskMovies)"/>
+        </g>
       </svg>
       <span class="nav-tooltip" role="tooltip">Movies</span>
     </button>
@@ -65,10 +89,23 @@
       id="nav-tab-series"
     >
       <svg class="tab-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-        <rect x="2" y="4" width="20" height="14" rx="3"/>
-        <polygon points="10,8 16,11 10,14" fill="currentColor" stroke="none"/>
-        <path d="M6 21h12"/>
-        <path d="M12 18v3"/>
+        <defs>
+          <mask id="navMaskSeries">
+            <rect x="0" y="0" width="24" height="24" fill="white"/>
+            <polygon points="10,7.5 16.5,11 10,14.5" fill="black" stroke="none"/>
+          </mask>
+        </defs>
+        <g class="tab-shape-outline">
+          <rect x="2" y="4" width="20" height="14" rx="3"/>
+          <polygon points="10,8 16,11 10,14" fill="currentColor" stroke="none"/>
+          <path d="M6 21h12"/>
+          <path d="M12 18v3"/>
+        </g>
+        <g class="tab-shape-solid">
+          <rect x="1" y="3" width="22" height="16" rx="4" fill="currentColor" stroke="none" mask="url(#navMaskSeries)"/>
+          <path d="M6 21h12"/>
+          <path d="M12 18v3"/>
+        </g>
       </svg>
       <span class="nav-tooltip" role="tooltip">TV Shows</span>
     </button>
@@ -82,7 +119,7 @@
       aria-label="Profile"
       id="nav-tab-profile"
     >
-      <svg class="tab-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+      <svg class="tab-icon tab-icon-heart" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
         <path d="M20.84 4.61a5.5 5.5 0 0 0-7.78 0L12 5.67l-1.06-1.06a5.5 5.5 0 0 0-7.78 7.78l1.06 1.06L12 21.23l7.78-7.78 1.06-1.06a5.5 5.5 0 0 0 0-7.78z"/>
       </svg>
       <span class="nav-tooltip" role="tooltip">Profile</span>
@@ -98,8 +135,19 @@
       id="nav-tab-settings"
     >
       <svg class="tab-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-        <path d="M12.22 2h-.44a2 2 0 0 0-2 2v.18a2 2 0 0 1-1 1.73l-.43.25a2 2 0 0 1-2 0l-.15-.08a2 2 0 0 0-2.73.73l-.22.38a2 2 0 0 0 .73 2.73l.15.1a2 2 0 0 1 1 1.72v.51a2 2 0 0 1-1 1.74l-.15.09a2 2 0 0 0-.73 2.73l.22.38a2 2 0 0 0 2.73.73l.15-.08a2 2 0 0 1 2 0l.43.25a2 2 0 0 1 1 1.73V20a2 2 0 0 0 2 2h.44a2 2 0 0 0 2-2v-.18a2 2 0 0 1 1-1.73l.43-.25a2 2 0 0 1 2 0l.15.08a2 2 0 0 0 2.73-.73l.22-.39a2 2 0 0 0-.73-2.73l-.15-.08a2 2 0 0 1-1-1.74v-.5a2 2 0 0 1 1-1.74l.15-.09a2 2 0 0 0 .73-2.73l-.22-.38a2 2 0 0 0-2.73-.73l-.15.08a2 2 0 0 1-2 0l-.43-.25a2 2 0 0 1-1-1.73V4a2 2 0 0 0-2-2z"/>
-        <circle cx="12" cy="12" r="3"/>
+        <defs>
+          <mask id="navMaskSettings">
+            <rect x="0" y="0" width="24" height="24" fill="white"/>
+            <circle cx="12" cy="12" r="3.2" fill="black" stroke="none"/>
+          </mask>
+        </defs>
+        <g class="tab-shape-outline">
+          <path d="M12.22 2h-.44a2 2 0 0 0-2 2v.18a2 2 0 0 1-1 1.73l-.43.25a2 2 0 0 1-2 0l-.15-.08a2 2 0 0 0-2.73.73l-.22.38a2 2 0 0 0 .73 2.73l.15.1a2 2 0 0 1 1 1.72v.51a2 2 0 0 1-1 1.74l-.15.09a2 2 0 0 0-.73 2.73l.22.38a2 2 0 0 0 2.73.73l.15-.08a2 2 0 0 1 2 0l.43.25a2 2 0 0 1 1 1.73V20a2 2 0 0 0 2 2h.44a2 2 0 0 0 2-2v-.18a2 2 0 0 1 1-1.73l.43-.25a2 2 0 0 1 2 0l.15.08a2 2 0 0 0 2.73-.73l.22-.39a2 2 0 0 0-.73-2.73l-.15-.08a2 2 0 0 1-1-1.74v-.5a2 2 0 0 1 1-1.74l.15-.09a2 2 0 0 0 .73-2.73l-.22-.38a2 2 0 0 0-2.73-.73l-.15.08a2 2 0 0 1-2 0l-.43-.25a2 2 0 0 1-1-1.73V4a2 2 0 0 0-2-2z"/>
+          <circle cx="12" cy="12" r="3"/>
+        </g>
+        <g class="tab-shape-solid">
+          <path d="M12.22 2h-.44a2 2 0 0 0-2 2v.18a2 2 0 0 1-1 1.73l-.43.25a2 2 0 0 1-2 0l-.15-.08a2 2 0 0 0-2.73.73l-.22.38a2 2 0 0 0 .73 2.73l.15.1a2 2 0 0 1 1 1.72v.51a2 2 0 0 1-1 1.74l-.15.09a2 2 0 0 0-.73 2.73l.22.38a2 2 0 0 0 2.73.73l.15-.08a2 2 0 0 1 2 0l.43.25a2 2 0 0 1 1 1.73V20a2 2 0 0 0 2 2h.44a2 2 0 0 0 2-2v-.18a2 2 0 0 1 1-1.73l.43-.25a2 2 0 0 1 2 0l.15.08a2 2 0 0 0 2.73-.73l.22-.39a2 2 0 0 0-.73-2.73l-.15-.08a2 2 0 0 1-1-1.74v-.5a2 2 0 0 1 1-1.74l.15-.09a2 2 0 0 0 .73-2.73l-.22-.38a2 2 0 0 0-2.73-.73l-.15.08a2 2 0 0 1-2 0l-.43-.25a2 2 0 0 1-1-1.73V4a2 2 0 0 0-2-2z" fill="currentColor" mask="url(#navMaskSettings)"/>
+        </g>
       </svg>
       <span class="nav-tooltip" role="tooltip">Settings</span>
     </button>

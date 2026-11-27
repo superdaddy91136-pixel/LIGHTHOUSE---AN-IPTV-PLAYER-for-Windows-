@@ -48,7 +48,7 @@
   cursor: pointer;
   position: relative;
   outline: none;
-  transition: all 0.2s cubic-bezier(0.4, 0, 0.2, 1);
+  transition: background 0.2s cubic-bezier(0.4, 0, 0.2, 1), transform 0.2s cubic-bezier(0.4, 0, 0.2, 1);
   flex-shrink: 0;
 }
 
@@ -77,13 +77,29 @@
   color: var(--lh-accent, #ff5b7c);
 }
 
+.tab-shape-solid {
+  display: none;
+}
+
+.nav-tab-btn.active .tab-shape-outline {
+  display: none;
+}
+
+.nav-tab-btn.active .tab-shape-solid {
+  display: inline;
+}
+
+.nav-tab-btn.active .tab-icon-heart path {
+  fill: currentColor;
+}
+
 .tab-icon {
   width: 22px;
   height: 22px;
   display: block;
   flex-shrink: 0;
   color: #ffffff;
-  transition: transform 0.2s ease, color 0.2s ease, filter 0.2s ease;
+  transition: transform 0.2s ease, filter 0.2s ease;
 }
 
 .tab-icon.home-tab-icon {
