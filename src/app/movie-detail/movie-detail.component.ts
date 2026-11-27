@@ -85,6 +85,7 @@ export class MovieDetailComponent implements OnInit, AfterViewInit, OnDestroy {
   genres: string[] = [];
   qualityBadge?: string;
   rating?: number;
+  contentRating?: string;
   voteCount?: number;
   director?: string;
   cast: TmdbCastMember[] = [];
@@ -847,6 +848,8 @@ export class MovieDetailComponent implements OnInit, AfterViewInit, OnDestroy {
       this.rating = enr.rating;
       this.voteCount = enr.voteCount;
     }
+
+    this.contentRating = enr.contentRating;
 
     if (enr.director) {
       this.director = enr.director;

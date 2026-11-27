@@ -494,6 +494,12 @@ body::-webkit-scrollbar-thumb:active {
   border: 1px solid rgba(255, 255, 255, 0.14);
 }
 
+.hero-meta-pill.pill-content-rating {
+  background: rgba(0, 0, 0, 0.48);
+  color: rgba(255, 255, 255, 0.94);
+  border: 1px solid rgba(255, 255, 255, 0.2);
+}
+
 .hero-meta-pill.pill-type {
   background: rgba(255, 255, 255, 0.08);
   color: rgba(255, 255, 255, 0.85);
@@ -1615,7 +1621,6 @@ body:has(app-tv-detail)::-webkit-scrollbar {
   border-radius: 6px;
   border: 1px solid rgba(234, 179, 8, 0.35);
 }
-
 /* ── Hero Info Column ── */
 .hero-info-col {
   flex: 1;
@@ -1651,6 +1656,11 @@ body:has(app-tv-detail)::-webkit-scrollbar {
   background: rgba(255, 255, 255, 0.08);
   color: rgba(255, 255, 255, 0.85);
   border: 1px solid rgba(255, 255, 255, 0.12);
+}
+.detail-badge.badge-content-rating {
+  background: rgba(0, 0, 0, 0.48);
+  color: rgba(255, 255, 255, 0.94);
+  border: 1px solid rgba(255, 255, 255, 0.2);
 }
 .detail-badge.badge-runtime {
   background: rgba(255, 255, 255, 0.08);

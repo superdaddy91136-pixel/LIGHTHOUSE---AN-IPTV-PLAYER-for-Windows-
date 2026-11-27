@@ -20,4 +20,5 @@ export interface HeroItem {
   logoUrl?: string;
   favorite?: boolean;
   rating?: number;
+  contentRating?: string;
 }

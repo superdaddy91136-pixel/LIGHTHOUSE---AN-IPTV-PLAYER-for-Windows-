@@ -32,6 +32,7 @@ describe('HomeDiscoveryComponent (Phase 4B Continue Watching DB Reads)', () => {
   const mockTmdbEnrichment: any = {
     enrichmentUpdated$: new Subject(),
     getEnrichmentSync: () => undefined,
+    prefetchContentRating: () => {},
     getEpisodeStillSync: () => undefined,
     enqueue: () => {},
     getEnrichment: () => Promise.resolve(undefined),

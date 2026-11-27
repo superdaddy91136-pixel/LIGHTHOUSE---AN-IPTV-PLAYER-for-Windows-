@@ -71,6 +71,7 @@
           <div class="hero-badges">
             <span class="detail-badge badge-type">MOVIE</span>
             <span class="detail-badge badge-year" *ngIf="releaseYear">{{ releaseYear }}</span>
+            <span class="detail-badge badge-content-rating progressive-fade-in" *ngIf="contentRating">{{ contentRating }}</span>
             
             <span class="detail-badge badge-runtime progressive-fade-in" *ngIf="runtimeText">
               <svg viewBox="0 0 24 24" fill="currentColor">

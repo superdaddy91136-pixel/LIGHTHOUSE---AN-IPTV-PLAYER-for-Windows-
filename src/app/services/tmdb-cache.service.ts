@@ -329,6 +329,15 @@ export class TmdbCacheService {
   }
 
   /**
+   * Ratings are refreshed independently from the rest of an enrichment record so
+   * the detail and hero UI can render before the secondary TMDB request completes.
+   */
+  isContentRatingStale(enrichment: TmdbMediaEnrichment, maxAgeMs = DEFAULT_STALE_MS): boolean {
+    if (!enrichment.contentRatingCheckedAt) return true;
+    return Date.now() - enrichment.contentRatingCheckedAt > maxAgeMs;
+  }
+
+  /**
    * Checks if a title search previously failed or had low confidence, and whether the retry window has expired.
    */
   async isFailedMatch(searchKey: string): Promise<boolean> {

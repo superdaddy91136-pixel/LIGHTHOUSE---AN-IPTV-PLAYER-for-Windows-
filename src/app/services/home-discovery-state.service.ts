@@ -381,6 +381,10 @@ export class HomeDiscoveryStateService {
           item.description = updates.description;
           changed = true;
         }
+        if ('contentRating' in updates && item.contentRating !== updates.contentRating) {
+          item.contentRating = updates.contentRating;
+          changed = true;
+        }
       }
     }
     if (changed) {

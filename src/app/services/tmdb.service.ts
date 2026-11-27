@@ -15,6 +15,46 @@ const BASE_RETRY_DELAY_MS = 1000;
 const RETRY_JITTER_MS = 500;
 const MAX_RETRY_AFTER_MS = 60000;
 
+export interface TmdbContentRatingLookup {
+  fetched: boolean;
+  rating?: string;
+}
+
+function validRating(value: unknown): string | undefined {
+  if (typeof value !== 'string') return undefined;
+  const rating = value.trim();
+  return rating || undefined;
+}
+
+/** Selects India first and only falls back to the US when India has no certification. */
+export function selectMovieCertification(data: any): string | undefined {
+  const results = Array.isArray(data?.results) ? data.results : [];
+  for (const country of ['IN', 'US']) {
+    for (const result of results) {
+      if (String(result?.iso_3166_1 || '').toUpperCase() !== country) continue;
+      const dates = Array.isArray(result?.release_dates) ? result.release_dates : [];
+      for (const release of dates) {
+        const certification = validRating(release?.certification);
+        if (certification) return certification;
+      }
+    }
+  }
+  return undefined;
+}
+
+/** Selects India first and only falls back to the US when India has no TV rating. */
+export function selectTvContentRating(data: any): string | undefined {
+  const results = Array.isArray(data?.results) ? data.results : [];
+  for (const country of ['IN', 'US']) {
+    for (const result of results) {
+      if (String(result?.iso_3166_1 || '').toUpperCase() !== country) continue;
+      const rating = validRating(result?.rating);
+      if (rating) return rating;
+    }
+  }
+  return undefined;
+}
+
 @Injectable({
   providedIn: 'root',
 })
@@ -443,6 +483,24 @@ export class TmdbService implements OnDestroy {
       append_to_response: 'credits,videos,images',
       include_image_language: 'en,hi,null,ja,ko,es,fr,de,it,pt,zh',
     });
+  }
+
+  /** Fetches movie certification data separately from display-critical movie details. */
+  async getMovieCertification(movieId: number): Promise<TmdbContentRatingLookup> {
+    if (!movieId) return { fetched: false };
+    const data = await this.safeGet<any>(`/movie/${movieId}/release_dates`);
+    return data === null
+      ? { fetched: false }
+      : { fetched: true, rating: selectMovieCertification(data) };
+  }
+
+  /** Fetches TV content ratings separately from display-critical TV details. */
+  async getTvContentRating(tvId: number): Promise<TmdbContentRatingLookup> {
+    if (!tvId) return { fetched: false };
+    const data = await this.safeGet<any>(`/tv/${tvId}/content_ratings`);
+    return data === null
+      ? { fetched: false }
+      : { fetched: true, rating: selectTvContentRating(data) };
   }
 
   /**

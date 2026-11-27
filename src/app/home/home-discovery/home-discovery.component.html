@@ -87,6 +87,9 @@
           <span class="hero-meta-pill pill-recommendation" *ngIf="getRecommendationLabel(currentHero)">
             {{ getRecommendationLabel(currentHero) }}
           </span>
+          <span class="hero-meta-pill pill-content-rating" *ngIf="currentHero.contentRating">
+            {{ currentHero.contentRating }}
+          </span>
           <span class="hero-meta-pill pill-neutral" *ngIf="currentHero.year">
             {{ currentHero.year }}
           </span>

@@ -1001,7 +1001,13 @@ export class HomeDiscoveryComponent implements OnInit, AfterViewInit, OnDestroy 
 
       // 1. Check synchronous in-memory cache first to see if metadata is already present
       const cached = this.tmdbEnrichment.getEnrichmentSync(hero.channel);
+      // Rating data is independent of artwork/logo readiness. Prefetch it before
+      // the early logo-ready exits below so upcoming heroes are ready on rotation.
+      this.tmdbEnrichment.prefetchContentRating(hero.channel);
       if (cached) {
+        if (!hero.contentRating && cached.contentRating) {
+          hero.contentRating = cached.contentRating;
+        }
         if (!hero.logoUrl && cached.logoPath && cached.logoVersion === CURRENT_LOGO_ALGO_VERSION) {
           hero.logoUrl = getTmdbLogoUrl(cached.logoPath, 'w500');
           if (hero.channel.id) {
@@ -4981,6 +4987,7 @@ export class HomeDiscoveryComponent implements OnInit, AfterViewInit, OnDestroy 
     // so use the existing neutral hero treatment until TMDB supplies a backdrop.
     let imageUrl: string | undefined;
     let rating: number | undefined;
+    let contentRating: string | undefined;
     let logoUrl: string | undefined;
 
     // Check TMDB cached enrichment
@@ -5005,6 +5012,7 @@ export class HomeDiscoveryComponent implements OnInit, AfterViewInit, OnDestroy 
       if (cached.rating) {
         rating = cached.rating;
       }
+      contentRating = cached.contentRating;
     }
 
     // Queue background enrichment for hero if configured and requested
@@ -5024,6 +5032,7 @@ export class HomeDiscoveryComponent implements OnInit, AfterViewInit, OnDestroy 
       logoUrl,
       favorite: channel.favorite,
       rating,
+      contentRating,
     };
   }
 
@@ -5078,12 +5087,14 @@ export class HomeDiscoveryComponent implements OnInit, AfterViewInit, OnDestroy 
       if (enrichment.rating) {
         heroMatch.rating = enrichment.rating;
       }
+      heroMatch.contentRating = enrichment.contentRating;
 
       if (heroMatch.channel?.id) {
         this.discoveryState.updateHeroItemMetadata(heroMatch.channel.id, {
           logoUrl: heroMatch.logoUrl,
           imageUrl: heroMatch.imageUrl,
           description: heroMatch.description,
+          contentRating: heroMatch.contentRating,
         });
       }
     }

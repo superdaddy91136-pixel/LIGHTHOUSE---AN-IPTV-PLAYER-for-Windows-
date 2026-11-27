@@ -32,6 +32,7 @@ export class TmdbEnrichmentService {
   private queue: QueueItem[] = [];
   private inFlightKeys = new Set<string>();
   private activeWorkers = 0;
+  private contentRatingRequests = new Map<string, Promise<void>>();
   private isPlaybackActive = false;
   private readonly MAX_CONCURRENT = 2;
   private readonly REQUEST_DELAY_MS = 200;
@@ -56,6 +57,56 @@ export class TmdbEnrichmentService {
   ) {}
 
   /**
+   * Loads and persists the country-prioritized age rating after core enrichment
+   * has already been published. A single TMDB title lookup updates every cached
+   * provider version of that title and is deduplicated while in flight.
+   */
+  private refreshContentRating(enrichment: TmdbMediaEnrichment): void {
+    if (!this.configService.isEnabled() || !enrichment.tmdbId || !this.cacheService.isContentRatingStale(enrichment)) {
+      return;
+    }
+
+    const key = `${enrichment.mediaType}:${enrichment.tmdbId}`;
+    if (this.contentRatingRequests.has(key)) return;
+
+    const request = (async () => {
+      const result = enrichment.mediaType === 'tv'
+        ? await this.tmdbService.getTvContentRating(enrichment.tmdbId)
+        : await this.tmdbService.getMovieCertification(enrichment.tmdbId);
+
+      // A transport/API failure is intentionally not cached, allowing a later
+      // screen visit to retry. A successful empty response is cached as no rating.
+      if (!result.fetched) return;
+
+      const cached = await this.cacheService.getEnrichmentsByTmdbId(enrichment.tmdbId);
+      const records = cached.length > 0 ? cached : [enrichment];
+      const checkedAt = Date.now();
+      for (const record of records) {
+        if (record.mediaType !== enrichment.mediaType) continue;
+        const updated: TmdbMediaEnrichment = {
+          ...record,
+          contentRating: result.rating,
+          contentRatingCheckedAt: checkedAt,
+        };
+        await this.cacheService.saveEnrichment(updated);
+        this.enrichmentUpdated$.next(updated);
+      }
+    })().catch((error) => {
+      console.warn(`Failed to load TMDB content rating for ${key}:`, error);
+    }).finally(() => {
+      this.contentRatingRequests.delete(key);
+    });
+
+    this.contentRatingRequests.set(key, request);
+  }
+
+  private async saveAndPublishEnrichment(enrichment: TmdbMediaEnrichment): Promise<void> {
+    await this.cacheService.saveEnrichment(enrichment);
+    this.enrichmentUpdated$.next(enrichment);
+    this.refreshContentRating(enrichment);
+  }
+
+  /**
    * Fast synchronous lookup from hot memory cache.
    * Never blocks or incurs Promise overhead.
    */
@@ -70,6 +121,34 @@ export class TmdbEnrichmentService {
       }
     }
     return cached;
+  }
+
+  /**
+   * Starts a non-blocking rating refresh for a known title. Home uses this for
+   * its visible hero window even when artwork/logo enrichment is already complete.
+   */
+  prefetchContentRating(channel?: Channel): void {
+    if (!channel?.id || !this.configService.isEnabled()) return;
+
+    const inMemory = this.getEnrichmentSync(channel);
+    if (inMemory) {
+      // Ensure views built before the hot cache was populated receive the
+      // persisted rating without waiting for a revalidation request.
+      this.enrichmentUpdated$.next(inMemory);
+      this.refreshContentRating(inMemory);
+      return;
+    }
+
+    void this.cacheService.getEnrichment(channel.id).then((cached) => {
+      if (!cached) return;
+      const isSeries = Number(channel.media_type) === MediaType.serie || (channel as any).series_id != null;
+      const expectedType: 'movie' | 'tv' = isSeries ? 'tv' : 'movie';
+      if (cached.mediaType && cached.mediaType !== expectedType) return;
+      // Hydrate consumers with a persisted rating immediately, even if it is
+      // already fresh and therefore needs no network refresh.
+      this.enrichmentUpdated$.next(cached);
+      this.refreshContentRating(cached);
+    });
   }
 
   /**
@@ -96,6 +175,10 @@ export class TmdbEnrichmentService {
           this.enqueue(channel, priority);
         }
         return undefined;
+      }
+
+      if (allowBackgroundFetch) {
+        this.refreshContentRating(cached);
       }
 
       const isIncomplete =
@@ -223,6 +306,7 @@ export class TmdbEnrichmentService {
       if (!cached.mediaType || cached.mediaType === mediaType) {
         if (cached.logoVersion === CURRENT_LOGO_ALGO_VERSION) {
           this.enrichmentUpdated$.next(cached);
+          this.refreshContentRating(cached);
           return;
         }
       }
@@ -251,8 +335,7 @@ export class TmdbEnrichmentService {
             ? this.tmdbService.parseTvDetails(fullDetails, 1.0, cleanMediaTitle(channel.name), channel.id)
             : this.tmdbService.parseMovieDetails(fullDetails, 1.0, cleanMediaTitle(channel.name), channel.id);
 
-          await this.cacheService.saveEnrichment(enrichment);
-          this.enrichmentUpdated$.next(enrichment);
+          await this.saveAndPublishEnrichment(enrichment);
           return;
         }
       }
@@ -346,8 +429,7 @@ export class TmdbEnrichmentService {
       ? this.tmdbService.parseTvDetails(full, best.score.confidence, query, channel.id)
       : this.tmdbService.parseMovieDetails(full, best.score.confidence, query, channel.id);
 
-    await this.cacheService.saveEnrichment(enrichment);
-    this.enrichmentUpdated$.next(enrichment);
+    await this.saveAndPublishEnrichment(enrichment);
   }
 
   /**
@@ -697,8 +779,7 @@ export class TmdbEnrichmentService {
       lastUpdated: Date.now(),
     };
 
-    await this.cacheService.saveEnrichment(enrichment);
-    this.enrichmentUpdated$.next(enrichment);
+    await this.saveAndPublishEnrichment(enrichment);
   }
 
   /**
@@ -751,8 +832,7 @@ export class TmdbEnrichmentService {
         ? this.tmdbService.parseTvDetails(details, 1.0, title, channel.id)
         : this.tmdbService.parseMovieDetails(details, 1.0, title, channel.id);
 
-      await this.cacheService.saveEnrichment(enrichment);
-      this.enrichmentUpdated$.next(enrichment);
+      await this.saveAndPublishEnrichment(enrichment);
       return enrichment.logoPath && enrichment.logoPath.trim() !== '' ? enrichment.logoPath : undefined;
     } catch {
       return undefined;

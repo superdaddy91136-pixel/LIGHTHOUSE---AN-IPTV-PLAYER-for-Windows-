@@ -103,6 +103,7 @@ export class TvDetailComponent implements OnInit, AfterViewInit, OnDestroy {
   genres: string[] = [];
   qualityBadge?: string;
   rating?: number;
+  contentRating?: string;
   voteCount?: number;
   numberOfSeasons?: number;
   numberOfEpisodes?: number;
@@ -816,6 +817,8 @@ export class TvDetailComponent implements OnInit, AfterViewInit, OnDestroy {
     if (enr.status) {
       this.status = enr.status;
     }
+
+    this.contentRating = enr.contentRating;
 
     if (enr.creator) {
       this.creator = enr.creator;

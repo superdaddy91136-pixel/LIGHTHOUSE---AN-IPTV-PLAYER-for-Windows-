@@ -85,6 +85,10 @@ export interface TmdbMediaEnrichment {
   releaseYear?: string;
   genres?: string[];
   rating?: number;
+  /** Country-prioritized audience classification from TMDB (IN, then US). */
+  contentRating?: string;
+  /** Records a completed rating lookup, including titles with no published rating. */
+  contentRatingCheckedAt?: number;
   voteCount?: number;
   runtime?: number;
   tagline?: string;

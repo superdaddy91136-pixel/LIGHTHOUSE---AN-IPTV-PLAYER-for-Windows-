@@ -72,6 +72,7 @@
           <div class="hero-badges">
             <span class="detail-badge badge-type">TV SHOW</span>
             <span class="detail-badge badge-year" *ngIf="releaseYear">{{ releaseYear }}</span>
+            <span class="detail-badge badge-content-rating progressive-fade-in" *ngIf="contentRating">{{ contentRating }}</span>
             
             <span class="detail-badge badge-seasons progressive-fade-in" *ngIf="numberOfSeasons">
               {{ numberOfSeasons }} {{ numberOfSeasons === 1 ? 'Season' : 'Seasons' }}
